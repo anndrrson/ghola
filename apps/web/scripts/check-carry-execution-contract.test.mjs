@@ -20,6 +20,22 @@ function mutateSection(source, start, end, mutate) {
   return `${source.slice(0, startIndex)}${mutated}${source.slice(endIndex)}`;
 }
 
+function mutateOccurrenceSection(source, start, end, occurrence, mutate) {
+  let startIndex = -1;
+  let cursor = 0;
+  for (let index = 0; index <= occurrence; index += 1) {
+    startIndex = source.indexOf(start, cursor);
+    assert.notEqual(startIndex, -1, `missing mutation occurrence ${occurrence}: ${start}`);
+    cursor = startIndex + start.length;
+  }
+  const endIndex = source.indexOf(end, cursor);
+  assert.notEqual(endIndex, -1, `missing mutation end: ${end}`);
+  const section = source.slice(startIndex, endIndex);
+  const mutated = mutate(section);
+  assert.notEqual(mutated, section, `mutation made no change in occurrence ${occurrence}: ${start}`);
+  return `${source.slice(0, startIndex)}${mutated}${source.slice(endIndex)}`;
+}
+
 test("accepts the complete cross-venue Carry execution contract", () => {
   assert.equal(checkCarryExecutionContract(sources).ok, true);
 });
@@ -145,7 +161,7 @@ test("rejects tampering with exact Lighter realized-fee evidence", () => {
     ["lighterRunner", "fee_tick = 0 if fee_key not in trade else exact_integer(", "fee_tick = exact_integer(", /lighter_omitted_zero_fee_semantics_missing/],
     ["lighter", "const zeroFillFeeExact = exactOriginalOrderObserved", "const zeroFillFeeExact = true", /lighter_zero_fill_order_id_binding_missing/],
     ["lighter", '&& filledQuote === "0"', "", /lighter_zero_fill_quote_binding_missing/],
-    ["lighter", "fee: feeProof.complete === true ? feeProof.fee_quote_amount : null", "fee: order.fee", /lighter_exact_fee_fill_binding_missing|lighter_synthetic_order_fee_fallback_present/],
+    ["lighter", 'fee_quote_amount: zeroFillFeeExact ? "0" : feeProof.complete === true ? feeProof.fee_quote_amount : null', "fee_quote_amount: order.fee", /lighter_exact_fee_fill_binding_missing|lighter_synthetic_order_fee_fallback_present/],
     ["lighter", "unsignedDecimalIntegerText(order?.order_index) !== null", "nonnegativeIntegerOrNull(order?.order_index) !== null", /lighter_original_order_id_proof_missing/],
   ];
   for (const [key, before, after, failure] of cases) {
@@ -157,6 +173,39 @@ test("rejects tampering with exact Lighter realized-fee evidence", () => {
       failure,
       `${key}: ${before}`,
     );
+  }
+});
+
+test("rejects Lighter reconciliation detached from its submitted fingerprint", () => {
+  const cases = [
+    [
+      "lighter",
+      "export async function reconcileLighterExecution({",
+      "function normalizedLighterFeeProof(",
+      "resultAccountIndex === credential.account_index",
+      "true",
+      /lighter_reconcile_account_binding_missing/,
+    ],
+    [
+      "lighter",
+      "function submittedOrderMatchesCandidate(",
+      "function orderFingerprintCommitment(",
+      'candidate?.type === "limit"',
+      "true",
+      /lighter_candidate_fingerprint_type_binding_missing/,
+    ],
+    [
+      "lighterRunner",
+      "def submitted_order_fingerprint_matches(",
+      "def incomplete_trade_fee_proof(",
+      'exact_integer(order.get("market_index"), "lighter order market is invalid") != int(market_index)',
+      "False",
+      /lighter_runner_fingerprint_market_binding_missing/,
+    ],
+  ];
+  for (const [key, start, end, before, after, failure] of cases) {
+    const mutated = mutateSection(sources[key], start, end, (section) => section.replace(before, after));
+    assert.throws(() => checkCarryExecutionContract({ ...sources, [key]: mutated }), failure);
   }
 });
 
@@ -362,11 +411,24 @@ test("rejects terminal status inherited from lower-fill evidence", () => {
     () => checkCarryExecutionContract({
       ...sources,
       multiLegOrchestrator: sources.multiLegOrchestrator.replace(
-        "terminal = proof?.final_venue_execution_proven === true;\n      selectedEvidence = true;\n      terminalRegressed = false;",
+        "terminal = proof?.final_venue_execution_proven === true\n        && proof?.target_fill_set_complete === true;\n      selectedEvidence = true;\n      terminalRegressed = false;",
         "terminal ||= proof?.final_venue_execution_proven === true;\n      selectedEvidence = true;",
       ),
     }),
     /carry_recovery_highest_fill_terminal_reset_missing/,
+  );
+});
+
+test("rejects same-fill terminal evidence without a complete target fill set", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      multiLegOrchestrator: sources.multiLegOrchestrator.replace(
+        "const candidateTerminal = proof?.final_venue_execution_proven === true\n        && proof?.target_fill_set_complete === true;",
+        "const candidateTerminal = proof?.final_venue_execution_proven === true;",
+      ),
+    }),
+    /carry_recovery_equal_fill_set_complete_gate_missing/,
   );
 });
 
@@ -394,6 +456,26 @@ test("rejects recovery that cannot advance same-fill evidence from nonterminal t
     }),
     /carry_recovery_terminal_progression_missing/,
   );
+});
+
+test("rejects target fill-set completeness removed from any scoped lifecycle boundary", () => {
+  const cases = [
+    ["executor", "function fillProgress(", "function proportionalMicroForExactBase(", "&& proof?.target_fill_set_complete === true", "", /carry_executor_fill_progress_fill_set_gate_missing/],
+    ["executor", "export function assessCarryTerminalExecutionReceipt({", "function exposureBoundaryEvent(", "|| proof.target_fill_set_complete !== true", "", /carry_executor_terminal_assessment_fill_set_gate_missing/],
+    ["multiLegOrchestrator", "function assessOriginalOrderReconciliation({", "async function applyTimeout(", "|| proof?.target_fill_set_complete !== true", "", /carry_original_reconciliation_fill_set_gate_missing/],
+    ["multiLegOrchestrator", "function unwindProgress({", "function recoveryProofTargetsLeg(", "&& proof?.target_fill_set_complete === true", "", /carry_unwind_progress_fill_set_gate_missing/],
+    ["arbitrage", "function receiptFillProgress({", "export async function bestArbitrageOpportunity(", "&& proof?.target_fill_set_complete === true", "", /carry_arbitrage_fill_progress_fill_set_gate_missing/],
+    ["qualification", "export function assessCarryVenueQualification({", "function qualificationAdapters(", "entry.target_fill_set_complete !== true", "false", /carry_qualification_entry_fill_set_gate_missing/],
+    ["qualification", "export function assessCarryVenueQualification({", "function qualificationAdapters(", "exit.target_fill_set_complete !== true", "false", /carry_qualification_exit_fill_set_gate_missing/],
+    ["releaseMaterial", "function authoritativeReleaseFillTiming(", "async function materialLegs(", "&& proof?.target_fill_set_complete === true", "", /carry_release_fill_timing_fill_set_gate_missing/],
+    ["hyperliquid", "async function reconcileHyperliquidExecution({", "function unresolvedHyperliquidReconciliation(", "target_fill_set_complete: targetFillSetComplete", "target_fill_set_complete: false", /hyperliquid_target_fill_set_producer_missing/],
+    ["aster", "async function attachExactAsterTrades(", "async function readBoundedAsterUserTrades(", "target_fill_set_complete: true", "target_fill_set_complete: false", /aster_target_fill_set_producer_missing/],
+    ["lighter", "export async function reconcileLighterExecution({", "function submittedOrderMatchesCandidate(", "target_fill_set_complete: targetFillSetComplete", "target_fill_set_complete: false", /lighter_target_fill_set_producer_missing/],
+  ];
+  for (const [key, start, end, before, after, failure] of cases) {
+    const mutated = mutateSection(sources[key], start, end, (section) => section.replace(before, after));
+    assert.throws(() => checkCarryExecutionContract({ ...sources, [key]: mutated }), failure);
+  }
 });
 
 test("rejects exact base evidence retained below the selected fill amount", () => {
@@ -532,15 +614,21 @@ test("rejects removal of zero-applied accounting before residual reconciliation"
 });
 
 test("rejects partial completion that overwrites original submission state", () => {
+  const mutated = mutateSection(
+    sources.coreMultiLeg,
+    'if (event.type === "completion_fill") {',
+    'if (event.type === "completion_failed") {',
+    (section) => section.replace(
+      "const originalSubmissionStatus = leg.submission_status;\n    applyEntryFill(saga, leg, event.cumulative_filled_micro_usdc, nowMs, event);\n    leg.submission_status = originalSubmissionStatus;",
+      "applyEntryFill(saga, leg, event.cumulative_filled_micro_usdc, nowMs, event);",
+    ),
+  );
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
-      coreMultiLeg: sources.coreMultiLeg.replace(
-        "const originalSubmissionStatus = leg.submission_status;\n    applyFill(leg, event.cumulative_filled_micro_usdc, \"filled_micro_usdc\");\n    leg.submission_status = originalSubmissionStatus;",
-        "applyFill(leg, event.cumulative_filled_micro_usdc, \"filled_micro_usdc\");",
-      ),
+      coreMultiLeg: mutated,
     }),
-    /carry_partial_completion_submission_status_preservation_missing/,
+    /carry_partial_completion_submission_status_(snapshot|preservation)_missing/,
   );
 });
 
@@ -1388,6 +1476,619 @@ test("rejects live actions in the persistent Carry Position rail", () => {
       webCarryPositionRail: `${sources.webCarryPositionRail}\nvoid executeCarryPositionEntry; void requestCarryPositionExit; void createCarryPosition;`,
     }),
     /carry_position_rail_live_(entry|exit|creation)_exposed/,
+  );
+});
+
+test("rejects removal of Carry exposure accounting boundaries and overlap guard", () => {
+  const cases = [
+    ["coreMultiLeg", "first_exposure_observed_at_ms: null", "first_exposure_observed_at_ms: undefined", /carry_first_observed_exposure_domain_missing/],
+    ["coreMultiLeg", "exposure_boundary_provenance: null", "exposure_boundary_provenance: undefined", /carry_first_exposure_provenance_domain_missing/],
+    ["coreMultiLeg", 'const AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE = "authoritative_exchange_fill_time"', 'const AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE = "worker_observed_positive_fill_conservative"', /carry_authoritative_exposure_provenance_missing/],
+    ["coreMultiLeg", 'const CONSERVATIVE_EXPOSURE_BOUNDARY_PROVENANCE = "worker_observed_positive_fill_conservative"', 'const CONSERVATIVE_EXPOSURE_BOUNDARY_PROVENANCE = "authoritative_exchange_fill_time"', /carry_conservative_exposure_provenance_missing/],
+    ["coreMultiLeg", "previousLegFill === 0 && leg.filled_micro_usdc > 0", "leg.filled_micro_usdc > 0", /carry_first_positive_fill_gate_missing/],
+    ["coreMultiLeg", "leg.first_exposure_observed_at_ms = boundary.observed_at_ms", "leg.first_exposure_observed_at_ms = nowMs", /carry_first_observed_exposure_capture_missing/],
+    ["coreMultiLeg", "leg.exposure_boundary_provenance = boundary.provenance", "leg.exposure_boundary_provenance = null", /carry_first_exposure_provenance_capture_missing/],
+    ["coreMultiLeg", "provenance === undefined && observedAtMs === undefined", "provenance === undefined || observedAtMs === undefined", /carry_missing_fill_time_conservative_pair_gate_missing/],
+    ["coreMultiLeg", 'positiveInteger(saga.created_at_ms, "first_exposure_observed_at_ms")', 'positiveInteger(nowMs, "first_exposure_observed_at_ms")', /carry_missing_fill_time_conservative_boundary_missing/],
+    ["coreMultiLeg", "provenance !== AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE", "false", /carry_fill_time_provenance_validation_missing/],
+    ["coreMultiLeg", "authoritativeAtMs < saga.created_at_ms || authoritativeAtMs > nowMs", "authoritativeAtMs > nowMs", /carry_authoritative_fill_time_bounds_missing/],
+    ["coreMultiLeg", "const allAuthoritative = exposed.every((leg) =>", "const allAuthoritative = exposed.some((leg) =>", /carry_all_exposed_legs_authoritative_gate_missing/],
+    ["coreMultiLeg", "saga.first_exposure_observed_at_ms = saga.created_at_ms", "saga.first_exposure_observed_at_ms = nowMs", /carry_incomplete_fill_time_conservative_boundary_missing/],
+    ["coreMultiLeg", "Math.min(...exposed.map((leg) => leg.first_exposure_observed_at_ms))", "Math.max(...exposed.map((leg) => leg.first_exposure_observed_at_ms))", /carry_complete_fill_time_minimum_missing/],
+    ["coreCarry", "active_observed_at_ms: null", "active_observed_at_ms: undefined", /carry_active_observed_boundary_domain_missing/],
+    ["coreCarry", "event.first_exposure_observed_at_ms ?? event.first_exposure_at_ms", "event.first_exposure_at_ms", /carry_active_observed_event_binding_missing/],
+    ["coreCarry", "position.active_boundary_provenance = boundaryProvenance", "position.active_boundary_provenance = null", /carry_active_provenance_assignment_missing/],
+    ["executor", "first_exposure_observed_at_ms: material.exposure_boundary.observed_at_ms", "first_exposure_observed_at_ms: saga.updated_at_ms", /carry_first_observed_exposure_binding_missing/],
+    ["executor", 'provenance = "legacy_conservative_saga_creation"', 'provenance = "worker_observed_positive_fill"', /carry_saga_legacy_conservative_provenance_missing/],
+    ["executor", 'provenance = "legacy_conservative_position_creation"', 'provenance = "worker_observed_positive_fill"', /carry_position_legacy_conservative_provenance_missing/],
+    ["positions", "observedAtMs: advanced.position.active_observed_at_ms", "observedAtMs: advanced.position.created_at_ms", /carry_funding_observed_boundary_binding_missing/],
+    ["positions", "if (priorBoundary !== observedAtMs) return denied(\"carry_funding_exposure_boundary_conflict\");", "if (false) return denied(\"carry_funding_exposure_boundary_conflict\");", /carry_funding_observed_boundary_conflict_missing/],
+    ["positions", "[venueId, boundaryByVenue[venueId]]", "[venueId, current.cursor_ms_by_venue?.[venueId]]", /carry_funding_observed_cursor_rebase_missing/],
+    ["positions", "Math.min(...venueIds.map((venueId) => boundaryByVenue[venueId])) !== observedAtMs", "false", /carry_funding_per_venue_minimum_binding_missing/],
+    ["executor", "observedAtMsByVenue?.[venueId] ?? noExposureAtMs", "observedAtMs ?? noExposureAtMs", /carry_aborted_funding_per_venue_target_missing/],
+    ["executor", "const elapsedMs = hasExposure ? exitAtMs - exposureObservedAtMs : 0;", "const elapsedMs = exitAtMs - Number(current.position.created_at_ms);", /carry_aborted_capital_boundary_missing/],
+    ["executor", "Number(record.final_reconciliation_evidence.checked_at_ms) - activeBoundary.observed_at_ms", "Number(record.final_reconciliation_evidence.checked_at_ms) - Number(record.position.created_at_ms)", /carry_capital_observed_elapsed_missing/],
+    ["executor", "carry_account_asset_exposure_overlap", "carry_overlap_removed", /carry_account_asset_overlap_guard_missing/],
+  ];
+  for (const [key, before, after, failure] of cases) {
+    assert.ok(sources[key].includes(before), `missing exposure mutation source: ${key}:${before}`);
+    assert.throws(
+      () => checkCarryExecutionContract({ ...sources, [key]: sources[key].replace(before, after) }),
+      failure,
+    );
+  }
+});
+
+test("rejects legacy exposure recovery that manufactures a later exact boundary", () => {
+  const sagaFallback = mutateSection(
+    sources.executor,
+    "function resolveSagaExposureBoundary(",
+    "function resolvePositionExposureBoundary(",
+    (section) => section.replace("observedAtMs = createdAtMs", "observedAtMs = updatedAtMs"),
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, executor: sagaFallback }),
+    /carry_saga_legacy_conservative_boundary_missing/,
+  );
+  const positionFallback = mutateSection(
+    sources.executor,
+    "function resolvePositionExposureBoundary(",
+    "function rebaseAbortedFundingBoundary(",
+    (section) => section.replace("observedAtMs = createdAtMs", "observedAtMs = updatedAtMs"),
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, executor: positionFallback }),
+    /carry_position_legacy_conservative_boundary_missing/,
+  );
+});
+
+test("rejects a Carry Position rail that presents accruing value as realized", () => {
+  const cases = [
+    [
+      'positionStatus === "reconciled" && ledgerStatus === "finalized"',
+      'positionStatus === "reconciled" || ledgerStatus === "finalized"',
+      /carry_position_rail_finalized_predicate_missing/,
+    ],
+    [
+      'record.position.active_boundary_provenance === "authoritative_exchange_fill_time"\n      && Number.isFinite(realized)',
+      "Number.isFinite(realized)",
+      /carry_position_rail_authoritative_provenance_missing/,
+    ],
+    [
+      "record.value_boundary_authoritative === true",
+      "true",
+      /carry_position_rail_authoritative_value_gate_missing/,
+    ],
+    [
+      'return { label: "VALUE", value: "UNVERIFIED", tone: "warn" };',
+      'return { label: "VALUE", value: "FINALIZING", tone: "warn" };',
+      /carry_position_rail_finalized_unverified_fallback_missing/,
+    ],
+    [
+      'return { label: "VALUE", value: "FINALIZING", tone: "warn" };',
+      'return { label: "REAL NET", value: microUsd(realized), tone: "good" };',
+      /carry_position_rail_finalizing_state_missing/,
+    ],
+    [
+      'return { label: "VALUE", value: "ACCRUING" };',
+      'return { label: "REAL NET", value: microUsd(realized) };',
+      /carry_position_rail_accruing_state_missing/,
+    ],
+  ];
+  for (const [before, after, failure] of cases) {
+    assert.ok(sources.webCarryPositionRail.includes(before), `missing UI mutation source: ${before}`);
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        webCarryPositionRail: sources.webCarryPositionRail.replace(before, after),
+      }),
+      failure,
+    );
+  }
+});
+
+test("rejects terminal ledger truth without reconciled authoritative fill-time provenance", () => {
+  const cases = [
+    [
+      'record?.position.status !== "reconciled"',
+      "false",
+      /carry_terminal_ledger_reconciled_gate_missing/,
+    ],
+    [
+      'record.position.active_boundary_provenance !== "authoritative_exchange_fill_time"',
+      "false",
+      /carry_terminal_ledger_authoritative_provenance_gate_missing/,
+    ],
+    [
+      "record.value_boundary_authoritative !== true",
+      "false",
+      /carry_terminal_ledger_authoritative_value_gate_missing/,
+    ],
+    [
+      "Number.isSafeInteger(realized)",
+      "Number.isFinite(realized)",
+      /carry_terminal_ledger_finite_realized_gate_missing/,
+    ],
+  ];
+  for (const [before, after, failure] of cases) {
+    assert.ok(sources.webCarryBuilder.includes(before), `missing terminal ledger mutation source: ${before}`);
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        webCarryBuilder: sources.webCarryBuilder.replace(before, after),
+      }),
+      failure,
+    );
+  }
+  const builderWithoutUnverifiedFallback = mutateSection(
+    sources.webCarryBuilder,
+    'if (record?.position.status !== "reconciled"',
+    "  const realized = ledger.realized?.net_value_micro_usdc;",
+    (section) => section.replace(
+      'return { value: "UNVERIFIED", execution: "UNVERIFIED", tone: "bad", executionTone: "bad" } as const;',
+      'return { value: "$0 REAL", execution: "FEE $0 · SLIP $0", tone: "good", executionTone: "good" } as const;',
+    ),
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, webCarryBuilder: builderWithoutUnverifiedFallback }),
+    /carry_terminal_ledger_unverified_fallback_missing/,
+  );
+});
+
+test("rejects portfolio REAL value unless every finalized position is authoritative and complete", () => {
+  const cases = [
+    ["webCarryBuilder", "report.value_proof_status !== expectedStatus", "false", /carry_terminal_portfolio_status_gate_missing/],
+    ["webCarryBuilder", "authoritativeFinalized !== finalized", "authoritativeFinalized > finalized", /carry_terminal_portfolio_authoritative_count_gate_missing/],
+    ["webCarryBuilder", 'report.finalized_value_provenance !== "authoritative_exchange_fill_time"', "false", /carry_terminal_portfolio_authoritative_provenance_gate_missing/],
+    ["webCarryBuilder", "report.real_value_verified !== true", "false", /carry_terminal_portfolio_real_value_gate_missing/],
+    ["webCarryBuilder", "finalizedValues.complete !== true", "false", /carry_terminal_portfolio_complete_value_gate_missing/],
+    ["coreCarry", "finalized.filter((position) => position.value_boundary_authoritative === true)", "finalized.filter(() => true)", /carry_portfolio_authoritative_finalized_filter_missing/],
+    ["coreCarry", 'raw.exposure_boundary_provenance === "authoritative_exchange_fill_time"', "Boolean(raw.exposure_boundary_provenance)", /carry_portfolio_position_authoritative_provenance_missing/],
+    ["coreCarry", 'authoritativeFinalized.length === finalized.length ? "finalized" : "finalized_unverified"', 'true ? "finalized" : "finalized_unverified"', /carry_portfolio_finalized_status_provenance_missing/],
+    ["coreCarry", "real_value_verified: finalized.length > 0 && authoritativeFinalized.length === finalized.length", "real_value_verified: finalized.length > 0", /carry_portfolio_real_value_verification_output_missing/],
+    ["coreCarry", "complete: finalized.length > 0 && authoritativeFinalized.length === finalized.length", "complete: finalized.length > 0", /carry_portfolio_finalized_completeness_output_missing/],
+  ];
+  for (const [key, before, after, failure] of cases) {
+    assert.ok(sources[key].includes(before), `missing portfolio truth mutation source: ${key}:${before}`);
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        [key]: sources[key].replace(before, after),
+      }),
+      failure,
+    );
+  }
+});
+
+test("rejects public REAL value without an exact two-venue authoritative boundary", () => {
+  const boundaryCases = [
+    ["venueIds.length === 2", "venueIds.length > 0", /carry_public_value_two_venue_gate_missing/],
+    ["Object.keys(value).length === venueIds.length", "Object.keys(value).length > 0", /carry_public_value_map_completeness_missing/],
+    ["fundingBoundary[venueId] === positionBoundary[venueId]", "true", /carry_public_value_funding_boundary_binding_missing/],
+    ["realizedBoundary[venueId] === positionBoundary[venueId]", "true", /carry_public_value_realized_boundary_binding_missing/],
+  ];
+  for (const [before, after, failure] of boundaryCases) {
+    const positions = mutateSection(
+      sources.positions,
+      "export function authoritativeStoredCarryValueBoundary(",
+      "export async function runCarryMonitoringTick(",
+      (section) => section.replace(before, after),
+    );
+    assert.throws(() => checkCarryExecutionContract({ ...sources, positions }), failure);
+  }
+  const positions = mutateSection(
+    sources.positions,
+    "function publicRecord(",
+    "function opportunityAuthenticationMaterial(",
+    (section) => section.replace(
+      "value_boundary_authoritative: authoritativeStoredCarryValueBoundary(record)",
+      "value_boundary_authoritative: true",
+    ),
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, positions }),
+    /carry_public_value_authoritative_marker_computation_missing/,
+  );
+});
+
+test("rejects lifecycle REAL NET without authoritative exchange fill-time provenance", () => {
+  const cases = [
+    ["releaseMaterial", "value_boundary_authoritative: true", "value_boundary_authoritative: false", /carry_lifecycle_proof_authoritative_value_marker_missing/],
+    ["releaseMaterial", "proof.value_boundary_authoritative === true", "proof.value_boundary_authoritative !== false", /carry_lifecycle_proof_authoritative_value_assessment_missing/],
+    ["releaseMaterial", "proof.exposure_boundary_provenance === AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE", "Boolean(proof.exposure_boundary_provenance)", /carry_lifecycle_proof_authoritative_provenance_assessment_missing/],
+    ["releaseMaterial", "provenanceByVenue[venueId] === AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE", "Boolean(provenanceByVenue[venueId])", /carry_release_authoritative_venue_provenance_missing/],
+    ["releaseMaterial", "proof?.fill_times_authoritative === true", "proof?.fill_times_authoritative !== false", /carry_release_authoritative_fill_time_marker_missing/],
+    ["releaseMaterial", "Math.min(...fillTimes) === firstFillAtMs", "Math.max(...fillTimes) === firstFillAtMs", /carry_release_authoritative_fill_time_minimum_missing/],
+    ["webPrivatePrimeReadiness", "pairedLifecycle.value_boundary_authoritative === true", "pairedLifecycle.value_boundary_authoritative !== false", /carry_private_prime_ui_authoritative_value_gate_missing/],
+    ["webPrivatePrimeReadiness", 'pairedLifecycle.exposure_boundary_provenance === "authoritative_exchange_fill_time"', "Boolean(pairedLifecycle.exposure_boundary_provenance)", /carry_private_prime_ui_authoritative_provenance_gate_missing/],
+  ];
+  for (const [key, before, after, failure] of cases) {
+    assert.ok(sources[key].includes(before), `missing lifecycle provenance mutation source: ${key}:${before}`);
+    assert.throws(
+      () => checkCarryExecutionContract({ ...sources, [key]: sources[key].replace(before, after) }),
+      failure,
+    );
+  }
+  const boundaryCases = [
+    ["venueIds.length === 2", "venueIds.length > 0", /carry_lifecycle_exposure_two_venue_gate_missing/],
+    ["Object.keys(value).length === venueIds.length", "Object.keys(value).length > 0", /carry_lifecycle_exposure_map_completeness_missing/],
+    ["Math.min(...venueIds.map((venueId) => boundaryByVenue[venueId]))", "Math.max(...venueIds.map((venueId) => boundaryByVenue[venueId]))", /carry_lifecycle_exposure_global_minimum_binding_missing/],
+  ];
+  for (const [before, after, failure] of boundaryCases) {
+    const releaseMaterial = mutateSection(
+      sources.releaseMaterial,
+      "function authoritativeLifecycleExposureBoundary(",
+      "export function carryLifecycleProofKey(",
+      (section) => section.replace(before, after),
+    );
+    assert.throws(() => checkCarryExecutionContract({ ...sources, releaseMaterial }), failure);
+  }
+  const releaseMaterial = mutateSection(
+    sources.releaseMaterial,
+    "function authoritativeReleaseFillTiming(",
+    "async function materialLegs(",
+    (section) => section.replace("Math.max(...fillTimes) === lastFillAtMs", "true"),
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, releaseMaterial }),
+    /carry_release_authoritative_fill_time_maximum_missing/,
+  );
+});
+
+test("rejects execution boundaries not bound to authoritative venue fill timestamps", () => {
+  const cases = [
+    ['hyperliquid: "hyperliquid_user_fills_time_v1"', 'hyperliquid: "generic_worker_clock"', /carry_hyperliquid_fill_time_source_missing/],
+    ["boundary?.authoritative === true", "Boolean(boundary)", /carry_authoritative_boundary_event_gate_missing/],
+    ["proof?.target_fill_set_complete !== true", "false", /carry_receipt_target_fill_set_complete_missing/],
+    ["proof?.fill_times_authoritative !== true", "false", /carry_receipt_authoritative_fill_time_marker_missing/],
+    ["proof?.fill_time_provenance !== expectedProvenance", "false", /carry_receipt_authoritative_fill_time_source_missing/],
+    ["Math.min(...fillTimes) !== firstFillAtMs", "Math.max(...fillTimes) !== firstFillAtMs", /carry_receipt_first_fill_minimum_missing/],
+    ["...exposureBoundaryEvent(exposureBoundary)", "...{}", /carry_receipt_boundary_event_binding_missing/],
+    ["first_exposure_observed_at_ms_by_venue: material.exposure_boundary.observed_at_ms_by_venue", "first_exposure_observed_at_ms_by_venue: {}", /carry_first_observed_exposure_by_venue_binding_missing/],
+  ];
+  for (const [before, after, failure] of cases) {
+    assert.ok(sources.executor.includes(before), `missing receipt boundary mutation source: ${before}`);
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        executor: sources.executor.replace(before, after),
+      }),
+      failure,
+    );
+  }
+});
+
+test("rejects non-atomic or prematurely released Carry exposure reservations", () => {
+  const claimWithoutLock = mutateSection(
+    sources.workerState,
+    "async claimCarryExposureReservations(",
+    "async releaseCarryExposureReservations(",
+    (section) => section.replace(
+      'await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [item.reservation_key])',
+      'await client.query("SELECT 1", [item.reservation_key])',
+    ),
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, workerState: claimWithoutLock }),
+    /carry_exposure_claim_atomic_lock_missing/,
+  );
+  const releaseWithoutLock = mutateSection(
+    sources.workerState,
+    "async releaseCarryExposureReservations(",
+    "async releaseCarryExposureReservationsBeforeSubmit(",
+    (section) => section.replace(
+      'await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [key])',
+      'await client.query("SELECT 1", [key])',
+    ),
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, workerState: releaseWithoutLock }),
+    /carry_exposure_release_atomic_lock_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      executor: sources.executor.replace(
+        "const exposureReservation = carryExposureReservation(reservationRecord, legs.legs);",
+        "const exposureReservation = carryExposureReservation(reservationRecord);",
+      ),
+    }),
+    /carry_exposure_actual_leg_reservation_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      executor: sources.executor.replace(
+        "[...new Set(Object.values(accountsByVenue).filter(Boolean))].sort()",
+        "Object.values(accountsByVenue).filter(Boolean).sort()",
+      ),
+    }),
+    /carry_exposure_shared_account_deduplication_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      executor: sources.executor.replace(
+        "const reservationClaim = await state.claimCarryExposureReservations(",
+        'await sagaEvent(state, sagaId, "submission_started", {}, now());\n  const reservationClaim = await state.claimCarryExposureReservations(',
+      ),
+    }),
+    /carry_exposure_claim_before_submission_missing/,
+  );
+  const cases = [
+    [
+      "workerState",
+      "evidence.open_order_count !== 0",
+      "false",
+      /carry_exposure_zero_order_gate_missing/,
+    ],
+    [
+      "workerState",
+      "item.account_commitment === expected.account_commitments?.[venueId]",
+      "true",
+      /carry_exposure_account_release_binding_missing/,
+    ],
+    [
+      "workerState",
+      "item.flat_zero_orders === true",
+      "true",
+      /carry_exposure_venue_flat_release_missing/,
+    ],
+    [
+      "executor",
+      "state.claimCarryExposureReservations(",
+      "state.claimUnboundCarryExposure(",
+      /carry_exposure_entry_claim_missing/,
+    ],
+    [
+      "executor",
+      "state.releaseCarryExposureReservations(",
+      "state.releaseUnverifiedCarryExposureReservations(",
+      /carry_exposure_release_call_missing/,
+    ],
+  ];
+  for (const [key, before, after, failure] of cases) {
+    assert.ok(sources[key].includes(before), `missing reservation mutation source: ${key}:${before}`);
+    assert.throws(
+      () => checkCarryExecutionContract({ ...sources, [key]: sources[key].replaceAll(before, after) }),
+      failure,
+    );
+  }
+});
+
+test("rejects crash recovery that releases Carry exposure without durable no-submit proof", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      workerState: sources.workerState.replace(
+        'saga.status === "failed_no_submit"',
+        'saga.status === "reconciled"',
+      ),
+    }),
+    /carry_exposure_pre_submit_status_gate_missing/,
+  );
+  const postgresWithoutSagaLock = mutateOccurrenceSection(
+    sources.workerState,
+    "async releaseCarryExposureReservationsBeforeSubmit(",
+    "async putExecutionAttempt(",
+    0,
+    (section) => section.replace(
+      "SELECT saga_json FROM worker_multi_leg_sagas WHERE saga_id=$1 FOR UPDATE",
+      "SELECT saga_json FROM worker_multi_leg_sagas WHERE saga_id=$1",
+    ),
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, workerState: postgresWithoutSagaLock }),
+    /carry_exposure_pre_submit_saga_lock_missing/,
+  );
+  const fileWithoutDurableProof = mutateOccurrenceSection(
+    sources.workerState,
+    "async releaseCarryExposureReservationsBeforeSubmit(",
+    "async putExecutionAttempt(",
+    1,
+    (section) => section.replace("exactNoSubmitReservationRecord(", "Boolean("),
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, workerState: fileWithoutDurableProof }),
+    /carry_exposure_file_pre_submit_durable_proof_missing/,
+  );
+  const restartWithoutRelease = mutateSection(
+    sources.executor,
+    "export async function auditCarryPositionsAfterRestart({",
+    "async function completeReconciledCarryEntry({",
+    (section) => section.replace(
+      "const released = await releaseCarryExposureReservationBeforeSubmit({",
+      "const released = await Promise.resolve({ ok: true, bypassed: true }); void ({",
+    ),
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, executor: restartWithoutRelease }),
+    /carry_exposure_restart_pre_submit_release_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      executor: sources.executor.replace(
+        "state.releaseCarryExposureReservationsBeforeSubmit(",
+        "state.releaseUnverifiedCarryExposureReservationsBeforeSubmit(",
+      ),
+    }),
+    /carry_exposure_pre_submit_release_call_missing/,
+  );
+});
+
+test("rejects Carry reservation claims that ignore reservationless legacy exposure", () => {
+  const postgresWithoutGlobalLock = mutateOccurrenceSection(
+    sources.workerState,
+    "async claimCarryExposureReservations(",
+    "async releaseCarryExposureReservations(",
+    0,
+    (section) => section.replace('"carry:exposure:claim:v2"', '"carry:exposure:claim:local"'),
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, workerState: postgresWithoutGlobalLock }),
+    /carry_exposure_claim_global_lock_missing/,
+  );
+  const postgresWithoutLegacyAssessment = mutateOccurrenceSection(
+    sources.workerState,
+    "async claimCarryExposureReservations(",
+    "async releaseCarryExposureReservations(",
+    0,
+    (section) => section.replace("assessCarryExposureClaim({", "assessOnlyReservationRows({"),
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, workerState: postgresWithoutLegacyAssessment }),
+    /carry_exposure_claim_persisted_overlap_assessment_missing/,
+  );
+  const fileWithoutLegacyAssessment = mutateOccurrenceSection(
+    sources.workerState,
+    "async claimCarryExposureReservations(",
+    "async releaseCarryExposureReservations(",
+    1,
+    (section) => section.replace("assessCarryExposureClaim({", "assessOnlyReservationRows({"),
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, workerState: fileWithoutLegacyAssessment }),
+    /carry_exposure_file_claim_persisted_overlap_assessment_missing/,
+  );
+  const cases = [
+    [
+      'if (status === "draft" || status === "reconciled") continue;',
+      'if (status === "draft" || status === "reconciled" || status === "active") continue;',
+      /carry_exposure_legacy_terminal_skip_scope_missing/,
+    ],
+    [
+      'reason: "carry_legacy_exposure_binding_unverifiable"',
+      'reason: "carry_legacy_exposure_ignored"',
+      /carry_exposure_legacy_malformed_denial_missing/,
+      true,
+    ],
+    [
+      "Object.values(exposureByAsset).every((value) => value === 0)",
+      "Object.values(exposureByAsset).some((value) => value === 0)",
+      /carry_exposure_legacy_zero_asset_exposure_gate_missing/,
+    ],
+    [
+      "bindingsCommitment !== expectedBindingsCommitment",
+      "false",
+      /carry_exposure_claim_commitment_comparison_missing/,
+    ],
+    [
+      "if (left.asset !== right.asset) return false;",
+      "if (false) return false;",
+      /carry_exposure_legacy_asset_overlap_scope_missing/,
+    ],
+    [
+      "if (left.owner_commitment === right.owner_commitment) return true;",
+      "if (false) return true;",
+      /carry_exposure_legacy_owner_overlap_missing/,
+    ],
+    [
+      "left.account_commitments.some((account) => rightAccounts.has(account))",
+      "false",
+      /carry_exposure_legacy_account_overlap_missing/,
+    ],
+  ];
+  for (const [before, after, failure, replaceAll = false] of cases) {
+    assert.ok(sources.workerState.includes(before), `missing legacy overlap mutation source: ${before}`);
+    const workerState = replaceAll
+      ? sources.workerState.replaceAll(before, after)
+      : sources.workerState.replace(before, after);
+    assert.throws(
+      () => checkCarryExecutionContract({ ...sources, workerState }),
+      failure,
+    );
+  }
+});
+
+test("rejects funding readers that omit malformed settlement rows", () => {
+  const positionsWithoutHistoryShape = mutateSection(
+    sources.positions,
+    "async function readVenueFundingSettlements({",
+    "function compareFundingEntries(",
+    (section) => section.replace(
+      'if (!Array.isArray(rows)) throw new Error("funding_settlement_history_invalid")',
+      "if (rows == null) return { ok: true, entries: [] }",
+    ),
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, positions: positionsWithoutHistoryShape }),
+    /carry_funding_history_shape_gate_missing/,
+  );
+  const positionsWithoutFatalRow = mutateSection(
+    sources.positions,
+    "async function readVenueFundingSettlements({",
+    "function compareFundingEntries(",
+    (section) => section.replace(
+      'throw new Error("funding_settlement_evidence_invalid")',
+      "continue",
+    ),
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, positions: positionsWithoutFatalRow }),
+    /carry_funding_row_fatal_gate_missing/,
+  );
+  const hyperliquidWithoutFatalRow = mutateSection(
+    sources.hyperliquid,
+    "export async function readHyperliquidFundingSettlements({",
+    "export async function createHyperliquidAccountStateStream({",
+    (section) => section.replace(
+      'throw new HyperliquidExecutionError("hyperliquid funding history row is invalid"',
+      'continue; void new HyperliquidExecutionError("ignored malformed Hyperliquid funding row"',
+    ),
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, hyperliquid: hyperliquidWithoutFatalRow }),
+    /hyperliquid_funding_target_row_fatal_gate_missing/,
+  );
+  const lighterWithoutFatalRow = mutateSection(
+    sources.lighter,
+    "export async function readLighterFundingSettlements({",
+    "function normalizeOrder(",
+    (section) => section.replace(
+      'throw new LighterExecutionError("lighter funding history row is invalid"',
+      'return null; void new LighterExecutionError("ignored malformed Lighter funding row"',
+    ),
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, lighter: lighterWithoutFatalRow }),
+    /lighter_funding_row_fatal_gate_missing/,
+  );
+  for (const [before, after, failure] of [
+    ["if (!Array.isArray(body)", "if (body == null", /hyperliquid_funding_history_shape_gate_missing/],
+    ["distinctTimeCount < HYPERLIQUID_FUNDING_PAGE_LIMIT", "true", /hyperliquid_funding_pagination_completeness_missing/],
+    ["if (nextCursor <= cursor)", "if (false)", /hyperliquid_funding_pagination_progress_gate_missing/],
+  ]) {
+    const hyperliquid = mutateSection(
+      sources.hyperliquid,
+      "async function readCompleteHyperliquidFundingHistory({",
+      "function dedupeHyperliquidFundingSettlements(",
+      (section) => section.replace(before, after),
+    );
+    assert.throws(() => checkCarryExecutionContract({ ...sources, hyperliquid }), failure);
+  }
+  for (const [before, after, failure] of [
+    ["returnedAccountIndex !== credential.account_index", "false", /lighter_funding_history_account_binding_missing/],
+    ['row.type !== "funding"', "false", /lighter_funding_row_type_binding_missing/],
+    ["nonnegativeIntegerOrNull(row.market_id ?? row.market_index) !== returnedMarketId", "false", /lighter_funding_row_market_binding_missing/],
+  ]) {
+    const lighter = mutateSection(
+      sources.lighter,
+      "export async function readLighterFundingSettlements({",
+      "function normalizeOrder(",
+      (section) => section.replace(before, after),
+    );
+    assert.throws(() => checkCarryExecutionContract({ ...sources, lighter }), failure);
+  }
+  const lighterRunner = mutateSection(
+    sources.lighterRunner,
+    'if action == "funding":',
+    '        fail("unsupported lighter runner action")',
+    (section) => section.replace('if row.get("type") != "funding":', "if False:"),
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, lighterRunner }),
+    /lighter_runner_funding_row_type_gate_missing/,
   );
 });
 
@@ -2804,7 +3505,7 @@ test("rejects venue reconciliation that drifts from the exact original order", (
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
-      aster: sources.aster.replace("clientOrderId: reconciliationClientOrderId", "clientOrderId"),
+      aster: sources.aster.replace("targetClientOrderId: reconciliationClientOrderId", "targetClientOrderId: clientOrderId"),
       lighter: sources.lighter.replace("clientOrderIndex: reconciliationClientOrderIndex", "clientOrderIndex"),
     }),
     /aster_reconciliation_target_drift_guard_missing|lighter_reconciliation_target_drift_guard_missing/,
@@ -2983,13 +3684,109 @@ test("rejects five-venue shadow evidence without exact sample commitments", () =
 });
 
 test("rejects core venue freshness manufactured from the worker clock", () => {
+  const mutated = mutateSection(
+    sources.shadow,
+    "export function parseHyperliquidShadow({",
+    "export function parseLighterShadow({",
+    (section) => section.replace("market: contextSourceAtMs", "market: nowMs"),
+  );
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
-      shadow: sources.shadow.replace("market: bookObservedAtMs", "market: nowMs"),
+      shadow: mutated,
     }),
-    /carry_shadow_market_worker_clock_fallback_forbidden/,
+    /carry_shadow_market_worker_clock_fallback_forbidden|hyperliquid_market_context_time_missing/,
   );
+});
+
+test("rejects Hyperliquid freshness laundering across context and L2 sources", () => {
+  const cases = [
+    [
+      "registry",
+      'source_schema: "hyperliquid_metaAndAssetCtxs_l2Book_v2"',
+      'source_schema: "hyperliquid_metaAndAssetCtxs_l2Book_v1"',
+      /hyperliquid_shadow_schema_v2_missing/,
+    ],
+    [
+      "shadow",
+      "const contextObservation = await jsonObservedRequest(",
+      "const contextObservation = await jsonRequest(",
+      /hyperliquid_context_observed_request_missing/,
+    ],
+    [
+      "shadow",
+      'body: JSON.stringify({ type: "metaAndAssetCtxs" })',
+      'body: JSON.stringify({ type: "l2Book" })',
+      /hyperliquid_context_observed_meta_request_missing/,
+    ],
+    [
+      "shadow",
+      "const body = contextObservation.body;",
+      "const body = contextObservation;",
+      /hyperliquid_context_observed_body_binding_missing/,
+    ],
+    [
+      "shadow",
+      "context_observed_at_ms: contextObservation.observed_at_ms",
+      "context_observed_at_ms: observedAtMs",
+      /hyperliquid_context_observed_time_binding_missing/,
+    ],
+    [
+      "shadow",
+      "market: contextSourceAtMs",
+      "market: bookObservedAtMs",
+      /hyperliquid_market_context_time_missing|hyperliquid_market_book_time_present/,
+    ],
+    [
+      "shadow",
+      "funding: contextSourceAtMs",
+      "funding: bookObservedAtMs",
+      /hyperliquid_funding_context_time_missing|hyperliquid_funding_book_time_present/,
+    ],
+    [
+      "shadow",
+      "orderbook: bookObservedAtMs",
+      "orderbook: contextSourceAtMs",
+      /hyperliquid_orderbook_book_time_missing/,
+    ],
+    [
+      "shadow",
+      "contextSourceAtMs,\n        bookObservedAtMs,",
+      "bookObservedAtMs,\n        bookObservedAtMs,",
+      /hyperliquid_complete_source_inputs_missing/,
+    ],
+    [
+      "shadow",
+      "return Math.min(...values);",
+      "return Math.max(...values);",
+      /carry_shadow_oldest_complete_source_missing/,
+    ],
+    [
+      "shadow",
+      "values.every((value) => Number.isSafeInteger(value) && value > 0)",
+      "values.some((value) => Number.isSafeInteger(value) && value > 0)",
+      /carry_shadow_complete_source_validation_missing/,
+    ],
+    [
+      "shadowVerifier",
+      "else if (currentTimestamp === previousTimestamp)",
+      "else if (currentTimestamp > previousTimestamp)",
+      /carry_shadow_source_equality_reuse_gate_missing/,
+    ],
+    [
+      "shadowVerifier",
+      "shadow_soak_source_observation_reused:${sampleIndex}:${identity}:${source}",
+      "shadow_soak_source_observation_reused:${sampleIndex}",
+      /carry_shadow_source_specific_reuse_evidence_missing/,
+    ],
+  ];
+  for (const [key, before, after, failure] of cases) {
+    assert.ok(sources[key].includes(before), `missing freshness mutation source: ${key}:${before}`);
+    assert.throws(
+      () => checkCarryExecutionContract({ ...sources, [key]: sources[key].replace(before, after) }),
+      failure,
+    );
+  }
 });
 
 test("rejects Lighter shadow data without provider-timestamped read-only streams", () => {

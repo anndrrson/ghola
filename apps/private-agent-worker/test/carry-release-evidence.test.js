@@ -187,6 +187,53 @@ test("derives release material only from a completed durable lifecycle", async (
   assert.match(result.material.worker_material_commitment, /^carry:release:material:[0-9a-f]{64}$/);
 });
 
+test("release accepts complete terminal partial-fill evidence without requiring full fill", async () => {
+  const fixture = await stateFixture();
+  for (const [workOrder, stored] of Object.entries(fixture.receipts)) {
+    if (workOrder.includes(":entry:")) stored.receipt.final_proof.final_fill_proven = false;
+  }
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.ok, true, result.error);
+});
+
+test("release rejects terminal-looking fills when the target fill set is incomplete", async () => {
+  const fixture = await stateFixture();
+  fixture.receipts["work:carry:entry:aster"].receipt.final_proof.target_fill_set_complete = false;
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "carry_release_entry_terminal_proof_missing:aster");
+});
+
+test("legacy conservative exposure provenance cannot produce a REAL lifecycle proof", async () => {
+  const fixture = await stateFixture();
+  fixture.record.position.active_boundary_provenance = "legacy_conservative_position_creation";
+  fixture.record.position.active_boundary_provenance_by_venue = {
+    hyperliquid: "legacy_conservative_position_creation",
+    aster: "legacy_conservative_position_creation",
+  };
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "carry_release_authoritative_exposure_boundary_unproven");
+});
+
 test("fails closed when settlement conversion or slippage-reversal evidence is missing or tampered", async (t) => {
   const mutations = [
     ["missing durable components", (record) => { delete record.value_evidence.realized_economics.pnl_components; }],
@@ -317,6 +364,15 @@ test("records a durable owner- and image-bound paired lifecycle proof", async ()
   assert.match(recorded.proof.creation_input_evidence_commitment, /^carry:creation-inputs:[0-9a-f]{64}$/);
   assert.match(recorded.proof.settlement_evidence_commitment, /^carry:settlement:evidence:[0-9a-f]{64}$/);
   assert.equal(recorded.proof.ambiguity_retry_count, 0);
+  assert.equal(recorded.proof.first_exposure_observed_at_ms, 1_800_000_000_700);
+  assert.deepEqual(recorded.proof.first_exposure_observed_at_ms_by_venue, {
+    hyperliquid: 1_800_000_000_700,
+    aster: 1_800_000_000_800,
+  });
+  assert.deepEqual(recorded.proof.exposure_boundary_provenance_by_venue, {
+    hyperliquid: "authoritative_exchange_fill_time",
+    aster: "authoritative_exchange_fill_time",
+  });
   assert.deepEqual(recorded.proof.value_attribution, {
     modeled: {
       gross_funding_micro_usdc: 400,
@@ -1582,6 +1638,16 @@ async function stateFixture() {
       opportunity_evidence_commitment: opportunityProvenance.evidence_commitment,
       risk_mandate: riskMandate(),
       created_at_ms: 1_800_000_000_000,
+      active_observed_at_ms: 1_800_000_000_700,
+      active_boundary_provenance: "authoritative_exchange_fill_time",
+      active_observed_at_ms_by_venue: {
+        hyperliquid: 1_800_000_000_700,
+        aster: 1_800_000_000_800,
+      },
+      active_boundary_provenance_by_venue: {
+        hyperliquid: "authoritative_exchange_fill_time",
+        aster: "authoritative_exchange_fill_time",
+      },
       status: "reconciled",
     },
     opportunity: structuredClone(opportunityMaterial),
@@ -1610,6 +1676,18 @@ async function stateFixture() {
       costs_complete: true,
       entry: releaseExecutionValueEvidence(entrySaga),
       exit: releaseExecutionValueEvidence(exitSaga),
+      funding: {
+        exposure_boundary_observed_at_ms: 1_800_000_000_700,
+        exposure_boundary_provenance: "authoritative_exchange_fill_time",
+        exposure_boundary_observed_at_ms_by_venue: {
+          hyperliquid: 1_800_000_000_700,
+          aster: 1_800_000_000_800,
+        },
+        exposure_boundary_provenance_by_venue: {
+          hyperliquid: "authoritative_exchange_fill_time",
+          aster: "authoritative_exchange_fill_time",
+        },
+      },
       realized_economics: {
         status: "complete",
         contract_pnl_micro_usdc: 10,
@@ -1619,6 +1697,16 @@ async function stateFixture() {
         capital_cost_micro_usdc: 1,
         evidence_commitment: settlementEvidenceCommitment,
         checked_at_ms: settlementValuedAtMs,
+        active_observed_at_ms: 1_800_000_000_700,
+        exposure_boundary_provenance: "authoritative_exchange_fill_time",
+        active_observed_at_ms_by_venue: {
+          hyperliquid: 1_800_000_000_700,
+          aster: 1_800_000_000_800,
+        },
+        exposure_boundary_provenance_by_venue: {
+          hyperliquid: "authoritative_exchange_fill_time",
+          aster: "authoritative_exchange_fill_time",
+        },
       },
     },
     value_ledger: {
@@ -1649,25 +1737,42 @@ async function stateFixture() {
   const receipts = Object.fromEntries([
     ...entrySaga.execution_context.legs,
     ...exitSaga.execution_context.legs,
-  ].map((context, index) => [
+  ].map((context, index) => {
+    const venueId = context.work_order_commitment.endsWith(":aster") ? "aster" : "hyperliquid";
+    const firstFillAtMs = releaseFillTiming(context.work_order_commitment);
+    return [
     context.work_order_commitment,
     {
       receipt: {
-        account_commitment: context.work_order_commitment.endsWith(":aster")
+        account_commitment: venueId === "aster"
           ? "account:aster:release:0001"
           : "account:hyperliquid:release:0001",
         provider_ref_commitment: `provider:carry:release:${index}`,
         result_commitment: `result:carry:release:${index}`,
+        fills: [{
+          size: "0.11",
+          price: releaseFillPrice(context.work_order_commitment),
+          executed_at_ms: firstFillAtMs,
+        }],
         final_proof: {
           broadcast_performed: true,
           target_client_order_matched: true,
           final_venue_execution_proven: true,
+          final_fill_proven: true,
+          target_fill_set_complete: true,
           filled_base_size: "0.11",
           average_fill_price: releaseFillPrice(context.work_order_commitment),
+          first_fill_at_ms: firstFillAtMs,
+          last_fill_at_ms: firstFillAtMs,
+          fill_times_authoritative: true,
+          fill_time_provenance: venueId === "aster"
+            ? "aster_fapi_v3_user_trades_time_v1"
+            : "hyperliquid_user_fills_time_v1",
         },
       },
     },
-  ]));
+  ];
+  }));
   const qualification = qualificationEvidence();
   const attempts = Object.fromEntries([
     ...entrySaga.execution_context.legs,
@@ -2026,6 +2131,12 @@ function saga(phase, createdAt, updatedAt, reduceOnly) {
     leg_id: `leg:carry:${phase}:${venue_id}`,
     venue_id,
     side: phase === "entry" ? index === 0 ? "buy" : "sell" : index === 0 ? "sell" : "buy",
+    ...(phase === "entry" ? {
+      first_exposure_observed_at_ms: venue_id === "hyperliquid"
+        ? 1_800_000_000_700
+        : 1_800_000_000_800,
+      exposure_boundary_provenance: "authoritative_exchange_fill_time",
+    } : {}),
   }));
   const contexts = legs.map((leg) => ({
     leg_id: leg.leg_id,
@@ -2047,6 +2158,13 @@ function releaseFillPrice(workOrderCommitment) {
   if (workOrderCommitment === "work:carry:exit:hyperliquid") return "10000.00005455";
   if (workOrderCommitment === "work:carry:exit:aster") return "9999.99995455";
   return "10000";
+}
+
+function releaseFillTiming(workOrderCommitment) {
+  if (workOrderCommitment === "work:carry:entry:hyperliquid") return 1_800_000_000_700;
+  if (workOrderCommitment === "work:carry:entry:aster") return 1_800_000_000_800;
+  if (workOrderCommitment === "work:carry:exit:hyperliquid") return 1_800_000_003_500;
+  return 1_800_000_003_600;
 }
 
 function releaseExecutionValueEvidence(sagaValue) {
@@ -2093,6 +2211,7 @@ function qualificationEvidence() {
       live_order_broadcast: true,
       target_client_order_matched: true,
       final_venue_execution_proven: true,
+      target_fill_set_complete: true,
       filled_base_size: "0.11",
       evidence_commitment: "qualification:entry:aster:0001",
     },
@@ -2102,6 +2221,7 @@ function qualificationEvidence() {
       reduce_only: true,
       exact_base_quantity: true,
       final_venue_execution_proven: true,
+      target_fill_set_complete: true,
       account_state_checked: true,
       gross_exposure_micro_usdc: 0,
       open_order_count: 0,

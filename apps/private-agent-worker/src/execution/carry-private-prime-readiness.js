@@ -146,6 +146,7 @@ function verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs }) {
   const venueIds = Array.isArray(proof?.venue_ids) ? proof.venue_ids : [];
   const registryVenueIds = new Set(Array.isArray(readiness?.registry_venue_ids) ? readiness.registry_venue_ids : []);
   const valueAttribution = safeLifecycleValueAttribution(proof?.value_attribution);
+  const exposureBoundaryVerified = authoritativeLifecycleExposureBoundary(proof, venueIds);
   const verified = lifecycleProof?.ok === true
     && assessedLifecycle.ok === true
     && proof?.version === 1
@@ -165,6 +166,9 @@ function verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs }) {
     && proof?.supervised_monitoring_proven === true
     && proof?.final_flat_zero_orders === true
     && proof?.value_ledger_finalized === true
+    && proof?.value_boundary_authoritative === true
+    && proof?.exposure_boundary_provenance === "authoritative_exchange_fill_time"
+    && exposureBoundaryVerified
     && proof?.ambiguity_retry_count === 0
     && proof?.owner_only_funding === true
     && proof?.owner_only_transfers === true
@@ -188,6 +192,15 @@ function verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs }) {
     supervised_monitoring_proven: verified,
     final_flat_zero_orders: verified,
     value_ledger_finalized: verified,
+    value_boundary_authoritative: verified,
+    exposure_boundary_provenance: verified ? proof.exposure_boundary_provenance : null,
+    first_exposure_observed_at_ms: verified ? proof.first_exposure_observed_at_ms : null,
+    first_exposure_observed_at_ms_by_venue: verified
+      ? Object.freeze({ ...proof.first_exposure_observed_at_ms_by_venue })
+      : Object.freeze({}),
+    exposure_boundary_provenance_by_venue: verified
+      ? Object.freeze({ ...proof.exposure_boundary_provenance_by_venue })
+      : Object.freeze({}),
     realized_net_value_micro_usdc: verified ? proof.realized_net_value_micro_usdc : null,
     value_attribution: verified ? valueAttribution : null,
     ambiguity_retry_count: verified ? 0 : null,
@@ -199,6 +212,26 @@ function verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs }) {
     worker_material_commitment: verified ? proof.worker_material_commitment : null,
     evidence_commitment: verified ? proof.evidence_commitment : null,
   });
+}
+
+function authoritativeLifecycleExposureBoundary(proof, venueIds) {
+  const boundaries = proof?.first_exposure_observed_at_ms_by_venue;
+  const provenances = proof?.exposure_boundary_provenance_by_venue;
+  const exactKeys = (value) => value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Object.keys(value).length === venueIds.length
+    && venueIds.every((venueId) => Object.hasOwn(value, venueId));
+  return venueIds.length === 2
+    && new Set(venueIds).size === 2
+    && exactKeys(boundaries)
+    && exactKeys(provenances)
+    && venueIds.every((venueId) => Number.isSafeInteger(boundaries[venueId])
+      && boundaries[venueId] > 0
+      && provenances[venueId] === "authoritative_exchange_fill_time")
+    && Number.isSafeInteger(proof?.first_exposure_observed_at_ms)
+    && proof.first_exposure_observed_at_ms
+      === Math.min(...venueIds.map((venueId) => boundaries[venueId]));
 }
 
 function safeLifecycleValueAttribution(value) {

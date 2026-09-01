@@ -39,7 +39,7 @@ export async function verifyTurnkeyOtpInstall(root = process.cwd()) {
 
   const require = createRequire(import.meta.url);
   const otpRuntime = require(files[0]);
-  for (const [input, expected] of [[" sszffp ", "SSZFFP"], ["8v6fk3", "8V6FK3"]]) {
+  for (const [input, expected] of [[" a1b2c3 ", "A1B2C3"], ["z9y8x7", "Z9Y8X7"]]) {
     if (otpRuntime.normalizeOtpCode(input) !== expected) {
       throw new Error("installed Turnkey OTP runtime does not normalize pasted codes");
     }

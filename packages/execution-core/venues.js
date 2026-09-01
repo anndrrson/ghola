@@ -70,7 +70,7 @@ const specs = [
   venue("hyperliquid", "Hyperliquid", "core_perp", "proven", "enabled", ["perp"], {
     perp_shadow: adapter("hyperliquid_shadow_v1", "enabled", {
       read_only: true,
-      source_schema: "hyperliquid_metaAndAssetCtxs_l2Book_v1",
+      source_schema: "hyperliquid_metaAndAssetCtxs_l2Book_v2",
       trading_api_available: true,
       margin_model: "max_leverage_with_tiered_maintenance_margin",
       liquidation_model: "account_equity_below_tiered_maintenance_margin",

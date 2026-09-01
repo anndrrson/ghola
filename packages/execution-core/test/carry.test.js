@@ -445,10 +445,33 @@ function activePositionForObservation() {
       long_filled_micro_usdc: 10_000_000_000,
       short_filled_micro_usdc: 10_000_000_000,
       hedge_error_micro_usdc: 0,
+      first_exposure_at_ms: NOW + 1,
     }),
     now_ms: NOW + 2,
   }).position;
 }
+
+test("authoritative entry exposure requires explicit per-venue exchange fill boundaries", () => {
+  let current = position();
+  current = advanceCarryPosition({
+    position: current,
+    event: event(1, "preflight_passed", { opportunity_eligible: true, all_venues_ready: true }),
+    now_ms: NOW + 1,
+  }).position;
+  const result = advanceCarryPosition({
+    position: current,
+    event: event(2, "entry_reconciled", {
+      long_filled_micro_usdc: 10_000_000_000,
+      short_filled_micro_usdc: 10_000_000_000,
+      hedge_error_micro_usdc: 0,
+      first_exposure_observed_at_ms: NOW + 2,
+      exposure_boundary_provenance: "authoritative_exchange_fill_time",
+    }),
+    now_ms: NOW + 3,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "carry_exposure_boundary_venue_binding_invalid");
+});
 
 test("normalizes CashflowValuationV1 and rounds signed values conservatively", () => {
   const valuation = normalizeCashflowValuation(cashflowValuation("USDT", {
@@ -1388,6 +1411,7 @@ test("two confirmed carry flips trigger a deterministic reduce-only exit", () =>
       long_filled_micro_usdc: 10_000_000_000,
       short_filled_micro_usdc: 10_000_000_000,
       hedge_error_micro_usdc: 0,
+      first_exposure_at_ms: NOW + 1,
     }),
     now_ms: NOW + 2,
   }).position;
@@ -1526,6 +1550,7 @@ test("a qualified migration closes the old route first and persists an owner-sig
       long_filled_micro_usdc: 10_000_000_000,
       short_filled_micro_usdc: 10_000_000_000,
       hedge_error_micro_usdc: 0,
+      first_exposure_at_ms: NOW + 1,
     }),
     now_ms: NOW + 2,
   }).position;
@@ -1578,6 +1603,7 @@ test("one margin runway breach triggers an immediate reduce-only exit", () => {
       long_filled_micro_usdc: 10_000_000_000,
       short_filled_micro_usdc: 10_000_000_000,
       hedge_error_micro_usdc: 0,
+      first_exposure_at_ms: NOW + 1,
     }),
     now_ms: NOW + 2,
   }).position;
@@ -1748,6 +1774,7 @@ test("only a restart-frozen entry can complete from durable reconciliation", () 
       long_filled_micro_usdc: 10_000_000_000,
       short_filled_micro_usdc: 10_000_000_000,
       hedge_error_micro_usdc: 0,
+      first_exposure_at_ms: NOW + 1,
     }),
     now_ms: NOW + 3,
   });
@@ -1768,6 +1795,7 @@ test("only a restart-frozen entry can complete from durable reconciliation", () 
       long_filled_micro_usdc: 10_000_000_000,
       short_filled_micro_usdc: 10_000_000_000,
       hedge_error_micro_usdc: 0,
+      first_exposure_at_ms: NOW + 1,
     }),
     now_ms: NOW + 4,
   });
@@ -1796,6 +1824,7 @@ test("restart-frozen reconciliation never reactivates exposure after mandate exp
       long_filled_micro_usdc: 10_000_000_000,
       short_filled_micro_usdc: 10_000_000_000,
       hedge_error_micro_usdc: 0,
+      first_exposure_at_ms: NOW + 1,
     }),
     now_ms: expiresAtMs,
   });
@@ -1821,6 +1850,7 @@ test("an unavailable monitoring observation freezes without retry", () => {
       long_filled_micro_usdc: 10_000_000_000,
       short_filled_micro_usdc: 10_000_000_000,
       hedge_error_micro_usdc: 0,
+      first_exposure_at_ms: NOW + 1,
     }),
     now_ms: NOW + 2,
   }).position;
@@ -2733,6 +2763,8 @@ test("portfolio value report separates finalized after-cost proof from accruing 
         position_status: "reconciled",
         target_notional_micro_usdc: 20_000_000,
         value_ledger: finalized.ledger,
+        value_boundary_authoritative: true,
+        exposure_boundary_provenance: "authoritative_exchange_fill_time",
       },
     ],
     capital_evidence: {
@@ -2755,6 +2787,9 @@ test("portfolio value report separates finalized after-cost proof from accruing 
     },
   });
   assert.equal(report.value_proof_status, "mixed");
+  assert.equal(report.authoritative_finalized_position_count, 1);
+  assert.equal(report.finalized_value_provenance, "authoritative_exchange_fill_time");
+  assert.equal(report.real_value_verified, true);
   assert.equal(report.valuation_asset, "USDC");
   assert.equal(report.funding_valuation_basis, "usdc_equivalent_at_ledger_ingestion");
   assert.equal(report.modeled.net_value_micro_usdc, 185);

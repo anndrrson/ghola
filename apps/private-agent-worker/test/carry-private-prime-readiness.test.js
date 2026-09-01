@@ -97,6 +97,10 @@ test("upgrades only matching durable paired lifecycle evidence to live-proven", 
   assert.match(result.paired_lifecycle.creation_input_evidence_commitment, /^carry:creation-inputs:[0-9a-f]{64}$/);
   assert.equal(result.paired_lifecycle.value_attribution.variance_from_modeled_micro_usdc, -166);
   assert.deepEqual(result.paired_lifecycle.venue_ids, ["hyperliquid", "aster"]);
+  assert.deepEqual(result.paired_lifecycle.first_exposure_observed_at_ms_by_venue, {
+    hyperliquid: NOW - 10_000,
+    aster: NOW - 9_000,
+  });
 });
 
 test("keeps live proof blocked without exact creation-input lineage", () => {
@@ -192,6 +196,44 @@ test("does not promote live proof without exact realized after-cost value", () =
       ...recoveryReadiness(),
     },
     lifecycle_proof: lifecycleProof({ realized_net_value_micro_usdc: null }),
+    now_ms: NOW,
+  });
+  assert.equal(result.proof_level, "pre_broadcast_readiness");
+  assert.equal(result.live_paired_lifecycle_proven, false);
+  assert.equal(result.paired_lifecycle.realized_net_value_micro_usdc, null);
+});
+
+test("legacy global-only exposure provenance cannot promote live readiness", () => {
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: readinessProof({ capital_ready: true }),
+    shadow_qualification: shadowQualification(),
+    carry_supervision: healthySupervision(),
+    route_observation_configured: true,
+    route_evidence: verifiedRouteEvidence(),
+    lifecycle_proof: lifecycleProof({
+      first_exposure_observed_at_ms_by_venue: undefined,
+      exposure_boundary_provenance_by_venue: undefined,
+    }),
+    now_ms: NOW,
+  });
+  assert.equal(result.proof_level, "pre_broadcast_readiness");
+  assert.equal(result.live_paired_lifecycle_proven, false);
+  assert.equal(result.paired_lifecycle.value_boundary_authoritative, false);
+});
+
+test("does not promote nonfinite finalized value as REAL", () => {
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: {
+      ...readinessProof(),
+      ...recoveryReadiness(),
+      capital_ready: true,
+      capital_plan: capitalPlan(),
+    },
+    shadow_qualification: shadowQualification(),
+    carry_supervision: healthySupervision(),
+    route_observation_configured: true,
+    route_evidence: verifiedRouteEvidence(),
+    lifecycle_proof: lifecycleProof({ realized_net_value_micro_usdc: Number.POSITIVE_INFINITY }),
     now_ms: NOW,
   });
   assert.equal(result.proof_level, "pre_broadcast_readiness");
@@ -687,6 +729,17 @@ function lifecycleProof(overrides = {}) {
     supervised_monitoring_proven: true,
     final_flat_zero_orders: true,
     value_ledger_finalized: true,
+    value_boundary_authoritative: true,
+    exposure_boundary_provenance: "authoritative_exchange_fill_time",
+    first_exposure_observed_at_ms: NOW - 10_000,
+    first_exposure_observed_at_ms_by_venue: {
+      hyperliquid: NOW - 10_000,
+      aster: NOW - 9_000,
+    },
+    exposure_boundary_provenance_by_venue: {
+      hyperliquid: "authoritative_exchange_fill_time",
+      aster: "authoritative_exchange_fill_time",
+    },
     collateral_route_coverage_proven: true,
     collateral_route_evidence_commitment: `carry:transfer-routes:evidence:${"b".repeat(40)}`,
     creation_input_evidence_commitment: `carry:creation-inputs:${"c".repeat(64)}`,

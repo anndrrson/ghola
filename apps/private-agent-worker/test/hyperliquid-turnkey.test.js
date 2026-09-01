@@ -160,21 +160,127 @@ test("existing venue adapter routes delegated credentials without exposing a key
 
 test("adapter proves a complete IOC fill from returned venue quantities", async () => {
   const credential = hyperliquidCredentialFromVault(vault());
+  const target = "0x11111111111111111111111111111111";
   const result = await submitHyperliquidExecution({
     credential,
     instruction: instruction({ tif: "Ioc", protective_orders: null }),
-    cloid: "0x11111111111111111111111111111111",
+    cloid: target,
     turnkeySubmitter: async () => ({
       status: "filled",
       oid: 124,
       bracket_count: 0,
-      fills: [{ coin: "BTC", px: "100000", sz: "0.00025", time: NOW }],
+      fills: [{ coin: "BTC", cloid: target, oid: 124, tid: 1240, px: "100000", sz: "0.00025", time: NOW }],
+      fill_set_complete: true,
+      fill_set_provenance: "hyperliquid_user_fills_time_v1",
+      target_account_address: credential.account_address,
+      target_client_order_id: target,
+      target_order_id: 124,
+      target_market: "BTC",
       risk_decision: { allowed: true, reasons: [] },
     }),
   });
   assert.equal(result.final_proof.final_fill_proven, true);
+  assert.equal(result.final_proof.target_fill_set_complete, true);
+  assert.equal(result.final_proof.fill_times_authoritative, true);
   assert.equal(result.final_proof.cumulative_filled_micro_usdc, 25_000_000);
   assert.equal(result.final_proof.filled_base_size, "0.00025");
+});
+
+test("filled acknowledgement without a complete fill set is reconciled before it becomes terminal", async () => {
+  const credential = hyperliquidCredentialFromVault(vault());
+  const target = "0x11111111111111111111111111111111";
+  const requests = [];
+  let submissions = 0;
+  const responses = [
+    { status: "order", order: { status: "filled", order: {
+      oid: 125,
+      cloid: target,
+      coin: "BTC",
+      origSz: "0.00025",
+      timestamp: NOW - 1,
+    } } },
+    [{ coin: "BTC", cloid: target, oid: 125, tid: 1250, px: "100000", sz: "0.00025", fee: "0.01", time: NOW }],
+  ];
+  const result = await submitHyperliquidExecution({
+    credential,
+    instruction: instruction({ tif: "Ioc", protective_orders: null }),
+    cloid: target,
+    turnkeySubmitter: async () => {
+      submissions += 1;
+      return {
+        status: "filled",
+        oid: 125,
+        bracket_count: 0,
+        fills: [{ coin: "BTC", px: "100000", sz: "0.00025", time: NOW }],
+        fill_set_complete: true,
+        risk_decision: { allowed: true, reasons: [] },
+      };
+    },
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body));
+      return new Response(JSON.stringify(responses.shift()), { status: 200 });
+    },
+  });
+
+  assert.equal(submissions, 1);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].type, "orderStatus");
+  assert.equal(requests[1].type, "userFillsByTime");
+  assert.equal(result.status, "reconciled");
+  assert.equal(result.final_proof.final_venue_execution_proven, true);
+  assert.equal(result.final_proof.final_fill_proven, true);
+  assert.equal(result.final_proof.target_fill_set_complete, true);
+  assert.equal(result.final_proof.fill_times_authoritative, true);
+  assert.equal(result.final_proof.fill_time_provenance, "hyperliquid_user_fills_time_v1");
+});
+
+test("filled acknowledgement remains ambiguous when its exact fill set cannot be reconciled", async () => {
+  const credential = hyperliquidCredentialFromVault(vault());
+  const target = "0x22222222222222222222222222222222";
+  let submissions = 0;
+  const result = await submitHyperliquidExecution({
+    credential,
+    instruction: instruction({ tif: "Ioc", protective_orders: null }),
+    cloid: target,
+    turnkeySubmitter: async () => {
+      submissions += 1;
+      return {
+        status: "filled",
+        oid: 126,
+        bracket_count: 0,
+        fills: [{ coin: "BTC", px: "100000", sz: "0.00025", time: NOW }],
+      };
+    },
+    fetchImpl: async () => new Response(JSON.stringify({ status: "unknownOid" }), { status: 200 }),
+  });
+
+  assert.equal(submissions, 1);
+  assert.equal(result.status, "outcome_unknown");
+  assert.equal(result.final_proof.broadcast_performed, true);
+  assert.equal(result.final_proof.final_venue_execution_proven, false);
+  assert.equal(result.final_proof.final_fill_proven, false);
+  assert.equal(result.final_proof.target_fill_set_complete, false);
+});
+
+test("post-submit reconciliation failure is submission ambiguous and never resubmits", async () => {
+  const credential = hyperliquidCredentialFromVault(vault());
+  let submissions = 0;
+  await assert.rejects(submitHyperliquidExecution({
+    credential,
+    instruction: instruction({ tif: "Ioc", protective_orders: null }),
+    cloid: "0x33333333333333333333333333333333",
+    turnkeySubmitter: async () => {
+      submissions += 1;
+      return {
+        status: "filled",
+        oid: 127,
+        bracket_count: 0,
+        fills: [{ coin: "BTC", px: "100000", sz: "0.00025", time: NOW }],
+      };
+    },
+    fetchImpl: async () => new Response("unavailable", { status: 503 }),
+  }), (error) => error?.code === "submission_ambiguous");
+  assert.equal(submissions, 1);
 });
 
 test("targeted reconciliation filters fills to the original client order", async () => {
@@ -184,10 +290,10 @@ test("targeted reconciliation filters fills to the original client order", async
     const credential = hyperliquidCredentialFromVault(vault());
     const target = "0x11111111111111111111111111111111";
     const responses = [
-      { status: "order", order: { status: "filled", order: { oid: 1, cloid: target } } },
+      { status: "order", order: { status: "filled", order: { oid: 1, cloid: target, coin: "BTC", origSz: "0.00025", timestamp: NOW - 1 } } },
       [
-        { coin: "BTC", cloid: target, oid: 1, px: "100000", sz: "0.00025", time: NOW },
-        { coin: "BTC", cloid: "0x33333333333333333333333333333333", oid: 2, px: "100000", sz: "1", time: NOW },
+        { coin: "BTC", cloid: target, oid: 1, tid: 1, px: "100000", sz: "0.00025", time: NOW },
+        { coin: "BTC", cloid: "0x33333333333333333333333333333333", oid: 2, tid: 2, px: "100000", sz: "1", time: NOW },
       ],
     ];
     const result = await submitHyperliquidExecution({

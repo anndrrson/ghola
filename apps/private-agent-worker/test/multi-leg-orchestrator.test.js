@@ -208,11 +208,183 @@ function exactOriginalOrderReconciliationReceipt({ baseSize = "0.001", cumulativ
       original_order_broadcast_proven: true,
       final_venue_execution_proven: true,
       final_fill_proven: true,
+      target_fill_set_complete: true,
       cumulative_filled_micro_usdc: cumulativeMicro,
       filled_base_size: baseSize,
     },
   };
 }
+
+function timedOriginalOrderReceipt({
+  venue = "aster",
+  firstFillAtMs = NOW + 500,
+  completeTiming = true,
+} = {}) {
+  const provenance = venue === "lighter"
+    ? "lighter_authenticated_order_trades_timestamp_v1"
+    : venue === "hyperliquid"
+      ? "hyperliquid_user_fills_time_v1"
+      : "aster_fapi_v3_user_trades_time_v1";
+  return {
+    status: "filled",
+    fills: [{
+      size: "0.001",
+      price: "10000",
+      ...(completeTiming ? { executed_at_ms: firstFillAtMs } : {}),
+    }],
+    final_proof: {
+      target_client_order_matched: true,
+      broadcast_performed: true,
+      final_venue_execution_proven: true,
+      final_fill_proven: true,
+      target_fill_set_complete: true,
+      cumulative_filled_micro_usdc: 10_000_000,
+      filled_base_size: "0.001",
+      first_fill_at_ms: firstFillAtMs,
+      last_fill_at_ms: firstFillAtMs,
+      fill_times_authoritative: true,
+      fill_time_provenance: provenance,
+    },
+  };
+}
+
+async function createEntryReceiptCrashFixture(state, suffix, durableReceipt) {
+  const sagaId = `saga:entry-receipt-crash:${suffix}`;
+  const asterLeg = `${sagaId}:aster`;
+  const lighterLeg = `${sagaId}:lighter`;
+  const asterWork = `work:entry-receipt-crash:${suffix}:aster`;
+  const lighterWork = `work:entry-receipt-crash:${suffix}:lighter`;
+  const instruction = (venue, side) => ({
+    version: 1,
+    kind: "ghola_private_execution_instruction",
+    venue_id: venue,
+    operation_class: "limit_order",
+    order: {
+      market: venue === "lighter" ? "BTC" : "BTC-PERP",
+      side,
+      base_size: "0.001",
+      limit_price: "10000",
+      reduce_only: false,
+      tif: "Ioc",
+    },
+  });
+  const created = await createDurableMultiLegSaga({
+    state,
+    definition: {
+      version: 1,
+      saga_id: sagaId,
+      idempotency_key: `idem:entry-receipt-crash:${suffix}`,
+      plan_commitment: `plan:entry-receipt-crash:${suffix}`,
+      strategy_id: "delta_neutral_carry",
+      max_unhedged_ms: 1_000,
+      max_hedge_error_micro_usdc: 0,
+      now_ms: NOW,
+      legs: [
+        { leg_id: asterLeg, venue_id: "aster", asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "buy", notional_micro_usdc: 10_000_000 },
+        { leg_id: lighterLeg, venue_id: "lighter", asset: "BTC", market: "BTC-PERP", product_type: "perp", operation_class: "limit_order", side: "sell", notional_micro_usdc: 10_000_000 },
+      ],
+    },
+    execution_context: {
+      version: 1,
+      carry_position_id: `carry:position:entry-receipt-crash:${suffix}`,
+      owner_commitment: `owner:entry-receipt-crash:${suffix}`,
+      policy_commitment: `policy:entry-receipt-crash:${suffix}`,
+      session_policy: { policy_commitment: `policy:entry-receipt-crash:${suffix}`, market_allowlist: ["BTC", "BTC-PERP"], max_notional_bucket: "25", max_order_count: 4, max_slippage_bps: 10 },
+      venue_access: {
+        aster: { status: "ready", account_commitment: `account:entry-receipt-crash:${suffix}:aster` },
+        lighter: { status: "ready", account_commitment: `account:entry-receipt-crash:${suffix}:lighter` },
+      },
+      legs: [
+        { leg_id: asterLeg, work_order_commitment: asterWork, instruction: instruction("aster", "buy") },
+        { leg_id: lighterLeg, work_order_commitment: lighterWork, instruction: instruction("lighter", "sell") },
+      ],
+    },
+  });
+  await apply(state, sagaId, 1, "preflight_passed", { leg_id: asterLeg });
+  await apply(state, sagaId, 2, "preflight_passed", { leg_id: lighterLeg });
+  await apply(state, sagaId, 3, "submission_started");
+  await state.putIdempotency(asterWork, durableReceipt);
+  await state.putIdempotency(lighterWork, { status: "submitted" });
+  return { sagaId, asterLeg, asterWork, lighterWork, active: await state.getMultiLegSaga(created.saga.saga_id) };
+}
+
+for (const [name, completeTiming, expectedProvenance] of [
+  ["authoritative", true, "authoritative_exchange_fill_time"],
+  ["incomplete", false, "worker_observed_positive_fill_conservative"],
+]) {
+  test(`replays ${name} durable entry timing after a crash before the saga fill event`, async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), `ghola-entry-receipt-${name}-`));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const state = createWorkerState(dir);
+    const fillAtMs = NOW + 500;
+    const fixture = await createEntryReceiptCrashFixture(
+      state,
+      name,
+      timedOriginalOrderReceipt({ firstFillAtMs: fillAtMs, completeTiming }),
+    );
+    const recovered = await recoverDueMultiLegSagas({
+      state,
+      now_ms: fixture.active.unhedged_deadline_ms,
+      recipient: { recipient_id: `did:key:entry-receipt-${name}` },
+      executeOrder: async (args) => {
+        if (args.instruction?.reconcile?.target_work_order_commitment === fixture.asterWork) {
+          return exactOriginalOrderReconciliationReceipt();
+        }
+        const error = new Error("stop after recovered entry fill");
+        error.code = "test_stop_after_recovered_entry_fill";
+        throw error;
+      },
+      env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+    });
+    assert.equal(recovered.ok, false);
+    assert.equal(recovered.recovered[0].error, "test_stop_after_recovered_entry_fill");
+    const persisted = await state.getMultiLegSaga(fixture.sagaId);
+    const leg = persisted.legs.find((item) => item.leg_id === fixture.asterLeg);
+    assert.equal(leg.filled_micro_usdc, 10_000_000);
+    assert.equal(leg.exposure_boundary_provenance, expectedProvenance);
+    assert.equal(
+      leg.first_exposure_observed_at_ms,
+      completeTiming ? fillAtMs : NOW,
+    );
+  });
+}
+
+test("replays a complete terminal partial fill with authoritative timing", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-entry-receipt-terminal-partial-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const fillAtMs = NOW + 500;
+  const partial = timedOriginalOrderReceipt({ firstFillAtMs: fillAtMs });
+  partial.status = "cancelled";
+  partial.fills[0].size = "0.0005";
+  partial.final_proof.final_fill_proven = false;
+  partial.final_proof.cumulative_filled_micro_usdc = 5_000_000;
+  partial.final_proof.filled_base_size = "0.0005";
+  const fixture = await createEntryReceiptCrashFixture(state, "terminal-partial", partial);
+  const recovered = await recoverDueMultiLegSagas({
+    state,
+    now_ms: fixture.active.unhedged_deadline_ms,
+    recipient: { recipient_id: "did:key:entry-receipt-terminal-partial" },
+    executeOrder: async (args) => {
+      if (args.instruction?.reconcile?.target_work_order_commitment === fixture.asterWork) {
+        const receipt = exactOriginalOrderReconciliationReceipt({ baseSize: "0.0005", cumulativeMicro: 5_000_000 });
+        receipt.status = "cancelled";
+        receipt.final_proof.final_fill_proven = false;
+        return receipt;
+      }
+      const error = new Error("stop after recovered terminal partial fill");
+      error.code = "test_stop_after_recovered_terminal_partial_fill";
+      throw error;
+    },
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(recovered.ok, false);
+  assert.equal(recovered.recovered[0].error, "test_stop_after_recovered_terminal_partial_fill");
+  const leg = (await state.getMultiLegSaga(fixture.sagaId)).legs.find((item) => item.leg_id === fixture.asterLeg);
+  assert.equal(leg.filled_micro_usdc, 5_000_000);
+  assert.equal(leg.first_exposure_observed_at_ms, fillAtMs);
+  assert.equal(leg.exposure_boundary_provenance, "authoritative_exchange_fill_time");
+});
 
 test("restart rejects a read-only query without explicit original-order broadcast proof", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-reconciling-query-only-"));
@@ -568,6 +740,7 @@ test("recovers a crash after exact cancel without cancelling twice", async (t) =
     final_proof: {
       final_venue_execution_proven: true,
       final_fill_proven: true,
+      target_fill_set_complete: true,
       cumulative_filled_micro_usdc: 10_000_000,
       filled_base_size: "0.1",
     },
@@ -589,7 +762,7 @@ test("recovers a crash after exact cancel without cancelling twice", async (t) =
         throw new Error("simulated_worker_crash_after_cancel");
       }
       return cancelAcknowledged
-        ? { status: "cancelled", fills: [], final_proof: { final_venue_execution_proven: true, final_fill_proven: false } }
+        ? { status: "cancelled", fills: [], final_proof: { final_venue_execution_proven: true, final_fill_proven: false, target_fill_set_complete: true } }
         : { status: "open", fills: [] };
     }
     return {
@@ -597,6 +770,7 @@ test("recovers a crash after exact cancel without cancelling twice", async (t) =
       final_proof: {
         final_venue_execution_proven: true,
         final_fill_proven: true,
+        target_fill_set_complete: true,
         cumulative_filled_micro_usdc: 10_000_000,
         filled_base_size: "0.1",
       },
@@ -718,11 +892,12 @@ test("reconciles a terminal late fill before cancel and never cancels or resubmi
   await apply(state, sagaId, 4, "leg_fill", { leg_id: asterLeg, cumulative_filled_micro_usdc: 10_000_000 });
   await state.putIdempotency(asterWork, {
     status: "filled",
-    final_proof: { final_venue_execution_proven: true, final_fill_proven: true, cumulative_filled_micro_usdc: 10_000_000, filled_base_size: "0.001" },
+    final_proof: { final_venue_execution_proven: true, final_fill_proven: true, target_fill_set_complete: true, cumulative_filled_micro_usdc: 10_000_000, filled_base_size: "0.001" },
   });
   await state.putIdempotency(lighterWork, { status: "submitted" });
 
   const calls = [];
+  const lateFillAtMs = NOW + 500;
   const active = await state.getMultiLegSaga(created.saga.saga_id);
   const recovered = await recoverDueMultiLegSagas({
     state,
@@ -731,20 +906,11 @@ test("reconciles a terminal late fill before cancel and never cancels or resubmi
     executeOrder: async (args) => {
       calls.push(args);
       if (args.operation_class === "reconcile") {
-        return {
-          status: "filled",
-          fills: [{ size: "0.001", price: "10000" }],
-          final_proof: {
-            final_venue_execution_proven: true,
-            final_fill_proven: true,
-            cumulative_filled_micro_usdc: 10_000_000,
-            filled_base_size: "0.001",
-          },
-        };
+        return timedOriginalOrderReceipt({ venue: "lighter", firstFillAtMs: lateFillAtMs });
       }
       return {
         status: "filled",
-        final_proof: { final_venue_execution_proven: true, final_fill_proven: true, filled_base_size: "0.001" },
+        final_proof: { final_venue_execution_proven: true, final_fill_proven: true, target_fill_set_complete: true, filled_base_size: "0.001" },
       };
     },
     verifyOrder: async (args) => recoveryVerification(args),
@@ -756,6 +922,9 @@ test("reconciles a terminal late fill before cancel and never cancels or resubmi
   assert.equal(calls.filter((call) => call.operation_class === "reconcile").length, 1);
   assert.equal(calls.filter((call) => call.instruction?.order?.reduce_only === true).length, 2);
   assert.equal(calls[0].instruction.reconcile.target_work_order_commitment, lighterWork);
+  const recoveredLateLeg = recovered.recovered[0].saga.legs.find((leg) => leg.leg_id === lighterLeg);
+  assert.equal(recoveredLateLeg.first_exposure_observed_at_ms, lateFillAtMs);
+  assert.equal(recoveredLateLeg.exposure_boundary_provenance, "authoritative_exchange_fill_time");
 });
 
 test("never pairs newer fill notional with stale exact base evidence", async (t) => {
@@ -846,6 +1015,7 @@ test("never pairs newer fill notional with stale exact base evidence", async (t)
           broadcast_performed: true,
           final_venue_execution_proven: true,
           final_fill_proven: true,
+          target_fill_set_complete: true,
           cumulative_filled_micro_usdc: args.venue_id === "aster" ? 4_000_000 : 0,
           filled_base_size: args.venue_id === "aster" ? "0.0004" : undefined,
         },
@@ -932,6 +1102,7 @@ async function createCrashSafeUnwindFixture(state, suffix) {
       broadcast_performed: true,
       final_venue_execution_proven: true,
       final_fill_proven: true,
+      target_fill_set_complete: true,
       cumulative_filled_micro_usdc: 10_000_000,
       filled_base_size: "0.001",
     },
@@ -948,6 +1119,7 @@ function terminalOriginalZeroReceipt() {
       broadcast_performed: true,
       final_venue_execution_proven: true,
       final_fill_proven: false,
+      target_fill_set_complete: true,
       cumulative_filled_micro_usdc: 0,
     },
   };
@@ -972,6 +1144,7 @@ test("reconciles after a crash between recovery broadcast and receipt persistenc
           broadcast_performed: true,
           final_venue_execution_proven: true,
           final_fill_proven: true,
+          target_fill_set_complete: true,
           filled_base_size: "0.001",
         },
       };
@@ -1074,6 +1247,7 @@ for (const boundary of ["applied-accounting", "flat-position"]) {
           broadcast_performed: true,
           final_venue_execution_proven: true,
           final_fill_proven: true,
+          target_fill_set_complete: true,
           filled_base_size: "0.001",
         },
       };
@@ -1215,6 +1389,7 @@ test("replays completion after applied accounting without resubmitting", async (
         broadcast_performed: true,
         final_venue_execution_proven: true,
         final_fill_proven: true,
+        target_fill_set_complete: true,
         filled_base_size: "0.001",
       },
     };
@@ -1279,6 +1454,7 @@ test("recovers a persisted terminal-zero unwind receipt without retrying the ord
         broadcast_performed: true,
         final_venue_execution_proven: true,
         final_fill_proven: false,
+        target_fill_set_complete: true,
         filled_base_size: "0",
       },
     };
@@ -1335,6 +1511,7 @@ test("persists unwind accounting and flat position before terminal saga advancem
           broadcast_performed: true,
           final_venue_execution_proven: true,
           final_fill_proven: true,
+          target_fill_set_complete: true,
           filled_base_size: "0.001",
         },
       };
@@ -1442,6 +1619,7 @@ for (const [filledVenue, hedgeVenue] of CARRY_EXECUTION_VENUES.flatMap((filledVe
       final_proof: {
         final_venue_execution_proven: true,
         final_fill_proven: true,
+        target_fill_set_complete: true,
         cumulative_filled_micro_usdc: 10_000_000,
         filled_base_size: "0.001",
       },
@@ -1458,6 +1636,7 @@ for (const [filledVenue, hedgeVenue] of CARRY_EXECUTION_VENUES.flatMap((filledVe
         final_proof: {
           final_venue_execution_proven: true,
           final_fill_proven: true,
+          target_fill_set_complete: true,
           filled_base_size: "0.001",
         },
       };
@@ -1554,7 +1733,7 @@ test("preserves exact base precision while reconciling a partial recovery child 
   await apply(state, sagaId, 4, "leg_fill", { leg_id: filledLeg, cumulative_filled_micro_usdc: 10_000_000 });
   await state.putIdempotency(filledWork, {
     status: "filled",
-    final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: true, final_fill_proven: true, cumulative_filled_micro_usdc: 10_000_000, filled_base_size: exactBase },
+    final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: true, final_fill_proven: true, target_fill_set_complete: true, cumulative_filled_micro_usdc: 10_000_000, filled_base_size: exactBase },
   });
   await state.putIdempotency(hedgeWork, { status: "submitted" });
 
@@ -1565,7 +1744,7 @@ test("preserves exact base precision while reconciling a partial recovery child 
     calls.push(args);
     if (args.operation_class === "reconcile") {
       if (args.instruction.reconcile.target_work_order_commitment === hedgeWork) {
-        return { status: "reconciled", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: true, final_fill_proven: true, cumulative_filled_micro_usdc: 0 } };
+        return { status: "reconciled", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: true, final_fill_proven: true, target_fill_set_complete: true, cumulative_filled_micro_usdc: 0 } };
       }
       childReconcileAttempts += 1;
       return {
@@ -1575,6 +1754,7 @@ test("preserves exact base precision while reconciling a partial recovery child 
           broadcast_performed: true,
           final_venue_execution_proven: true,
           final_fill_proven: true,
+          target_fill_set_complete: true,
           filled_base_size: childReconcileAttempts > 2 ? partialBase : reconciledBase,
         },
       };
@@ -1718,7 +1898,7 @@ test("recovers a Carry Position saga directly from its sealed venue context", as
   await apply(state, sagaId, 4, "leg_fill", { leg_id: longLeg, cumulative_filled_micro_usdc: 10_000_000 });
   await state.putIdempotency("work:carry:direct:long", {
     status: "filled",
-    final_proof: { final_venue_execution_proven: true, final_fill_proven: true, cumulative_filled_micro_usdc: 10_000_000, filled_base_size: "0.001" },
+    final_proof: { final_venue_execution_proven: true, final_fill_proven: true, target_fill_set_complete: true, cumulative_filled_micro_usdc: 10_000_000, filled_base_size: "0.001" },
   });
   await state.putIdempotency("work:carry:direct:short", { status: "submitted" });
   const calls = [];
@@ -1731,7 +1911,7 @@ test("recovers a Carry Position saga directly from its sealed venue context", as
       calls.push(args);
       if (args.operation_class === "cancel") return { status: "cancelled" };
       if (args.operation_class === "reconcile") return { status: "reconciled", fills: [] };
-      return { status: "filled", final_proof: { final_venue_execution_proven: true, final_fill_proven: true, filled_base_size: "0.001" } };
+      return { status: "filled", final_proof: { final_venue_execution_proven: true, final_fill_proven: true, target_fill_set_complete: true, filled_base_size: "0.001" } };
     },
     verifyOrder: async (args) => recoveryVerification(args),
     env: { PRIVATE_AGENT_VENUE_DRY_RUN: "true" },
@@ -1810,7 +1990,7 @@ for (const [filledVenue, completionVenue] of CARRY_EXECUTION_VENUES.flatMap((fil
     const executeOrder = async (args) => {
       calls.push(args);
       if (args.operation_class === "reconcile") {
-        return { status: "filled", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: true, final_fill_proven: true, filled_base_size: "0.001" } };
+        return { status: "filled", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: true, final_fill_proven: true, target_fill_set_complete: true, filled_base_size: "0.001" } };
       }
       submissions += 1;
       return { status: "open", final_proof: { target_client_order_matched: true, broadcast_performed: true, final_venue_execution_proven: false, final_fill_proven: false, filled_base_size: fullBaseNonterminal ? "0.001" : "0.0004" } };

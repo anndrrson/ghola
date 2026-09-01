@@ -28,6 +28,12 @@ import { finalizeCarryLifecycleEventRecord } from "../state/private-state.js";
 const DEFAULT_LIFECYCLE_PROOF_MAX_AGE_MS = 90 * 86_400_000;
 const MAX_LIFECYCLE_PROOFS_PER_ASSET = 64;
 const LIFECYCLE_JOURNAL_PAGE_SIZE = 1_000;
+const AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE = "authoritative_exchange_fill_time";
+const AUTHORITATIVE_FILL_TIME_PROVENANCE_BY_VENUE = Object.freeze({
+  hyperliquid: "hyperliquid_user_fills_time_v1",
+  lighter: "lighter_authenticated_order_trades_timestamp_v1",
+  aster: "aster_fapi_v3_user_trades_time_v1",
+});
 
 async function readCompleteCarryLifecycleJournal({ state, record }) {
   if (typeof state?.listCarryLifecycleEvents !== "function") {
@@ -142,6 +148,11 @@ export async function recordCompletedCarryLifecycleProof({
     supervised_monitoring_proven: true,
     final_flat_zero_orders: true,
     value_ledger_finalized: true,
+    value_boundary_authoritative: true,
+    exposure_boundary_provenance: AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE,
+    first_exposure_observed_at_ms: material.position.exposure_boundary.first_fill_at_ms,
+    first_exposure_observed_at_ms_by_venue: material.position.exposure_boundary.first_fill_at_ms_by_venue,
+    exposure_boundary_provenance_by_venue: material.position.exposure_boundary.provenance_by_venue,
     collateral_route_coverage_proven: true,
     collateral_route_evidence_commitment: material.collateral_route_readiness.evidence_commitment,
     creation_input_evidence_commitment: material.creation_input_evidence.evidence_commitment,
@@ -403,6 +414,7 @@ export function assessCompletedCarryLifecycleProof({
   const accountCommitments = proof.account_commitments && typeof proof.account_commitments === "object"
     ? proof.account_commitments
     : {};
+  const exposureBoundary = authoritativeLifecycleExposureBoundary(proof, venueIds);
   const valueAttribution = safeLifecycleValueAttribution(proof.value_attribution);
   const valid = proof.version === 1
     && proof.kind === "ghola_carry_live_paired_lifecycle_proof"
@@ -426,6 +438,9 @@ export function assessCompletedCarryLifecycleProof({
     && proof.supervised_monitoring_proven === true
     && proof.final_flat_zero_orders === true
     && proof.value_ledger_finalized === true
+    && proof.value_boundary_authoritative === true
+    && proof.exposure_boundary_provenance === AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE
+    && exposureBoundary.ok === true
     && proof.collateral_route_coverage_proven === true
     && /^carry:transfer-routes:evidence:[0-9a-f]{40}$/.test(String(proof.collateral_route_evidence_commitment || ""))
     && /^carry:creation-inputs:[0-9a-f]{64}$/.test(String(proof.creation_input_evidence_commitment || ""))
@@ -442,6 +457,28 @@ export function assessCompletedCarryLifecycleProof({
     && proof.evidence_commitment === lifecycleProofCommitment(proof);
   if (!valid) return denied("carry_lifecycle_proof_invalid");
   return { ok: true, proof: Object.freeze(structuredClone(proof)) };
+}
+
+function authoritativeLifecycleExposureBoundary(proof, venueIds) {
+  const boundaryByVenue = proof?.first_exposure_observed_at_ms_by_venue;
+  const provenanceByVenue = proof?.exposure_boundary_provenance_by_venue;
+  const keysMatch = (value) => value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Object.keys(value).length === venueIds.length
+    && venueIds.every((venueId) => Object.hasOwn(value, venueId));
+  const ok = venueIds.length === 2
+    && new Set(venueIds).size === 2
+    && keysMatch(boundaryByVenue)
+    && keysMatch(provenanceByVenue)
+    && venueIds.every((venueId) => Number.isSafeInteger(boundaryByVenue[venueId])
+      && boundaryByVenue[venueId] > 0
+      && provenanceByVenue[venueId] === AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE)
+    && Number.isSafeInteger(proof?.first_exposure_observed_at_ms)
+    && proof.first_exposure_observed_at_ms > 0
+    && proof.first_exposure_observed_at_ms
+      === Math.min(...venueIds.map((venueId) => boundaryByVenue[venueId]));
+  return ok ? { ok: true } : denied("carry_lifecycle_proof_exposure_boundary_invalid");
 }
 
 export function carryLifecycleProofKey(ownerCommitment, imageDigest, asset, positionId, venueIds) {
@@ -556,6 +593,8 @@ export async function buildCompletedCarryReleaseMaterial({
   if (entrySaga?.status !== "reconciled" || exitSaga?.status !== "reconciled") {
     return denied("carry_release_sagas_not_reconciled");
   }
+  const exposureBoundary = authoritativeCarryExposureBoundary({ record, entrySaga });
+  if (!exposureBoundary.ok) return exposureBoundary;
   const entryReconciledAt = entrySaga.updated_at_ms;
   const lifecycleJournal = await readCompleteCarryLifecycleJournal({ state, record });
   if (!lifecycleJournal.ok) return lifecycleJournal;
@@ -650,6 +689,7 @@ export async function buildCompletedCarryReleaseMaterial({
       long_venue_id: record.position.long_venue_id,
       short_venue_id: record.position.short_venue_id,
       created_at: iso(record.position.created_at_ms),
+      exposure_boundary: exposureBoundary.evidence,
     },
     contract_equivalence: contractEquivalence.evidence,
     creation_input_evidence: creationInputEvidence.evidence,
@@ -1117,6 +1157,80 @@ function releaseTrigger(reason, values) {
   };
 }
 
+function authoritativeCarryExposureBoundary({ record, entrySaga }) {
+  const venueIds = [record.position.long_venue_id, record.position.short_venue_id];
+  const boundaryByVenue = record.position.active_observed_at_ms_by_venue;
+  const provenanceByVenue = record.position.active_boundary_provenance_by_venue;
+  const fundingBoundaryByVenue = record.value_evidence?.funding?.exposure_boundary_observed_at_ms_by_venue;
+  const fundingProvenanceByVenue = record.value_evidence?.funding?.exposure_boundary_provenance_by_venue;
+  const realizedBoundaryByVenue = record.value_evidence?.realized_economics?.active_observed_at_ms_by_venue;
+  const realizedProvenanceByVenue = record.value_evidence?.realized_economics?.exposure_boundary_provenance_by_venue;
+  if (record.position.active_boundary_provenance !== AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE
+    || record.value_evidence?.funding?.exposure_boundary_provenance !== AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE
+    || record.value_evidence?.realized_economics?.exposure_boundary_provenance !== AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE
+    || !boundaryByVenue || typeof boundaryByVenue !== "object" || Array.isArray(boundaryByVenue)
+    || !provenanceByVenue || typeof provenanceByVenue !== "object" || Array.isArray(provenanceByVenue)
+    || !fundingBoundaryByVenue || typeof fundingBoundaryByVenue !== "object" || Array.isArray(fundingBoundaryByVenue)
+    || !fundingProvenanceByVenue || typeof fundingProvenanceByVenue !== "object" || Array.isArray(fundingProvenanceByVenue)
+    || !realizedBoundaryByVenue || typeof realizedBoundaryByVenue !== "object" || Array.isArray(realizedBoundaryByVenue)
+    || !realizedProvenanceByVenue || typeof realizedProvenanceByVenue !== "object" || Array.isArray(realizedProvenanceByVenue)
+    || Object.keys(boundaryByVenue).length !== 2 || Object.keys(provenanceByVenue).length !== 2
+    || [fundingBoundaryByVenue, fundingProvenanceByVenue, realizedBoundaryByVenue, realizedProvenanceByVenue]
+      .some((value) => Object.keys(value).length !== 2)
+    || !venueIds.every((venueId) => Number.isSafeInteger(boundaryByVenue[venueId])
+      && boundaryByVenue[venueId] > 0
+      && fundingBoundaryByVenue[venueId] === boundaryByVenue[venueId]
+      && realizedBoundaryByVenue[venueId] === boundaryByVenue[venueId]
+      && provenanceByVenue[venueId] === AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE
+      && fundingProvenanceByVenue[venueId] === AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE
+      && realizedProvenanceByVenue[venueId] === AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE)
+    || Math.min(...venueIds.map((venueId) => boundaryByVenue[venueId])) !== record.position.active_observed_at_ms
+    || !venueIds.every((venueId) => {
+      const leg = entrySaga.legs?.find((item) => item.venue_id === venueId);
+      return leg?.exposure_boundary_provenance === AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE
+        && leg.first_exposure_observed_at_ms === boundaryByVenue[venueId];
+    })) {
+    return denied("carry_release_authoritative_exposure_boundary_unproven");
+  }
+  return {
+    ok: true,
+    evidence: Object.freeze({
+      provenance: AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE,
+      first_fill_at_ms: record.position.active_observed_at_ms,
+      first_fill_at_ms_by_venue: Object.freeze({ ...boundaryByVenue }),
+      provenance_by_venue: Object.freeze({ ...provenanceByVenue }),
+    }),
+  };
+}
+
+function authoritativeReleaseFillTiming(receipt, venueId) {
+  const proof = receipt?.final_proof;
+  const sourceProvenance = AUTHORITATIVE_FILL_TIME_PROVENANCE_BY_VENUE[venueId];
+  const firstFillAtMs = Number(proof?.first_fill_at_ms);
+  const lastFillAtMs = Number(proof?.last_fill_at_ms);
+  const fills = Array.isArray(receipt?.fills) ? receipt.fills : [];
+  const positiveFills = fills.filter((fill) =>
+    positiveDecimal(fill?.size ?? fill?.sz ?? fill?.totalSz)
+    && positiveDecimal(fill?.price ?? fill?.px ?? fill?.avgPx));
+  const fillTimes = positiveFills.map((fill) => Number(fill?.executed_at_ms));
+  const ok = Boolean(sourceProvenance)
+    && proof?.final_venue_execution_proven === true
+    && proof?.target_fill_set_complete === true
+    && proof?.fill_times_authoritative === true
+    && proof?.fill_time_provenance === sourceProvenance
+    && positiveInteger(firstFillAtMs)
+    && positiveInteger(lastFillAtMs)
+    && lastFillAtMs >= firstFillAtMs
+    && positiveFills.length > 0
+    && fillTimes.every((value) => Number.isSafeInteger(value)
+      && value >= firstFillAtMs && value <= lastFillAtMs)
+    && Math.min(...fillTimes) === firstFillAtMs
+    && Math.max(...fillTimes) === lastFillAtMs;
+  return ok
+    ? { ok: true, first_fill_at_ms: firstFillAtMs, last_fill_at_ms: lastFillAtMs, source_provenance: sourceProvenance }
+    : denied(`carry_release_fill_time_unproven:${venueId}`);
+}
+
 async function materialLegs({ state, saga, record, phase }) {
   const legs = [];
   for (const sagaLeg of saga.legs || []) {
@@ -1132,6 +1246,7 @@ async function materialLegs({ state, saga, record, phase }) {
       return denied(`carry_release_${phase}_account_binding_mismatch:${sagaLeg.venue_id}`);
     }
     const proof = receipt?.final_proof || attempt?.final_proof || null;
+    const fillTiming = authoritativeReleaseFillTiming(receipt, sagaLeg.venue_id);
     const valueEvidence = record.value_evidence?.[phase]?.venues?.[sagaLeg.venue_id];
     const filledBaseE8 = decimalToScaled(proof?.filled_base_size, 8);
     const averageFillPriceE8 = decimalToScaled(proof?.average_fill_price, 8);
@@ -1146,6 +1261,10 @@ async function materialLegs({ state, saga, record, phase }) {
     if (proof?.broadcast_performed !== true
       || proof?.target_client_order_matched !== true
       || proof?.final_venue_execution_proven !== true
+      || !fillTiming.ok
+      || (phase === "entry"
+        && (sagaLeg.exposure_boundary_provenance !== AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE
+          || sagaLeg.first_exposure_observed_at_ms !== fillTiming.first_fill_at_ms))
       || !positiveDecimal(proof?.filled_base_size)
       || !positiveDecimal(proof?.average_fill_price)
       || filledBaseE8 === null
@@ -1177,6 +1296,10 @@ async function materialLegs({ state, saga, record, phase }) {
       live_order_broadcast: true,
       target_client_order_matched: true,
       final_venue_execution_proven: true,
+      first_fill_at_ms: fillTiming.first_fill_at_ms,
+      last_fill_at_ms: fillTiming.last_fill_at_ms,
+      fill_time_provenance: fillTiming.source_provenance,
+      fill_times_authoritative: true,
       filled_base_size: String(proof.filled_base_size),
       filled_base_e8: filledBaseE8.toString(),
       average_fill_price: String(proof.average_fill_price),

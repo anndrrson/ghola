@@ -186,7 +186,7 @@ test("Carry funding history dispatches through the registered Aster adapter", as
         sequence: 1,
         bids: [["0.9998", "100"]],
         asks: [["1.0002", "100"]],
-      } : [{ time: 1_800_000_000_100, income: "0.01", asset: "USDT", tranId: 42 }],
+      } : [{ symbol: "BTCUSDT", incomeType: "FUNDING_FEE", time: 1_800_000_000_100, income: "0.01", asset: "USDT", tranId: 42 }],
     };
   };
   t.after(() => {

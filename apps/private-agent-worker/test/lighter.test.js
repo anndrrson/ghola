@@ -6,6 +6,7 @@ import {
   LighterExecutionError,
   lighterClientOrderIndex,
   lighterCredentialFromVault,
+  lighterOrderFingerprint,
   readLighterWithdrawalRouteQuote,
   readLighterFundingSettlements,
   reconcileLighterExecution,
@@ -115,7 +116,14 @@ function exactFeeProof({
   base = "0.001",
   quote = "100",
   fee = "0.05",
+  authenticatedFills = null,
 } = {}) {
+  const fills = authenticatedFills || (base === "0.001" && quote === "100" && fee === "0.05"
+    ? [
+      { size: "0.0004", quote_size: "40", price: "100000", fee: "0.02", fee_asset: "USDC", executed_at_ms: 1_800_000_000_100 },
+      { size: "0.0006", quote_size: "60", price: "100000", fee: "0.03", fee_asset: "USDC", executed_at_ms: 1_800_000_000_200 },
+    ]
+    : [{ size: base, quote_size: quote, price: "100000", fee, fee_asset: "USDC", executed_at_ms: 1_800_000_000_100 }]);
   return {
     version: 1,
     proof_kind: "lighter_authenticated_order_trades_fee_v1",
@@ -126,16 +134,88 @@ function exactFeeProof({
     market_id: marketId,
     order_index: String(orderIndex),
     client_order_index: clientOrderIndex,
-    trade_count: 2,
+    trade_count: fills.length,
     first_trade_id: "9223372036854775806",
-    last_trade_id: "9223372036854775807",
+    last_trade_id: String(9_223_372_036_854_775_806n + BigInt(fills.length - 1)),
     filled_base_amount: base,
     filled_quote_amount: quote,
     fee_quote_amount: fee,
     fee_asset: "USDC",
+    first_fill_at_ms: Math.min(...fills.map((fill) => fill.executed_at_ms)),
+    last_fill_at_ms: Math.max(...fills.map((fill) => fill.executed_at_ms)),
+    fill_time_provenance: "lighter_authenticated_order_trades_timestamp_v1",
+    fill_times_authoritative: true,
+    authenticated_fills: fills,
     fee_rate_tick_denominator: 1_000_000,
     quote_atomic_denominator: 1_000_000,
     evidence_commitment: `sha256:${"ab".repeat(32)}`,
+  };
+}
+
+function zeroFeeProof({ clientOrderIndex = 77, orderIndex = 88, marketId = 1 } = {}) {
+  return {
+    version: 1,
+    proof_kind: "lighter_authenticated_order_trades_fee_v1",
+    complete: true,
+    pagination_complete: true,
+    transaction_broadcast: false,
+    account_index: 123,
+    market_id: marketId,
+    order_index: String(orderIndex),
+    client_order_index: clientOrderIndex,
+    trade_count: 0,
+    first_trade_id: null,
+    last_trade_id: null,
+    filled_base_amount: "0",
+    filled_quote_amount: "0",
+    fee_quote_amount: "0",
+    fee_asset: "USDC",
+    first_fill_at_ms: null,
+    last_fill_at_ms: null,
+    fill_time_provenance: null,
+    fill_times_authoritative: false,
+    authenticated_fills: [],
+    fee_rate_tick_denominator: 1_000_000,
+    quote_atomic_denominator: 1_000_000,
+    evidence_commitment: `sha256:${"ab".repeat(32)}`,
+  };
+}
+
+function fingerprint({ clientOrderIndex = 77, submittedAtMs = 1_800_000_000_000, overrides = {} } = {}) {
+  return lighterOrderFingerprint(instruction(overrides), clientOrderIndex, { submittedAtMs });
+}
+
+function venueOrder(overrides = {}) {
+  return {
+    status: "filled",
+    owner_account_index: 123,
+    market_index: 1,
+    client_order_index: 77,
+    order_index: 88,
+    initial_base_amount: "0.001",
+    price: "100000",
+    is_ask: false,
+    side: "buy",
+    type: "limit",
+    time_in_force: "immediate-or-cancel",
+    reduce_only: false,
+    created_at: 1_800_000_000_100,
+    filled_base_amount: "0.001",
+    filled_quote_amount: "100",
+    ...overrides,
+  };
+}
+
+function boundReconcile({ order = venueOrder(), feeProof = undefined, collision = false } = {}) {
+  return {
+    account_index: 123,
+    market_id: 1,
+    target_market_checked: true,
+    target_fingerprint_checked: true,
+    target_fingerprint_matched: !collision,
+    target_identifier_collision: collision,
+    order,
+    ...(feeProof === undefined ? {} : { fee_proof: feeProof }),
   };
 }
 
@@ -168,6 +248,74 @@ print("checked")
   const result = spawnSync(process.env.PRIVATE_AGENT_PYTHON || "python3", ["-c", check, runnerPath], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(result.stdout.trim(), "checked");
+});
+
+test("rejects reused Lighter client indexes when the submitted fingerprint differs", () => {
+  const runnerPath = fileURLToPath(new URL("../src/venues/lighter_runner.py", import.meta.url));
+  const check = String.raw`
+import copy, importlib.util, sys
+spec = importlib.util.spec_from_file_location("lighter_runner", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+fingerprint = {
+    "version": 1, "market": "BTC", "client_order_index": 77,
+    "side": "buy", "base_size": "0.001", "limit_price": "100000",
+    "reduce_only": False, "time_in_force": "ioc", "submitted_at_ms": 1800000000000,
+}
+order = {
+    "owner_account_index": 123, "market_index": 1, "client_order_index": 77,
+    "order_index": 88, "initial_base_amount": "0.001", "price": "100000",
+    "is_ask": False, "side": "buy", "type": "limit",
+    "time_in_force": "immediate-or-cancel", "reduce_only": False,
+    "created_at": 1800000000100,
+}
+kwargs = dict(account_index=123, market_index=1, market_symbol="BTC")
+assert module.submitted_order_fingerprint_matches(order, fingerprint, **kwargs)
+wrong_side = copy.deepcopy(order)
+wrong_side["side"] = "sell"
+wrong_side["is_ask"] = True
+wrong_size = copy.deepcopy(order)
+wrong_size["initial_base_amount"] = "0.002"
+wrong_price = copy.deepcopy(order)
+wrong_price["price"] = "99999"
+for candidate in (wrong_side, wrong_size, wrong_price):
+    assert not module.submitted_order_fingerprint_matches(candidate, fingerprint, **kwargs)
+print("checked")
+`;
+  const result = spawnSync(process.env.PRIVATE_AGENT_PYTHON || "python3", ["-c", check, runnerPath], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.stdout.trim(), "checked");
+});
+
+test("keeps same-index Lighter side, size, or price collisions ambiguous with no fills", async () => {
+  const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+  const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+  process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = "read_only";
+  try {
+    for (const order of [
+      venueOrder({ side: "sell", is_ask: true }),
+      venueOrder({ initial_base_amount: "0.002" }),
+      venueOrder({ price: "99999" }),
+    ]) {
+      const result = await reconcileLighterExecution({
+        credential: credential(),
+        clientOrderIndex: 77,
+        market: "BTC",
+        expectedOrderFingerprint: fingerprint(),
+        runner: async () => boundReconcile({ order, feeProof: exactFeeProof(), collision: true }),
+      });
+      assert.equal(result.status, "outcome_unknown");
+      assert.deepEqual(result.fills, []);
+      assert.equal(result.final_proof.target_identifier_collision, true);
+      assert.equal(result.final_proof.final_venue_execution_proven, false);
+    }
+  } finally {
+    if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+    else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
+    if (previousMode === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+    else process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = previousMode;
+  }
 });
 
 test("binds a Lighter cancel target to both client order index and market", () => {
@@ -267,13 +415,13 @@ trades = [
         "trade_id": 901, "type": "trade", "market_id": 1, "size": "0.001", "price": "100000", "usd_amount": "100",
         "ask_id": 88, "bid_id": 188, "ask_client_id": 77, "bid_client_id": 177,
         "ask_account_id": 123, "bid_account_id": 456, "is_maker_ask": True,
-        "maker_fee": 40, "taker_fee": 900,
+        "maker_fee": 40, "taker_fee": 900, "timestamp": 1800000000100,
     },
     {
         "trade_id": 902, "type": "trade", "market_id": 1, "size": "0.002", "price": "100000", "usd_amount": "200",
         "ask_id": 88, "bid_id": 189, "ask_client_id": 77, "bid_client_id": 178,
         "ask_account_id": 123, "bid_account_id": 457, "is_maker_ask": False,
-        "maker_fee": 10, "taker_fee": 280,
+        "maker_fee": 10, "taker_fee": 280, "timestamp": 1800000000200,
     },
 ]
 class OrderApi:
@@ -331,6 +479,10 @@ async def main():
     assert proof["fee_rate_tick_denominator"] == 1000000
     assert proof["quote_atomic_denominator"] == 1000000
     assert proof["trade_count"] == 2
+    assert proof["first_fill_at_ms"] == 1800000000100
+    assert proof["last_fill_at_ms"] == 1800000000200
+    assert proof["fill_times_authoritative"] is True
+    assert proof["fill_time_provenance"] == "lighter_authenticated_order_trades_timestamp_v1"
     assert proof["order_index"] == "88"
     assert proof["evidence_commitment"].startswith("sha256:")
     assert client.order_api.calls == [
@@ -343,6 +495,20 @@ async def main():
     _, zero_proof = await exact(omitted_zero)
     assert zero_proof["complete"] is True
     assert zero_proof["fee_quote_amount"] == "0"
+    zero_client = Client()
+    async def no_trades(**kwargs):
+        return type("RawResponse", (), {"raw_data": json.dumps({"trades": []}).encode("utf-8")})()
+    zero_client.order_api.trades_with_http_info = no_trades
+    terminal_zero = await module.exact_account_order_trades(zero_client, 123, 1, 77, {
+        "order_index": 88, "is_ask": True, "filled_base_amount": "0", "filled_quote_amount": "0",
+    })
+    assert terminal_zero["complete"] is True
+    assert terminal_zero["pagination_complete"] is True
+    assert terminal_zero["trade_count"] == 0
+    assert terminal_zero["filled_base_amount"] == "0"
+    assert terminal_zero["filled_quote_amount"] == "0"
+    assert terminal_zero["fill_times_authoritative"] is False
+    assert terminal_zero["evidence_commitment"].startswith("sha256:")
     explicit_null = copy.deepcopy(omitted_zero)
     explicit_null[0]["maker_fee"] = None
     await must_fail(explicit_null)
@@ -693,7 +859,13 @@ test("recovers an ambiguous Lighter cancel against only its original target", as
       credential: credential(),
       instruction: {
         operation_class: "cancel",
-        cancel: { market: "BTC", client_order_index: 77 },
+        cancel: {
+          market: "BTC",
+          client_order_index: 77,
+          expected_order_fingerprint: fingerprint(),
+          expected_order_index: 88,
+          submission_tx_hash: "0xcancel-target",
+        },
       },
       clientOrderIndex: 900,
       now: () => 1_800_000_000_000,
@@ -709,22 +881,21 @@ test("recovers an ambiguous Lighter cancel against only its original target", as
         assert.equal(payload.action, "reconcile");
         assert.equal(payload.client_order_index, 77);
         assert.equal(payload.market, "BTC");
-        return {
-          target_market_checked: true,
-          order: {
+        return boundReconcile({
+          order: venueOrder({
             status: "canceled",
-            client_order_index: 77,
-            order_index: 88,
             filled_base_amount: "0",
             filled_quote_amount: "0",
-          },
-        };
+          }),
+          feeProof: zeroFeeProof(),
+        });
       },
     });
     assert.equal(cancelCalls, 1);
     assert.equal(reconcileCalls, 1);
     assert.equal(result.status, "cancelled");
     assert.equal(result.final_proof.open_order_count, 0);
+    assert.equal(result.final_proof.target_fill_set_complete, true);
     assert.equal(result.final_proof.broadcast_performed, false);
     assert.equal(result.reconciliation.submissionResponseAmbiguous, true);
     assert.equal(result.reconciliation.submission_retry_count, 0);
@@ -784,12 +955,8 @@ test("submits once and polls the exact client order until terminal fill", async 
         assert.equal(payload.client_order_index, 77);
         reconcileCalls += 1;
         return reconcileCalls === 1
-          ? { target_market_checked: true, order: { status: "open", client_order_index: 77, market_index: 1, remaining_base_amount: "0.001" } }
-          : {
-            target_market_checked: true,
-            order: { status: "filled", client_order_index: 77, market_index: 1, order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" },
-            fee_proof: exactFeeProof(),
-          };
+          ? boundReconcile({ order: venueOrder({ status: "open", remaining_base_amount: "0.001" }) })
+          : boundReconcile({ feeProof: exactFeeProof() });
       },
     });
     assert.equal(submitCalls, 1);
@@ -829,11 +996,10 @@ test("recovers an ambiguous Lighter submit response by reading the exact order w
         assert.equal(payload.client_order_index, 78);
         reconcileCalls += 1;
         if (reconcileCalls === 1) throw new Error("read replica lag");
-        return {
-          target_market_checked: true,
-          order: { status: "filled", client_order_index: 78, market_index: 1, order_index: 89, filled_base_amount: "0.001", filled_quote_amount: "100" },
-          fee_proof: exactFeeProof({ clientOrderIndex: 78, orderIndex: 89 }),
-        };
+        return boundReconcile({
+          order: venueOrder({ client_order_index: 78, order_index: 89 }),
+          feeProof: exactFeeProof({ clientOrderIndex: 78, orderIndex: 89 }),
+        });
       },
     });
     assert.equal(submitCalls, 1);
@@ -892,7 +1058,7 @@ test("bounds exact-order reconciliation when an ambiguous Lighter submit cannot 
   }
 });
 
-test("normalizes only user funding payments from the authenticated Lighter export", async () => {
+test("normalizes user funding payments from the authenticated Lighter export", async () => {
   const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
   const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
   process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = "true";
@@ -907,14 +1073,45 @@ test("normalizes only user funding payments from the authenticated Lighter expor
         assert.equal(payload.action, "funding");
         return {
           symbol: "BTC",
+          account_index: 123,
+          market_id: 1,
           funding_rows: [
-            { funding_id: "funding-1", timestamp: "1800003600", change: "-0.0105", quote_asset: "USDC" },
-            { funding_id: "rate-only", timestamp: "1800003600", value: "0.0001" },
+            { funding_id: "funding-1", type: "funding", market_id: 1, timestamp: "1800003600", change: "-0.0105", quote_asset: "USDC" },
           ],
         };
       },
     });
     assert.deepEqual(rows, [{ venue_id: "lighter", asset: "BTC", occurred_at_ms: 1_800_003_600_000, amount_quote: "-0.0105", quote_asset: "USDC", settlement_id: "funding-1" }]);
+  } finally {
+    if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+    else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
+    if (previousMode === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+    else process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = previousMode;
+  }
+});
+
+test("rejects a malformed in-window Lighter settlement instead of omitting a debit", async () => {
+  const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+  const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+  process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = "read_only";
+  try {
+    await assert.rejects(readLighterFundingSettlements({
+      credential: credential(),
+      market: "BTC",
+      start_time_ms: 1_800_000_000_000,
+      end_time_ms: 1_800_003_600_000,
+      runner: async () => ({
+        symbol: "BTC",
+        account_index: 123,
+        market_id: 1,
+        funding_rows: [
+          { funding_id: "funding-credit", type: "funding", market_id: 1, timestamp: "1800003600", change: "0.0105", quote_asset: "USDC" },
+          { funding_id: "funding-debit", type: "funding", market_id: 1, timestamp: "1800003600", change: "invalid", quote_asset: "USDC" },
+        ],
+      }),
+    }), (error) => error.code === "connector_submit_failed"
+      && error.message === "lighter funding history row is invalid");
   } finally {
     if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
     else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
@@ -944,6 +1141,43 @@ test("rejects a malformed Lighter funding history response", async () => {
   }
 });
 
+test("rejects mixed-type or cross-account/market Lighter funding reads", async () => {
+  const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+  const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+  process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = "read_only";
+  try {
+    const base = {
+      symbol: "BTC",
+      account_index: 123,
+      market_id: 1,
+      funding_rows: [
+        { funding_id: "funding-1", type: "funding", market_id: 1, timestamp: "1800003600", change: "0.01", quote_asset: "USDC" },
+      ],
+    };
+    for (const response of [
+      { ...base, account_index: 124 },
+      { ...base, market_id: 2 },
+      { ...base, symbol: "ETH" },
+      { ...base, funding_rows: [...base.funding_rows, { ...base.funding_rows[0], funding_id: "commission-1", type: "trade" }] },
+      { ...base, funding_rows: [{ ...base.funding_rows[0], market_id: 2 }] },
+    ]) {
+      await assert.rejects(readLighterFundingSettlements({
+        credential: credential(),
+        market: "BTC",
+        start_time_ms: 1_800_000_000_000,
+        end_time_ms: 1_800_003_600_000,
+        runner: async () => response,
+      }), (error) => error.code === "connector_submit_failed");
+    }
+  } finally {
+    if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+    else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
+    if (previousMode === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+    else process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = previousMode;
+  }
+});
+
 test("reconciles the exact Lighter client order index", async () => {
   const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
   const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
@@ -954,14 +1188,11 @@ test("reconciles the exact Lighter client order index", async () => {
       credential: credential(),
       clientOrderIndex: 77,
       market: "BTC",
+      expectedOrderFingerprint: fingerprint(),
       runner: async (payload) => {
         assert.equal(payload.client_order_index, 77);
         assert.equal(payload.market, "BTC");
-        return {
-          target_market_checked: true,
-          order: { status: "filled", client_order_index: 77, market_index: 1, order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" },
-          fee_proof: exactFeeProof(),
-        };
+        return boundReconcile({ feeProof: exactFeeProof() });
       },
     });
     assert.equal(result.status, "filled");
@@ -970,8 +1201,10 @@ test("reconciles the exact Lighter client order index", async () => {
     assert.equal(result.final_proof.broadcast_performed, false);
     assert.equal(result.final_proof.original_order_target_matched, true);
     assert.equal(result.final_proof.original_order_broadcast_proven, true);
+    assert.equal(result.fills.length, 2);
+    assert.deepEqual(result.fills.map((fill) => fill.executed_at_ms), [1_800_000_000_100, 1_800_000_000_200]);
     assert.equal(result.fills[0].price, "100000");
-    assert.equal(result.fills[0].fee, "0.05");
+    assert.equal(result.fills[0].fee, "0.02");
     assert.equal(result.fills[0].fee_asset, "USDC");
     assert.equal(result.final_proof.fee_exact, true);
     assert.equal(result.final_proof.fee_quote_amount, "0.05");
@@ -982,10 +1215,10 @@ test("reconciles the exact Lighter client order index", async () => {
       credential: credential(),
       clientOrderIndex: 77,
       market: "BTC",
-      runner: async () => ({
-        target_market_checked: true,
-        order: { status: "filled", client_order_index: 77, market_index: 1, order_index: largeOrderIndex, filled_base_amount: "0.001", filled_quote_amount: "100" },
-        fee_proof: exactFeeProof({ orderIndex: largeOrderIndex }),
+      expectedOrderFingerprint: fingerprint(),
+      runner: async () => boundReconcile({
+        order: venueOrder({ order_index: largeOrderIndex }),
+        feeProof: exactFeeProof({ orderIndex: largeOrderIndex }),
       }),
     });
     assert.equal(largeOrder.provider_ref_seed.order_index, largeOrderIndex);
@@ -995,24 +1228,23 @@ test("reconciles the exact Lighter client order index", async () => {
       credential: credential(),
       clientOrderIndex: 77,
       market: "BTC",
-      runner: async () => ({
-        target_market_checked: true,
-        order: { status: "open", client_order_index: 77, order_index: null, filled_base_amount: "0.0005", filled_quote_amount: "50" },
+      expectedOrderFingerprint: fingerprint(),
+      runner: async () => boundReconcile({
+        order: venueOrder({ status: "open", filled_base_amount: "0.0005", filled_quote_amount: "50" }),
       }),
     });
     assert.equal(partial.status, "open");
     assert.equal(partial.final_proof.final_venue_execution_proven, false);
     assert.equal(partial.final_proof.open_order_count, 1);
-    assert.equal(partial.final_proof.original_order_target_matched, false);
-    assert.equal(partial.final_proof.original_order_broadcast_proven, false);
+    assert.equal(partial.final_proof.original_order_target_matched, true);
+    assert.equal(partial.final_proof.original_order_broadcast_proven, true);
     const incomplete = await reconcileLighterExecution({
       credential: credential(),
       clientOrderIndex: 77,
       market: "BTC",
-      runner: async () => ({
-        target_market_checked: true,
-        order: { status: "filled", client_order_index: 77, market_index: 1, order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" },
-        fee_proof: {
+      expectedOrderFingerprint: fingerprint(),
+      runner: async () => boundReconcile({
+        feeProof: {
           version: 1,
           proof_kind: "lighter_authenticated_order_trades_fee_v1",
           complete: false,
@@ -1035,24 +1267,38 @@ test("reconciles the exact Lighter client order index", async () => {
       credential: credential(),
       clientOrderIndex: 77,
       market: "BTC",
-      runner: async () => ({
-        target_market_checked: true,
-        order: { status: "canceled-too-much-slippage", client_order_index: 77, market_index: 1, order_index: 88, filled_base_amount: "0.0005", filled_quote_amount: "50" },
-        fee_proof: exactFeeProof({ base: "0.0005", quote: "50", fee: "0.025" }),
+      expectedOrderFingerprint: fingerprint(),
+      runner: async () => boundReconcile({
+        order: venueOrder({ status: "canceled-too-much-slippage", filled_base_amount: "0.0005", filled_quote_amount: "50" }),
+        feeProof: exactFeeProof({ base: "0.0005", quote: "50", fee: "0.025" }),
       }),
     });
     assert.equal(cancelledPartial.status, "cancelled");
     assert.equal(cancelledPartial.final_proof.final_venue_execution_proven, true);
     assert.equal(cancelledPartial.final_proof.final_fill_proven, false);
+    assert.equal(cancelledPartial.final_proof.target_fill_set_complete, true);
+    assert.equal(cancelledPartial.final_proof.fill_times_authoritative, true);
     assert.equal(cancelledPartial.final_proof.fee_exact, true);
     assert.equal(cancelledPartial.fills[0].fee, "0.025");
+    const unprovenZero = await reconcileLighterExecution({
+      credential: credential(),
+      clientOrderIndex: 77,
+      market: "BTC",
+      expectedOrderFingerprint: fingerprint(),
+      runner: async () => boundReconcile({
+        order: venueOrder({ status: "canceled-post-only", filled_base_amount: "0", filled_quote_amount: "0" }),
+      }),
+    });
+    assert.equal(unprovenZero.final_proof.final_venue_execution_proven, false);
+    assert.equal(unprovenZero.final_proof.target_fill_set_complete, false);
     const cancelledZero = await reconcileLighterExecution({
       credential: credential(),
       clientOrderIndex: 77,
       market: "BTC",
-      runner: async () => ({
-        target_market_checked: true,
-        order: { status: "canceled-post-only", client_order_index: 77, market_index: 1, order_index: 88, filled_base_amount: "0", filled_quote_amount: "0" },
+      expectedOrderFingerprint: fingerprint(),
+      runner: async () => boundReconcile({
+        order: venueOrder({ status: "canceled-post-only", filled_base_amount: "0", filled_quote_amount: "0" }),
+        feeProof: zeroFeeProof(),
       }),
     });
     assert.equal(cancelledZero.status, "cancelled");
@@ -1061,13 +1307,14 @@ test("reconciles the exact Lighter client order index", async () => {
     assert.equal(cancelledZero.final_proof.fee_quote_amount, "0");
     assert.equal(cancelledZero.final_proof.fee_asset, "USDC");
     assert.equal(cancelledZero.final_proof.fee_evidence_kind, "lighter_terminal_zero_fill_v1");
+    assert.equal(cancelledZero.final_proof.target_fill_set_complete, true);
     const zeroWithoutOrderIndex = await reconcileLighterExecution({
       credential: credential(),
       clientOrderIndex: 77,
       market: "BTC",
-      runner: async () => ({
-        target_market_checked: true,
-        order: { status: "canceled-post-only", client_order_index: 77, market_index: 1, filled_base_amount: "0", filled_quote_amount: "0" },
+      expectedOrderFingerprint: fingerprint(),
+      runner: async () => boundReconcile({
+        order: venueOrder({ status: "canceled-post-only", order_index: undefined, filled_base_amount: "0", filled_quote_amount: "0" }),
       }),
     });
     assert.equal(zeroWithoutOrderIndex.final_proof.original_order_target_matched, false);
@@ -1077,9 +1324,9 @@ test("reconciles the exact Lighter client order index", async () => {
       credential: credential(),
       clientOrderIndex: 77,
       market: "BTC",
-      runner: async () => ({
-        target_market_checked: true,
-        order: { status: "canceled-post-only", client_order_index: 77, market_index: 1, order_index: 88, filled_base_amount: "0", filled_quote_amount: "100" },
+      expectedOrderFingerprint: fingerprint(),
+      runner: async () => boundReconcile({
+        order: venueOrder({ status: "canceled-post-only", filled_base_amount: "0", filled_quote_amount: "100" }),
       }),
     });
     assert.equal(contradictoryZero.final_proof.fee_exact, false);
@@ -1089,9 +1336,9 @@ test("reconciles the exact Lighter client order index", async () => {
         credential: credential(),
         clientOrderIndex: 77,
         market: "BTC",
-        runner: async () => ({
-          target_market_checked: true,
-          order: { status: invalidTerminalStatus, client_order_index: 77, market_index: 1, order_index: 88, filled_base_amount: "0", filled_quote_amount: "0" },
+        expectedOrderFingerprint: fingerprint(),
+        runner: async () => boundReconcile({
+          order: venueOrder({ status: invalidTerminalStatus, filled_base_amount: "0", filled_quote_amount: "0" }),
         }),
       });
       assert.equal(invalidTerminal.status, "outcome_unknown");
@@ -1102,11 +1349,8 @@ test("reconciles the exact Lighter client order index", async () => {
       credential: credential(),
       clientOrderIndex: 77,
       market: "BTC",
-      runner: async () => ({
-        target_market_checked: true,
-        order: { status: "filled", client_order_index: 77, market_index: 1, order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" },
-        fee_proof: exactFeeProof({ orderIndex: 89 }),
-      }),
+      expectedOrderFingerprint: fingerprint(),
+      runner: async () => boundReconcile({ feeProof: exactFeeProof({ orderIndex: 89 }) }),
     }), (error) => error.code === "connector_submit_failed");
   } finally {
     if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
@@ -1177,7 +1421,13 @@ test("keeps explicit Lighter reconciliation bound to the original order across r
         kind: "ghola_private_execution_instruction",
         venue_id: "lighter",
         operation_class: "reconcile",
-        reconcile: { market: "BTC", target_client_order_index: 77 },
+        reconcile: {
+          market: "BTC",
+          target_client_order_index: 77,
+          expected_order_fingerprint: fingerprint(),
+          expected_order_index: 88,
+          submission_tx_hash: "0xoriginal",
+        },
       },
       clientOrderIndex: 91,
       now: () => 1_800_000_000_000,
@@ -1187,11 +1437,7 @@ test("keeps explicit Lighter reconciliation bound to the original order across r
         targets.push(payload.client_order_index);
         reads += 1;
         if (reads === 1) throw new Error("temporary read failure");
-        return {
-          target_market_checked: true,
-          order: { status: "filled", client_order_index: 77, market_index: 1, order_index: 88, filled_base_amount: "0.001", filled_quote_amount: "100" },
-          fee_proof: exactFeeProof(),
-        };
+        return boundReconcile({ feeProof: exactFeeProof() });
       },
     });
     assert.deepEqual(targets, [77, 77]);

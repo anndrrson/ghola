@@ -52,6 +52,28 @@ describe("private-prime readiness", () => {
     expect(carryPrivatePrimeSummary(proof({
       proof_level: "live_paired_lifecycle",
       live_paired_lifecycle_proven: true,
+      paired_lifecycle: pairedLifecycle({
+        exposure_boundary_provenance: "worker_observed_positive_fill_conservative",
+      }),
+    }), NOW).status).toBe("invalid");
+    expect(carryPrivatePrimeSummary(proof({
+      proof_level: "live_paired_lifecycle",
+      live_paired_lifecycle_proven: true,
+      paired_lifecycle: pairedLifecycle({
+        first_exposure_observed_at_ms_by_venue: {},
+        exposure_boundary_provenance_by_venue: {},
+      }),
+    }), NOW).status).toBe("invalid");
+    expect(carryPrivatePrimeSummary(proof({
+      proof_level: "live_paired_lifecycle",
+      live_paired_lifecycle_proven: true,
+      paired_lifecycle: pairedLifecycle({
+        first_exposure_observed_at_ms: NOW - 9_000,
+      }),
+    }), NOW).status).toBe("invalid");
+    expect(carryPrivatePrimeSummary(proof({
+      proof_level: "live_paired_lifecycle",
+      live_paired_lifecycle_proven: true,
       paired_lifecycle: pairedLifecycle({ realized_net_value_micro_usdc: null }),
     }), NOW).status).toBe("invalid");
     expect(carryPrivatePrimeSummary(proof({
@@ -266,6 +288,17 @@ function pairedLifecycle(overrides: Record<string, unknown> = {}) {
     supervised_monitoring_proven: true,
     final_flat_zero_orders: true,
     value_ledger_finalized: true,
+    value_boundary_authoritative: true,
+    exposure_boundary_provenance: "authoritative_exchange_fill_time",
+    first_exposure_observed_at_ms: NOW - 10_000,
+    first_exposure_observed_at_ms_by_venue: {
+      hyperliquid: NOW - 10_000,
+      aster: NOW - 9_000,
+    },
+    exposure_boundary_provenance_by_venue: {
+      hyperliquid: "authoritative_exchange_fill_time",
+      aster: "authoritative_exchange_fill_time",
+    },
     realized_net_value_micro_usdc: 34,
     value_attribution: lifecycleValueAttribution(),
     ambiguity_retry_count: 0,

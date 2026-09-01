@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -119,7 +119,7 @@ test("executes and reconciles a qualified protected perp pair", async (t) => {
       return {
         status: "filled",
         provider_ref_commitment: `provider:${args.venue_id}:0001`,
-        final_proof: { final_venue_execution_proven: true, final_fill_proven: true, cumulative_filled_micro_usdc: 10_000_000, filled_base_size: "0.001" },
+        final_proof: { final_venue_execution_proven: true, final_fill_proven: true, target_fill_set_complete: true, cumulative_filled_micro_usdc: 10_000_000, filled_base_size: "0.001" },
       };
     },
   });
@@ -129,6 +129,52 @@ test("executes and reconciles a qualified protected perp pair", async (t) => {
   assert.equal(calls.length, 2);
   assert.equal(calls.every((call) => call.instruction.order.reduce_only === false), true);
   assert.equal(calls.every((call) => call.execution.carry_position_id === fixture.position_id), true);
+});
+
+test("staggered exchange fills seed independent authoritative funding cursors", async (t) => {
+  const fixture = await setup(t, "staggered-authoritative-fill-boundaries");
+  const boundaries = { aster: NOW + 3, lighter: NOW + 4 };
+  const result = await executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async (args) => {
+      const receipt = exactLiveValueReceipt(args);
+      const firstFillAtMs = boundaries[args.venue_id];
+      return {
+        ...receipt,
+        fills: receipt.fills.map((fill) => ({ ...fill, executed_at_ms: firstFillAtMs })),
+        final_proof: {
+          ...receipt.final_proof,
+          first_fill_at_ms: firstFillAtMs,
+          last_fill_at_ms: firstFillAtMs,
+        },
+      };
+    },
+  });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.record.position.active_observed_at_ms, boundaries.aster);
+  assert.deepEqual(result.record.position.active_observed_at_ms_by_venue, boundaries);
+  assert.deepEqual(result.record.value_evidence.funding.cursor_ms_by_venue, boundaries);
+  assert.deepEqual(result.record.value_evidence.funding.exposure_boundary_provenance_by_venue, {
+    aster: "authoritative_exchange_fill_time",
+    lighter: "authoritative_exchange_fill_time",
+  });
+});
+
+test("executes and claims safely when both venues reuse one account commitment", async (t) => {
+  const fixture = await setup(t, "shared-account-commitment", { long: "aster", short: "lighter" }, {
+    sharedAccountCommitment: "account:shared:carry:0001",
+  });
+  const result = await executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async (args) => filledReceipt(args),
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.record.position.status, "active");
+  const persisted = JSON.parse(readFileSync(
+    join(fixture.state_dir, "private-agent-execution-state-v1.json"),
+    "utf8",
+  ));
+  assert.equal(Object.values(persisted.carry_exposure_reservations).filter((item) => item.active).length, 2);
 });
 
 test("refuses entry when durable opportunity evidence was altered after owner approval", async (t) => {
@@ -141,7 +187,7 @@ test("refuses entry when durable opportunity evidence was altered after owner ap
       horizon_ms: record.opportunity.horizon_ms + 1,
     },
   }, { expected_version: record.record_version });
-  assert.equal(stored.ok, true);
+  assert.equal(stored.ok, true, stored.error);
 
   let preflightCalls = 0;
   let submitCalls = 0;
@@ -412,7 +458,7 @@ test("freezes an ambiguous leg and never submits the entry again", async (t) => 
       return {
         status: "filled",
         provider_ref_commitment: "provider:aster:0001",
-        final_proof: { final_venue_execution_proven: true, final_fill_proven: true, cumulative_filled_micro_usdc: 10_000_000, filled_base_size: "0.001" },
+        final_proof: { final_venue_execution_proven: true, final_fill_proven: true, target_fill_set_complete: true, cumulative_filled_micro_usdc: 10_000_000, filled_base_size: "0.001" },
       };
     },
   });
@@ -423,6 +469,130 @@ test("freezes an ambiguous leg and never submits the entry again", async (t) => 
   const retried = await executeStoredCarryEntry({ ...fixture, executeOrder: async () => { calls += 1; } });
   assert.equal(retried.error, "carry_entry_already_started");
   assert.equal(calls, 2);
+});
+
+test("denies a second Carry entry sharing an owner venue account and asset", async (t) => {
+  const fixture = await setup(t, "overlap-first");
+  const first = await executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async (args) => filledReceipt(args),
+  });
+  assert.equal(first.ok, true);
+  assert.equal(first.record.position.status, "active");
+
+  const pair = { long: "aster", short: "lighter" };
+  const secondId = "carry:position:executor:overlap-second";
+  const secondOpportunity = opportunity(pair);
+  const created = await createStoredCarryPosition({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_input: await signedCarryPositionInput(positionInput(
+      secondId,
+      pair,
+      secondOpportunity.worker_authentication.evidence_commitment,
+    ), { ownerCommitment: OWNER, nowMs: NOW }),
+    opportunity: secondOpportunity,
+    monitoring_context: monitoringContext(pair),
+    now_ms: NOW,
+  });
+  assert.equal(created.ok, true);
+  let preflightCalls = 0;
+  const deniedEntry = await executeStoredCarryEntry({
+    ...fixture,
+    position_id: secondId,
+    preflight: async () => { preflightCalls += 1; return preflightProof(pair); },
+    executeOrder: async () => { throw new Error("must not submit"); },
+  });
+  assert.equal(deniedEntry.ok, false);
+  assert.equal(deniedEntry.error, "carry_account_asset_exposure_overlap");
+  assert.equal(preflightCalls, 1);
+});
+
+test("legacy active position without reservation rows blocks overlapping entry after restart", async (t) => {
+  const fixture = await setup(t, "legacy-overlap-first");
+  await openActive(fixture);
+  const persisted = JSON.parse(readFileSync(
+    join(fixture.state_dir, "private-agent-execution-state-v1.json"),
+    "utf8",
+  ));
+  persisted.carry_exposure_reservations = {};
+  writeFileSync(
+    join(fixture.state_dir, "private-agent-execution-state-v1.json"),
+    JSON.stringify(persisted),
+  );
+
+  const restartedState = createWorkerState(fixture.state_dir);
+  const pair = { long: "aster", short: "lighter" };
+  const secondId = "carry:position:executor:legacy-overlap-second";
+  const secondOpportunity = opportunity(pair);
+  const created = await createStoredCarryPosition({
+    state: restartedState,
+    owner_commitment: OWNER,
+    position_input: await signedCarryPositionInput(positionInput(
+      secondId,
+      pair,
+      secondOpportunity.worker_authentication.evidence_commitment,
+    ), { ownerCommitment: OWNER, nowMs: NOW }),
+    opportunity: secondOpportunity,
+    monitoring_context: monitoringContext(pair),
+    now_ms: NOW,
+  });
+  assert.equal(created.ok, true);
+  let submitCalls = 0;
+  const deniedEntry = await executeStoredCarryEntry({
+    ...fixture,
+    state: restartedState,
+    position_id: secondId,
+    executeOrder: async () => { submitCalls += 1; return {}; },
+  });
+  assert.equal(deniedEntry.error, "carry_account_asset_exposure_overlap");
+  assert.equal(submitCalls, 0);
+  assert.equal((await restartedState.listActiveCarryExposureReservationPositionIds()).length, 0);
+});
+
+test("malformed legacy exposure fails closed instead of silently bypassing overlap", async (t) => {
+  const fixture = await setup(t, "legacy-malformed-first");
+  await openActive(fixture);
+  const statePath = join(fixture.state_dir, "private-agent-execution-state-v1.json");
+  const persisted = JSON.parse(readFileSync(statePath, "utf8"));
+  persisted.carry_exposure_reservations = {};
+  delete persisted.carry_positions[fixture.position_id].monitoring_context.venue_access.aster.account_commitment;
+  writeFileSync(statePath, JSON.stringify(persisted));
+
+  const restartedState = createWorkerState(fixture.state_dir);
+  const pair = { long: "aster", short: "lighter" };
+  const secondId = "carry:position:executor:legacy-malformed-second";
+  const secondOpportunity = opportunity(pair);
+  const created = await createStoredCarryPosition({
+    state: restartedState,
+    owner_commitment: OWNER,
+    position_input: await signedCarryPositionInput(positionInput(
+      secondId,
+      pair,
+      secondOpportunity.worker_authentication.evidence_commitment,
+    ), { ownerCommitment: OWNER, nowMs: NOW }),
+    opportunity: secondOpportunity,
+    monitoring_context: monitoringContext(pair),
+    now_ms: NOW,
+  });
+  assert.equal(created.ok, true);
+  const claim = restartedState.claimCarryExposureReservations.bind(restartedState);
+  let claimResult = null;
+  restartedState.claimCarryExposureReservations = async (...args) => {
+    claimResult = await claim(...args);
+    return claimResult;
+  };
+  let submitCalls = 0;
+  const deniedEntry = await executeStoredCarryEntry({
+    ...fixture,
+    state: restartedState,
+    position_id: secondId,
+    executeOrder: async () => { submitCalls += 1; return {}; },
+  });
+  assert.equal(deniedEntry.error, "carry_account_asset_exposure_overlap");
+  assert.equal(claimResult?.reason, "carry_legacy_exposure_binding_unverifiable");
+  assert.equal(claimResult?.conflicting_position_id, fixture.position_id);
+  assert.equal(submitCalls, 0);
 });
 
 test("restart audit freezes an in-flight opening without resubmission", async (t) => {
@@ -503,6 +673,40 @@ test("restart releases a linked entry only when its saga proves no submit occurr
   assert.equal(submissions, 2);
 });
 
+test("restart proves flat and releases exposure reserved before submission after a crash", async (t) => {
+  const fixture = await setup(t, "restart-after-reservation-claim");
+  const claim = fixture.state.claimCarryExposureReservations.bind(fixture.state);
+  fixture.state.claimCarryExposureReservations = async (...args) => {
+    const claimed = await claim(...args);
+    if (claimed.ok) throw new Error("simulated crash after exposure reservation claim");
+    return claimed;
+  };
+  let submissions = 0;
+  await assert.rejects(executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async () => { submissions += 1; },
+  }), /simulated crash after exposure reservation claim/);
+  assert.equal(submissions, 0);
+  assert.deepEqual(
+    await fixture.state.listActiveCarryExposureReservationPositionIds(),
+    [fixture.position_id],
+  );
+
+  const restarted = createWorkerState(fixture.state_dir);
+  const audited = await auditCarryPositionsAfterRestart({
+    state: restarted,
+    preflight: async () => preflightProof(),
+    now_ms: fixture.now(),
+  });
+  assert.equal(audited.ok, true, JSON.stringify(audited));
+  const reconciled = await restarted.getCarryPositionRecord(fixture.position_id);
+  assert.equal(reconciled.position.status, "reconciled");
+  assert.equal(reconciled.position.terminal_reason, "entry_failed_no_fill");
+  assert.equal(reconciled.final_reconciliation_evidence.gross_exposure_micro_usdc, 0);
+  assert.equal(reconciled.final_reconciliation_evidence.open_order_count, 0);
+  assert.deepEqual(await restarted.listActiveCarryExposureReservationPositionIds(), []);
+});
+
 test("restart completes an exactly reconciled entry orphan without resubmission", async (t) => {
   const fixture = await setup(t, "restart-reconciled-entry");
   const orphan = await createReconciledEntryOrphan(fixture);
@@ -524,6 +728,35 @@ test("restart completes an exactly reconciled entry orphan without resubmission"
   assert.equal(active.position.status, "active");
   assert.equal(active.value_evidence.entry.status, "complete");
   assert.equal(active.lifecycle_events.filter((event) => event.type === "entry_reconciled").length, 1);
+});
+
+test("legacy reconciled saga without an exposure boundary restarts with conservative provenance", async (t) => {
+  const fixture = await setup(t, "restart-legacy-exposure-boundary");
+  const orphan = await createReconciledEntryOrphan(fixture);
+  const legacySaga = structuredClone(orphan.saga);
+  delete legacySaga.first_exposure_observed_at_ms;
+  delete legacySaga.first_exposure_at_ms;
+  delete legacySaga.exposure_boundary_provenance;
+  for (const leg of legacySaga.legs) {
+    delete leg.first_exposure_observed_at_ms;
+    delete leg.exposure_boundary_provenance;
+  }
+  const stored = await fixture.state.putMultiLegSaga(legacySaga, {
+    expected_sequence: legacySaga.last_event_sequence,
+  });
+  assert.equal(stored.ok, true);
+
+  const restarted = createWorkerState(fixture.state_dir);
+  const audited = await auditCarryPositionsAfterRestart({
+    state: restarted,
+    now_ms: fixture.now(),
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(audited.ok, true, JSON.stringify(audited));
+  const active = await restarted.getCarryPositionRecord(fixture.position_id);
+  assert.equal(active.position.status, "active");
+  assert.equal(active.position.active_observed_at_ms, legacySaga.created_at_ms);
+  assert.equal(active.position.active_boundary_provenance, "legacy_conservative_saga_creation");
 });
 
 test("reconciled entry recovery retries after accounting without duplicating value", async (t) => {
@@ -680,6 +913,7 @@ test("restart-frozen reconciled entry resumes active or exiting without resubmis
             status: "reconciled",
             final_proof: {
               final_venue_execution_proven: true,
+              target_fill_set_complete: true,
               cumulative_filled_micro_usdc: scenario.filledMicroUsdc,
               broadcast_performed: true,
               target_client_order_matched: true,
@@ -741,6 +975,7 @@ test("restart-frozen reconciled entry uses recovery time and exits after mandate
       status: "reconciled",
       final_proof: {
         final_venue_execution_proven: true,
+        target_fill_set_complete: true,
         cumulative_filled_micro_usdc: 10_000_000,
         broadcast_performed: true,
         target_client_order_matched: true,
@@ -949,11 +1184,22 @@ test("aborted entry recovery finalizes exact fees, slippage, and round-trip valu
   assert.equal(reconciled.results[0].record.position.status, "reconciled");
   assert.equal(reconciled.results[0].record.value_evidence.aborted_entry_recovery.status, "complete");
   assert.equal(reconciled.results[0].record.value_ledger.status, "open");
+  const observedExposureAt = reconciled.results[0].record.value_evidence.aborted_entry_recovery.exposure_observed_at_ms;
+  const observedExposureByVenue = reconciled.results[0].record.value_evidence.aborted_entry_recovery.exposure_observed_at_ms_by_venue;
+  assert.equal(Number.isSafeInteger(observedExposureAt), true);
+  assert.equal(observedExposureAt > NOW, true);
+  const fundingCursorByVenue = reconciled.results[0].record.value_evidence.funding.cursor_ms_by_venue;
+  assert.equal(fundingCursorByVenue.aster, observedExposureByVenue.aster);
+  assert.equal(fundingCursorByVenue.lighter >= observedExposureAt, true);
   const finalizedState = createWorkerState(fixture.state_dir);
+  const fundingStarts = [];
   const synced = await runCarryExecutionTick({
     ...fixture,
     state: finalizedState,
-    readFundingSettlements: async () => [],
+    readFundingSettlements: async ({ body }) => {
+      fundingStarts.push(body.start_time_ms);
+      return [];
+    },
   });
   assert.equal(synced.ok, true);
   const record = synced.results[0].record;
@@ -976,6 +1222,8 @@ test("aborted entry recovery finalizes exact fees, slippage, and round-trip valu
   assert.equal(record.value_ledger.realized.slippage_micro_usdc, 1_000);
   assert.equal(record.value_ledger.realized.settlement_adjustment_micro_usdc, 10_000);
   assert.equal(record.value_ledger.realized.net_value_micro_usdc, 3_000);
+  assert.deepEqual(fundingStarts, [fundingCursorByVenue.aster]);
+  assert.equal(record.value_evidence.aborted_entry_recovery.exposure_observed_at_ms, observedExposureAt);
 });
 
 test("records a fully rejected pair as flat with no recovery order", async (t) => {
@@ -1047,6 +1295,7 @@ test("routes equal partial IOC entry fills into a deterministic reduce-only exit
       final_proof: {
         final_venue_execution_proven: true,
         final_fill_proven: false,
+        target_fill_set_complete: true,
         cumulative_filled_micro_usdc: 5_000_000,
         filled_base_size: "0.0005",
         open_order_count: 0,
@@ -1610,7 +1859,7 @@ test("finalizes modeled-versus-realized value only after exact costs, funding, a
   const entry = await executeStoredCarryEntry({
     ...fixture,
     executeOrder: async (args) => {
-      const receipt = exactValueReceipt(args);
+      const receipt = exactLiveValueReceipt(args);
       await fixture.state.putIdempotency(args.work_order_commitment, receipt);
       return receipt;
     },
@@ -1641,6 +1890,7 @@ test("finalizes modeled-versus-realized value only after exact costs, funding, a
   assert.equal(result.ok, true);
   assert.equal(result.value_finalized, true);
   assert.equal(result.record.value_ledger.status, "finalized");
+  assert.equal(result.record.value_boundary_authoritative, true);
   assert.equal(result.record.value_ledger.realized.funding_credit_micro_usdc, 20_000);
   assert.equal(result.record.value_ledger.realized.funding_debit_micro_usdc, 5_000);
   assert.equal(result.record.value_ledger.realized.trading_fee_micro_usdc, 14_000);
@@ -1649,6 +1899,64 @@ test("finalizes modeled-versus-realized value only after exact costs, funding, a
   assert.equal(result.record.value_ledger.realized.attribution.trading_fee_micro_usdc, -12_000);
   assert.equal(result.record.value_ledger.realized.attribution.net_value_micro_usdc, -1_000);
   assert.equal(result.record.value_ledger.finalization_evidence.open_order_count, 0);
+});
+
+test("legacy active position without an exposure boundary finalizes only with conservative provenance", async (t) => {
+  const fixture = await setup(t, "legacy-active-exposure-boundary");
+  const entry = await executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async (args) => {
+      const receipt = exactValueReceipt(args);
+      await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(entry.ok, true);
+  const active = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  const legacyPosition = structuredClone(active.position);
+  delete legacyPosition.active_observed_at_ms;
+  delete legacyPosition.active_at_ms;
+  delete legacyPosition.active_boundary_provenance;
+  delete legacyPosition.active_observed_at_ms_by_venue;
+  delete legacyPosition.active_boundary_provenance_by_venue;
+  const statePath = join(fixture.state_dir, "private-agent-execution-state-v1.json");
+  const persisted = JSON.parse(readFileSync(statePath, "utf8"));
+  persisted.carry_positions[fixture.position_id].position = legacyPosition;
+  writeFileSync(statePath, JSON.stringify(persisted));
+  const legacyState = createWorkerState(fixture.state_dir);
+  const exiting = await advanceStoredCarryPosition({
+    state: legacyState,
+    owner_commitment: OWNER,
+    position_id: fixture.position_id,
+    event: {
+      version: 1,
+      event_id: "carry:exit:request:legacy-active-boundary",
+      sequence: legacyPosition.last_event_sequence + 1,
+      type: "manual_exit_requested",
+    },
+    now_ms: NOW + 50,
+  });
+  assert.equal(exiting.ok, true);
+  const result = await executeStoredCarryExit({
+    ...fixture,
+    state: legacyState,
+    readFundingSettlements: async () => [],
+    executeOrder: async (args) => {
+      const receipt = exactValueReceipt(args);
+      await legacyState.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.value_finalized, true);
+  assert.equal(
+    result.record.value_evidence.realized_economics.active_observed_at_ms,
+    legacyPosition.created_at_ms,
+  );
+  assert.equal(
+    result.record.value_evidence.realized_economics.exposure_boundary_provenance,
+    "legacy_conservative_position_creation",
+  );
 });
 
 test("converts each venue PnL independently before final settlement", async (t) => {
@@ -1991,7 +2299,7 @@ async function setup(t, suffix, pair = { long: "aster", short: "lighter" }, opti
       ...(options.mandateExpiresAtMs ? { expiresAtMs: options.mandateExpiresAtMs } : {}),
     }),
     opportunity: creationOpportunity,
-    monitoring_context: monitoringContext(pair),
+    monitoring_context: monitoringContext(pair, options.sharedAccountCommitment),
     now_ms: NOW,
   });
   assert.equal(created.ok, true);
@@ -2002,7 +2310,10 @@ async function setup(t, suffix, pair = { long: "aster", short: "lighter" }, opti
     position_id: positionId,
     recipient: { recipient_id: "did:key:carry-executor" },
     verifyOrder: async (args) => recoveryVerification(args),
-    preflight: async ({ body }) => preflightProof(pair, { phase: body?.phase }),
+    preflight: async ({ body }) => preflightProof(pair, {
+      phase: body?.phase,
+      account_commitment: options.sharedAccountCommitment,
+    }),
     readCashflowValuation: async (request) => executionCashflowValuation(
       request.source_asset,
       request.checked_at_ms,
@@ -2115,11 +2426,11 @@ function authenticatedOpportunity(value) {
   };
 }
 
-function monitoringContext(pair = { long: "aster", short: "lighter" }) {
+function monitoringContext(pair = { long: "aster", short: "lighter" }, sharedAccountCommitment = null) {
   const access = (venue) => ({
     status: "ready",
     owner_commitment: OWNER,
-    account_commitment: `account:${venue}:0001`,
+    account_commitment: sharedAccountCommitment || `account:${venue}:0001`,
     vault_commitment: `vault:${venue}:0001`,
     encrypted_vault_commitment: `encrypted:${venue}:0001`,
     policy_commitment: `policy:${venue}:0001`,
@@ -2134,7 +2445,7 @@ function monitoringContext(pair = { long: "aster", short: "lighter" }) {
   };
 }
 
-function preflightProof(pair = { long: "aster", short: "lighter" }, { phase = "opening" } = {}) {
+function preflightProof(pair = { long: "aster", short: "lighter" }, { phase = "opening", account_commitment: accountCommitment = null } = {}) {
   const exit = phase === "exit";
   return {
     version: 1,
@@ -2142,24 +2453,24 @@ function preflightProof(pair = { long: "aster", short: "lighter" }, { phase = "o
     no_submit_ready: true,
     live_creation_ready: true,
     account_readiness: [
-      { venue_id: pair.long, account_commitment: `account:${pair.long}:0001`, authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
-      { venue_id: pair.short, account_commitment: `account:${pair.short}:0001`, authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
+      { venue_id: pair.long, account_commitment: accountCommitment || `account:${pair.long}:0001`, authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
+      { venue_id: pair.short, account_commitment: accountCommitment || `account:${pair.short}:0001`, authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
     ],
     evidence: [
-      preflightLeg(pair.long, exit ? "sell" : "buy", exit),
-      preflightLeg(pair.short, exit ? "buy" : "sell", exit),
+      preflightLeg(pair.long, exit ? "sell" : "buy", exit, accountCommitment),
+      preflightLeg(pair.short, exit ? "buy" : "sell", exit, accountCommitment),
     ],
   };
 }
 
-function preflightLeg(venueId, side, reduceOnly) {
+function preflightLeg(venueId, side, reduceOnly, accountCommitment = null) {
   const quoteAsset = carryQuoteAsset(venueId);
   const feeSettlementAsset = carryFeeSettlementAsset(venueId);
   const collateralAsset = carryCollateralAsset(venueId);
   const assets = [...new Set([quoteAsset, feeSettlementAsset, collateralAsset])].filter((asset) => asset !== "USDC");
   return {
     venue_id: venueId,
-    account_commitment: `account:${venueId}:0001`,
+    account_commitment: accountCommitment || `account:${venueId}:0001`,
     side,
     transaction_broadcast: false,
     reference_mark_price_e8: 1_000_000_000_000,
@@ -2464,6 +2775,7 @@ function filledReceipt(args) {
     final_proof: {
       final_venue_execution_proven: true,
       final_fill_proven: true,
+      target_fill_set_complete: true,
       cumulative_filled_micro_usdc: 10_000_000,
       filled_base_size: "0.001",
       open_order_count: 0,
@@ -2508,24 +2820,48 @@ function exactValueReceipt(args) {
 
 function exactLiveValueReceipt(args) {
   const receipt = exactValueReceipt(args);
+  if (args.instruction.order.reduce_only === true) {
+    return {
+      ...receipt,
+      result_commitment: `result:${args.venue_id}:exit:0001`,
+      final_proof: {
+        ...receipt.final_proof,
+        broadcast_performed: true,
+        target_client_order_matched: true,
+      },
+    };
+  }
+  const firstFillAtMs = NOW + 3;
   return {
     ...receipt,
     result_commitment: `result:${args.venue_id}:entry:0001`,
+    fills: receipt.fills.map((fill) => ({ ...fill, executed_at_ms: firstFillAtMs })),
     final_proof: {
       ...receipt.final_proof,
       broadcast_performed: true,
       target_client_order_matched: true,
+      first_fill_at_ms: firstFillAtMs,
+      last_fill_at_ms: firstFillAtMs,
+      fill_times_authoritative: true,
+      fill_time_provenance: authoritativeFillTimeSource(args.venue_id),
     },
   };
+}
+
+function authoritativeFillTimeSource(venueId) {
+  if (venueId === "hyperliquid") return "hyperliquid_user_fills_time_v1";
+  if (venueId === "aster") return "aster_fapi_v3_user_trades_time_v1";
+  return "lighter_authenticated_order_trades_timestamp_v1";
 }
 
 function partialLiveValueReceipt(args) {
   const receipt = exactLiveValueReceipt(args);
   return {
     ...receipt,
-    fills: [{ size: "0.0005", price: receipt.fills[0].price, fee: receipt.fills[0].fee, fee_asset: receipt.fills[0].fee_asset }],
+    fills: [{ ...receipt.fills[0], size: "0.0005" }],
     final_proof: {
       ...receipt.final_proof,
+      final_fill_proven: false,
       cumulative_filled_micro_usdc: 5_000_000,
       filled_base_size: "0.0005",
     },

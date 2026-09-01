@@ -370,9 +370,28 @@ export async function advanceStoredCarryPosition({ state, position_id: positionI
       event.type === "reconciliation_complete"
       && event.known_flat === true
       && event.open_order_count === 0
+    ) || (
+      event.type === "entry_failed_no_fill"
+      && event.known_flat === true
+      && event.open_order_count === 0
     )) ? { final_reconciliation_evidence: publicReconciliationEvidence(event, nowMs) } : {}),
     updated_at: new Date(nowMs).toISOString(),
   };
+  if (event.type === "entry_reconciled") {
+    const funding = rebaseFundingToObservedExposure({
+      funding: record.record.value_evidence?.funding,
+      venueIds: [advanced.position.long_venue_id, advanced.position.short_venue_id],
+      observedAtMs: advanced.position.active_observed_at_ms,
+      provenance: advanced.position.active_boundary_provenance,
+      observedAtMsByVenue: advanced.position.active_observed_at_ms_by_venue,
+      provenanceByVenue: advanced.position.active_boundary_provenance_by_venue,
+    });
+    if (!funding.ok) return denied(funding.error);
+    next.value_evidence = {
+      ...(record.record.value_evidence || {}),
+      funding: funding.value,
+    };
+  }
   return storeUpdate(state, next, record.record.record_version, { lifecycle_event: recordedEvent });
 }
 
@@ -900,6 +919,8 @@ export async function compileStoredCarryPortfolioValueReport({
         position_status: record.position?.status,
         target_notional_micro_usdc: record.position?.target_notional_micro_usdc,
         value_ledger: record.value_ledger,
+        value_boundary_authoritative: authoritativeStoredCarryValueBoundary(record),
+        exposure_boundary_provenance: record.position?.active_boundary_provenance || null,
       })),
       capital_evidence: capital.ok
         ? { status: "ready", plan: capital.plan }
@@ -912,6 +933,31 @@ export async function compileStoredCarryPortfolioValueReport({
   } catch (error) {
     return denied(safeError(error));
   }
+}
+
+export function authoritativeStoredCarryValueBoundary(record) {
+  const venueIds = [record.position?.long_venue_id, record.position?.short_venue_id].filter(Boolean);
+  const positionBoundary = record.position?.active_observed_at_ms_by_venue;
+  const positionProvenance = record.position?.active_boundary_provenance_by_venue;
+  const fundingBoundary = record.value_evidence?.funding?.exposure_boundary_observed_at_ms_by_venue;
+  const fundingProvenance = record.value_evidence?.funding?.exposure_boundary_provenance_by_venue;
+  const realizedBoundary = record.value_evidence?.realized_economics?.active_observed_at_ms_by_venue;
+  const realizedProvenance = record.value_evidence?.realized_economics?.exposure_boundary_provenance_by_venue;
+  return record.value_ledger?.status === "finalized"
+    && record.position?.active_boundary_provenance === "authoritative_exchange_fill_time"
+    && record.value_evidence?.realized_economics?.exposure_boundary_provenance === "authoritative_exchange_fill_time"
+    && record.value_evidence?.funding?.exposure_boundary_provenance === "authoritative_exchange_fill_time"
+    && venueIds.length === 2
+    && [positionBoundary, positionProvenance, fundingBoundary, fundingProvenance, realizedBoundary, realizedProvenance]
+      .every((value) => value && typeof value === "object" && !Array.isArray(value)
+        && Object.keys(value).length === venueIds.length)
+    && venueIds.every((venueId) => Number.isSafeInteger(positionBoundary[venueId])
+      && positionBoundary[venueId] > 0
+      && fundingBoundary[venueId] === positionBoundary[venueId]
+      && realizedBoundary[venueId] === positionBoundary[venueId]
+      && positionProvenance[venueId] === "authoritative_exchange_fill_time"
+      && fundingProvenance[venueId] === "authoritative_exchange_fill_time"
+      && realizedProvenance[venueId] === "authoritative_exchange_fill_time");
 }
 
 export async function runCarryMonitoringTick({
@@ -1324,6 +1370,7 @@ export async function collectStoredCarryFundingEvidence({ state, ownerCommitment
       value_evidence: {
         ...(current.value_evidence || {}),
         funding: {
+          ...(current.value_evidence?.funding || {}),
           status: allCurrent && final && current.position.status === "reconciled"
             ? "complete_through_exit"
             : allCurrent ? "current" : "pending_authoritative_settlement_history",
@@ -1341,6 +1388,67 @@ export async function collectStoredCarryFundingEvidence({ state, ownerCommitment
   return {
     record: storedRecord ? publicRecord(storedRecord) : null,
     summary: { status: venues.every((venueId) => venueStatus[venueId] === "current") ? "current" : "pending", venue_status: venueStatus },
+  };
+}
+
+function rebaseFundingToObservedExposure({
+  funding,
+  venueIds,
+  observedAtMs,
+  provenance,
+  observedAtMsByVenue,
+  provenanceByVenue,
+}) {
+  if (!Number.isSafeInteger(observedAtMs) || observedAtMs <= 0) {
+    return denied("carry_funding_exposure_boundary_invalid");
+  }
+  const authoritative = provenance === "authoritative_exchange_fill_time";
+  const explicitMaps = observedAtMsByVenue && typeof observedAtMsByVenue === "object" && !Array.isArray(observedAtMsByVenue)
+    && provenanceByVenue && typeof provenanceByVenue === "object" && !Array.isArray(provenanceByVenue);
+  if (authoritative && !explicitMaps) return denied("carry_funding_exposure_boundary_invalid");
+  const boundaryByVenue = observedAtMsByVenue && typeof observedAtMsByVenue === "object"
+    ? observedAtMsByVenue
+    : Object.fromEntries(venueIds.map((venueId) => [venueId, observedAtMs]));
+  const boundaryProvenanceByVenue = provenanceByVenue && typeof provenanceByVenue === "object"
+    ? provenanceByVenue
+    : Object.fromEntries(venueIds.map((venueId) => [venueId, provenance]));
+  if (Object.keys(boundaryByVenue).length !== venueIds.length
+    || Object.keys(boundaryProvenanceByVenue).length !== venueIds.length
+    || !venueIds.every((venueId) => Number.isSafeInteger(boundaryByVenue[venueId])
+      && boundaryByVenue[venueId] > 0
+      && typeof boundaryProvenanceByVenue[venueId] === "string")
+    || Math.min(...venueIds.map((venueId) => boundaryByVenue[venueId])) !== observedAtMs) {
+    return denied("carry_funding_exposure_boundary_invalid");
+  }
+  const current = funding && typeof funding === "object" ? funding : {};
+  const priorBoundary = current.exposure_boundary_observed_at_ms ?? current.exposure_boundary_ms;
+  if (priorBoundary !== undefined && priorBoundary !== null) {
+    if (priorBoundary !== observedAtMs) return denied("carry_funding_exposure_boundary_conflict");
+    const priorByVenue = current.exposure_boundary_observed_at_ms_by_venue;
+    if (priorByVenue && venueIds.some((venueId) => priorByVenue[venueId] !== boundaryByVenue[venueId])) {
+      return denied("carry_funding_exposure_boundary_conflict");
+    }
+    return {
+      ok: true,
+      value: {
+        ...current,
+        exposure_boundary_observed_at_ms: observedAtMs,
+        exposure_boundary_provenance: current.exposure_boundary_provenance || provenance,
+        exposure_boundary_observed_at_ms_by_venue: current.exposure_boundary_observed_at_ms_by_venue || boundaryByVenue,
+        exposure_boundary_provenance_by_venue: current.exposure_boundary_provenance_by_venue || boundaryProvenanceByVenue,
+      },
+    };
+  }
+  return {
+    ok: true,
+    value: {
+      ...current,
+      cursor_ms_by_venue: Object.fromEntries(venueIds.map((venueId) => [venueId, boundaryByVenue[venueId]])),
+      exposure_boundary_observed_at_ms: observedAtMs,
+      exposure_boundary_provenance: provenance,
+      exposure_boundary_observed_at_ms_by_venue: boundaryByVenue,
+      exposure_boundary_provenance_by_venue: boundaryProvenanceByVenue,
+    },
   };
 }
 
@@ -1704,7 +1812,10 @@ function publicRecord(record) {
     opportunity_authentication_material: _opportunityAuthenticationMaterial,
     ...safe
   } = record;
-  return JSON.parse(JSON.stringify(safe));
+  return JSON.parse(JSON.stringify({
+    ...safe,
+    value_boundary_authoritative: authoritativeStoredCarryValueBoundary(record),
+  }));
 }
 
 function opportunityAuthenticationMaterial(value) {

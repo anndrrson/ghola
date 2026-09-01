@@ -224,7 +224,34 @@ test("rejects wrapper-time progress that reuses every venue source observation",
   const result = verifyCarryShadowSoak(samples);
   assert.equal(result.ok, false);
   assert.ok(result.failures.includes("shadow_soak_source_observation_commitments_reused"));
-  assert.ok(result.failures.includes("shadow_soak_source_observation_reused:1:hyperliquid:BTC:hyperliquid:BTC"));
+  assert.ok(result.failures.includes("shadow_soak_source_observation_reused:1:hyperliquid:BTC:hyperliquid:BTC:market"));
+  assert.ok(result.failures.includes("shadow_soak_source_observation_reused:1:hyperliquid:BTC:hyperliquid:BTC:funding"));
+  assert.ok(result.failures.includes("shadow_soak_source_observation_reused:1:hyperliquid:BTC:hyperliquid:BTC:orderbook"));
+});
+
+test("rejects frozen Hyperliquid context even while every L2 book advances", () => {
+  const samples = [0, 1, 2].map((offset) => {
+    const observedAtMs = NOW + offset * 1_000;
+    const rows = fixture(DEFAULT_CARRY_SHADOW_ASSETS, observedAtMs);
+    const hyperliquid = rows.find((row) => row.venue_id === "hyperliquid");
+    for (const snapshot of hyperliquid.snapshots) {
+      snapshot.as_of_ms = NOW;
+      snapshot.source_observed_at_ms.market = NOW;
+      snapshot.source_observed_at_ms.funding = NOW;
+    }
+    return verifyCarryShadowSet(rows, { now_ms: observedAtMs });
+  });
+  assert.equal(samples.every((sample) => sample.ok), true);
+
+  const result = verifyCarryShadowSoak(samples);
+
+  assert.equal(result.ok, false);
+  assert.ok(result.failures.includes("shadow_soak_source_observation_reused:1:hyperliquid:BTC:hyperliquid:BTC:market"));
+  assert.ok(result.failures.includes("shadow_soak_source_observation_reused:1:hyperliquid:BTC:hyperliquid:BTC:funding"));
+  assert.equal(
+    result.failures.includes("shadow_soak_source_observation_reused:1:hyperliquid:BTC:hyperliquid:BTC:orderbook"),
+    false,
+  );
 });
 
 test("rejects a venue source timestamp that regresses between samples", () => {

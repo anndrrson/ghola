@@ -121,9 +121,11 @@ def main():
         if op in ("read", "reconcile"):
             info = Info(base_url, skip_ws=True)
             fills = info.user_fills_by_time(account_address, int((time.time() - 86400) * 1000))
+            if not isinstance(fills, list) or len(fills) > 32000:
+                fail("hyperliquid fill history exceeds the bounded evidence window", "connector_submit_failed")
             print(json.dumps({
                 "status": "reconciled",
-                "fills": [redact_fill(fill) for fill in fills[:25]],
+                "fills": [redact_fill(fill) for fill in fills],
             }))
             return
     except Exception:

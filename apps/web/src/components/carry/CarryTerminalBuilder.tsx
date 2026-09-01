@@ -40,6 +40,7 @@ import { useThumperAuth } from "@/lib/thumper-auth-context";
 
 type CarryRecord = {
   qualification_pilot?: { enabled?: boolean; candidate_venue_id?: string };
+  value_boundary_authoritative?: boolean;
   position: {
     position_id: string;
     asset: string;
@@ -49,6 +50,7 @@ type CarryRecord = {
     status: string;
     next_actions: string[];
     last_event_sequence: number;
+    active_boundary_provenance?: string | null;
     consecutive_exit_observations?: number;
     risk_mandate?: {
       exit_net_value_bps?: number;
@@ -310,7 +312,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const runway = carryRunwaySummary(latestObservation, candidate);
   const carrySignal = carryFundingFlipSummary(current?.position, latestObservation);
   const capital = carryCapitalSummary(latestObservation?.capital_action_plan);
-  const ledger = carryLedgerSummary(current?.value_ledger);
+  const ledger = carryLedgerSummary(current);
   const proofOpportunity = proof ? asRecord(proof.creation_opportunity) : null;
   const actionableProof = proof?.live_creation_ready === true || proof?.qualification_pilot_ready === true;
   const creationProofFreshness = carryCreationProofFreshness(proofOpportunity);
@@ -1248,6 +1250,7 @@ export function carryPortfolioValueSummary(report: Record<string, unknown> | nul
   const positions = finiteNumber(report.position_count);
   const open = finiteNumber(report.open_position_count);
   const finalized = finiteNumber(report.finalized_position_count);
+  const authoritativeFinalized = finiteNumber(report.authoritative_finalized_position_count);
   const modeled = finiteNumber(asRecord(report.modeled).net_value_micro_usdc);
   const finalizedValues = asRecord(report.finalized_after_costs);
   const realized = finiteNumber(finalizedValues.net_value_micro_usdc);
@@ -1263,8 +1266,15 @@ export function carryPortfolioValueSummary(report: Record<string, unknown> | nul
     return { value: "UNVERIFIED FX BASIS", tone: "bad" as const };
   }
   const expectedStatus = finalized === positions ? "finalized" : finalized > 0 ? "mixed" : "accruing";
-  if (report.value_proof_status !== expectedStatus) return null;
   if (finalized > 0) {
+    if (report.value_proof_status !== expectedStatus
+      || !Number.isSafeInteger(authoritativeFinalized)
+      || authoritativeFinalized !== finalized
+      || report.finalized_value_provenance !== "authoritative_exchange_fill_time"
+      || report.real_value_verified !== true
+      || finalizedValues.complete !== true) {
+      return { value: "UNVERIFIED", tone: "bad" as const };
+    }
     return {
       value: open > 0
         ? `${formatMicroUsd(realized)} REAL · ${formatMicroUsd(openModeled)} OPEN MODEL · ${formatSignedMicroUsd(variance)} Δ · USDC @ BOOKED FX`
@@ -1272,6 +1282,7 @@ export function carryPortfolioValueSummary(report: Record<string, unknown> | nul
       tone: realized >= 0 ? "good" as const : "bad" as const,
     };
   }
+  if (report.value_proof_status !== expectedStatus) return null;
   return { value: `${formatMicroUsd(modeled)} MODEL · ACCRUING · USDC`, tone: "warn" as const };
 }
 
@@ -1441,12 +1452,18 @@ function carryCapitalSummary(plan: NonNullable<CarryRecord["latest_observation"]
   } as const;
 }
 
-function carryLedgerSummary(ledger: CarryRecord["value_ledger"]) {
+export function carryLedgerSummary(record: CarryRecord | null) {
+  const ledger = record?.value_ledger;
   if (!ledger) return { value: "PENDING", execution: "PENDING" } as const;
   const modeled = ledger.modeled?.net_value_micro_usdc;
   if (!Number.isSafeInteger(modeled)) return { value: "UNVERIFIED", execution: "UNVERIFIED", tone: "bad", executionTone: "bad" } as const;
   if (ledger.status !== "finalized") {
     return { value: `${formatMicroUsd(Number(modeled))} MODEL`, execution: "ACCRUING" } as const;
+  }
+  if (record?.position.status !== "reconciled"
+    || record.value_boundary_authoritative !== true
+    || record.position.active_boundary_provenance !== "authoritative_exchange_fill_time") {
+    return { value: "UNVERIFIED", execution: "UNVERIFIED", tone: "bad", executionTone: "bad" } as const;
   }
   const realized = ledger.realized?.net_value_micro_usdc;
   const variance = ledger.realized?.variance_from_modeled_micro_usdc;

@@ -1415,8 +1415,8 @@ test("enables an economically eligible Aster pair only after deployment-bound qu
       network: "mainnet",
       verified_at_ms: NOW,
       no_submit: { account_commitment: access().account_commitment, transaction_broadcast: false, account_state_checked: true, order_request_checked: true, evidence_commitment: "no_submit_aster_0001" },
-      entry_reconciliation: { account_commitment: access().account_commitment, live_order_broadcast: true, target_client_order_matched: true, final_venue_execution_proven: true, filled_base_size: "0.001", evidence_commitment: "entry_aster_0001" },
-      exit_recovery: { account_commitment: access().account_commitment, live_order_broadcast: true, reduce_only: true, exact_base_quantity: true, final_venue_execution_proven: true, account_state_checked: true, gross_exposure_micro_usdc: 0, open_order_count: 0, evidence_commitment: "exit_aster_0001" },
+      entry_reconciliation: { account_commitment: access().account_commitment, live_order_broadcast: true, target_client_order_matched: true, final_venue_execution_proven: true, target_fill_set_complete: true, filled_base_size: "0.001", evidence_commitment: "entry_aster_0001" },
+      exit_recovery: { account_commitment: access().account_commitment, live_order_broadcast: true, reduce_only: true, exact_base_quantity: true, final_venue_execution_proven: true, target_fill_set_complete: true, account_state_checked: true, gross_exposure_micro_usdc: 0, open_order_count: 0, evidence_commitment: "exit_aster_0001" },
       submission_attempts: {
         entry: { work_order_commitment: "work:carry:entry:aster:0001", account_commitment: access().account_commitment, submit_count: 1, ambiguity_retry_count: 0, evidence_commitment: "attempt:entry:aster:0001" },
         exit: { work_order_commitment: "work:carry:exit:aster:0001", account_commitment: access().account_commitment, submit_count: 1, ambiguity_retry_count: 0, evidence_commitment: "attempt:exit:aster:0001" },

@@ -215,15 +215,26 @@ export async function readAsterFundingSettlements({
     throw new AsterExecutionError("aster funding history response is invalid", 502, "connector_submit_failed");
   }
   const settlements = rows.map((row) => {
+    const occurredAtMs = Number(row?.time);
+    const quoteAsset = String(row?.asset || "").toUpperCase();
+    if (!row || typeof row !== "object" || Array.isArray(row)
+      || row.incomeType !== "FUNDING_FEE"
+      || String(row.symbol || "").toUpperCase() !== normalizedSymbol
+      || !Number.isSafeInteger(occurredAtMs)
+      || occurredAtMs < start
+      || occurredAtMs > end
+      || quoteAsset.length === 0) {
+      throw new AsterExecutionError("aster funding history row binding is invalid", 502, "connector_submit_failed");
+    }
     const amount = nativeSettlementAmount(row?.income);
     const settlement = {
       venue_id: "aster",
       asset: normalizedSymbol.replace(/USDT$/, ""),
-      occurred_at_ms: Number(row?.time),
+      occurred_at_ms: occurredAtMs,
       amount_quote: amount.decimal,
       amount_quote_scale: amount.scale,
       amount_quote_micro: amount.micro,
-      quote_asset: String(row?.asset || "USDT").toUpperCase(),
+      quote_asset: quoteAsset,
       settlement_id: String(row?.tranId ?? `${row?.time}:${normalizedSymbol}`),
     };
     if (!Number.isSafeInteger(settlement.occurred_at_ms)
@@ -328,6 +339,7 @@ export async function reconcileAsterExecution({
   fetchImpl = fetch,
   now = () => Date.now(),
   env = process.env,
+  includeTradeEvidence = true,
 }) {
   assertAsterPilotMode(credential, "reconcile", env);
   const symbol = asterSymbol(market);
@@ -351,6 +363,7 @@ export async function reconcileAsterExecution({
         original_order_broadcast_proven: false,
         final_venue_execution_proven: false,
         final_fill_proven: false,
+        target_fill_set_complete: false,
         checked_at: new Date(now()).toISOString(),
       },
     };
@@ -366,7 +379,7 @@ export async function reconcileAsterExecution({
   const exactOriginalOrderObserved = reconciled.final_proof?.target_client_order_matched === true
     && reconciled.final_proof?.target_symbol_matched === true
     && exactUnsignedIdentifier(reconciled.provider_ref_seed?.order_id) !== null;
-  return {
+  const result = {
     ...reconciled,
     final_proof: {
       ...reconciled.final_proof,
@@ -380,9 +393,13 @@ export async function reconcileAsterExecution({
       original_order_target_matched: exactOriginalOrderObserved,
       original_order_broadcast_proven: exactOriginalOrderObserved,
       final_fill_proven: reconciled.status === "filled",
+      target_fill_set_complete: false,
       checked_at: new Date(now()).toISOString(),
     },
   };
+  return includeTradeEvidence === true && result.final_proof.final_venue_execution_proven === true
+    ? attachExactAsterTrades(result, { credential, fetchImpl, now, env })
+    : result;
 }
 
 export async function submitAndReconcileAsterExecution({
@@ -443,22 +460,14 @@ export async function submitAndReconcileAsterExecution({
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     attempts = attempt;
     try {
-      const reconciled = await submitAsterExecution({
+      const reconciled = await reconcileAsterExecution({
         credential,
-        instruction: {
-          version: 1,
-          kind: "ghola_private_execution_instruction",
-          venue_id: "aster",
-          operation_class: "reconcile",
-          reconcile: {
-            market: reconciliationMarket,
-            target_client_order_id: reconciliationClientOrderId,
-          },
-        },
-        clientOrderId: reconciliationClientOrderId,
+        market: reconciliationMarket,
+        targetClientOrderId: reconciliationClientOrderId,
         fetchImpl,
         now,
         env,
+        includeTradeEvidence: false,
       });
       if (reconciled.final_proof?.target_client_order_matched === true
         && reconciledOrderIdMatchesSubmission(reconciled, submitted)) {
@@ -481,13 +490,20 @@ export async function submitAndReconcileAsterExecution({
     await sleep(interval);
   }
   if (exactOrderObserved) {
-    return attachExactAsterTrades(reconciledAsterResult(last, submitted, {
+    const reconciled = reconciledAsterResult(last, submitted, {
       reconcileOnly,
       submissionResponseAmbiguous,
       readFailures,
       attempts,
       exhausted: true,
-    }), { credential, fetchImpl, now, env });
+    });
+    if (reconciled.final_proof?.final_venue_execution_proven === true) {
+      return attachExactAsterTrades(reconciled, { credential, fetchImpl, now, env });
+    }
+    if (String(reconciled.final_proof?.venue_status || "").toUpperCase() === "FILLED") {
+      throw ambiguousAsterTradeEvidence("aster filled order has no exact execution");
+    }
+    return reconciled;
   }
   throw new AsterExecutionError(
     "aster submission outcome remains ambiguous after bounded exact-order reconciliation",
@@ -530,7 +546,10 @@ async function attachExactAsterTrades(result, { credential, fetchImpl, now, env 
   assertAsterPilotMode(credential, "read", env);
   const proof = result?.final_proof;
   const order = result?.result_seed?.order_evidence;
-  if (proof?.target_client_order_matched !== true || proof?.target_symbol_matched !== true || !order) {
+  if (proof?.final_venue_execution_proven !== true
+    || proof?.target_client_order_matched !== true
+    || proof?.target_symbol_matched !== true
+    || !order) {
     throw ambiguousAsterTradeEvidence("aster exact order lineage is unavailable");
   }
   const symbol = asterSymbol(order.symbol);
@@ -610,6 +629,7 @@ async function attachExactAsterTrades(result, { credential, fetchImpl, now, env 
       quote_notional: exactDecimalString(quoteNotional),
       fee: exactDecimalString(realizedFee),
       fee_asset: commissionAsset,
+      executed_at_ms: tradeTimeMs,
     });
   }
   const filledBase = sumExactDecimals(quantities);
@@ -627,6 +647,7 @@ async function attachExactAsterTrades(result, { credential, fetchImpl, now, env 
   const averageFillPrice = filledBase.coefficient > 0n
     ? exactDecimalRatio(filledQuote, filledBase, 18)
     : "0";
+  const fillTimes = fills.map((fill) => fill.executed_at_ms);
   return {
     ...result,
     result_seed: {
@@ -659,6 +680,11 @@ async function attachExactAsterTrades(result, { credential, fetchImpl, now, env 
       realized_fees_exact: true,
       realized_fee_source: "aster_fapi_v3_user_trades_v1",
       user_trade_count: fills.length,
+      target_fill_set_complete: true,
+      first_fill_at_ms: fillTimes.length > 0 ? Math.min(...fillTimes) : null,
+      last_fill_at_ms: fillTimes.length > 0 ? Math.max(...fillTimes) : null,
+      fill_times_authoritative: fillTimes.length > 0,
+      fill_time_provenance: fillTimes.length > 0 ? "aster_fapi_v3_user_trades_time_v1" : null,
     },
   };
 }
@@ -1001,6 +1027,7 @@ function normalizedResult(payload, {
       target_symbol_matched: targetSymbolMatched,
       broadcast_performed: broadcastPerformed && !dryRun,
       final_venue_execution_proven: targetMatched && (status === "filled" || status === "cancelled" || status === "rejected"),
+      target_fill_set_complete: false,
       filled_base_size: executedQty,
       average_fill_price: averagePrice,
       filled_quote_notional: payload?.cumQuote ?? null,

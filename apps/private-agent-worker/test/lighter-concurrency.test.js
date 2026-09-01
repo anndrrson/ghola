@@ -46,11 +46,25 @@ appendFileSync(process.env.GHOLA_LIGHTER_TEST_LOG, payload.action + "\\n");
 const result = payload.action === "submit"
   ? { accepted: true, status: "submitted", tx_hash: "lighter-test-tx" }
   : {
+      account_index: 123,
+      market_id: 1,
       target_market_checked: true,
+      target_fingerprint_checked: true,
+      target_fingerprint_matched: true,
+      target_identifier_collision: false,
       order: {
+        owner_account_index: 123,
         client_order_index: payload.client_order_index,
         order_index: "7",
         market_index: 1,
+        initial_base_amount: payload.expected_order_fingerprint.base_size,
+        price: payload.expected_order_fingerprint.limit_price,
+        is_ask: payload.expected_order_fingerprint.side === "sell",
+        side: payload.expected_order_fingerprint.side,
+        type: "limit",
+        time_in_force: "immediate-or-cancel",
+        reduce_only: payload.expected_order_fingerprint.reduce_only,
+        created_at: payload.expected_order_fingerprint.submitted_at_ms,
         status: "filled",
         filled_base_amount: "0.01",
         filled_quote_amount: "10"
@@ -72,6 +86,18 @@ const result = payload.action === "submit"
         filled_quote_amount: "10",
         fee_quote_amount: "0.001",
         fee_asset: "USDC",
+        first_fill_at_ms: payload.expected_order_fingerprint.submitted_at_ms + 1,
+        last_fill_at_ms: payload.expected_order_fingerprint.submitted_at_ms + 1,
+        fill_time_provenance: "lighter_authenticated_order_trades_timestamp_v1",
+        fill_times_authoritative: true,
+        authenticated_fills: [{
+          size: "0.01",
+          quote_size: "10",
+          price: "1000",
+          fee: "0.001",
+          fee_asset: "USDC",
+          executed_at_ms: payload.expected_order_fingerprint.submitted_at_ms + 1
+        }],
         fee_rate_tick_denominator: 1000000,
         quote_atomic_denominator: 1000000,
         evidence_commitment: "sha256:${"ab".repeat(32)}"

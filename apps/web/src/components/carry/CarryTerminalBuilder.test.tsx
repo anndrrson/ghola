@@ -10,6 +10,7 @@ import {
   carryCheckFailure,
   carryFundingPersistenceSummary,
   carryLiquidationSummary,
+  carryLedgerSummary,
   carryMatrixPairReady,
   carryOpeningCapitalSummary,
   carryPortfolioRunwaySummary,
@@ -1179,10 +1180,14 @@ describe("CarryTerminalBuilder", () => {
         position_count: 2,
         open_position_count: 1,
         finalized_position_count: 1,
+        authoritative_finalized_position_count: 1,
+        finalized_value_provenance: "authoritative_exchange_fill_time",
+        real_value_verified: true,
         modeled: { net_value_micro_usdc: 25_000_000 },
         finalized_after_costs: {
           net_value_micro_usdc: 19_500_000,
           variance_from_modeled_micro_usdc: 4_500_000,
+          complete: true,
         },
         unfinalized: { modeled_net_value_micro_usdc: 10_000_000 },
         capital_efficiency: {
@@ -1270,9 +1275,10 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("CAPITAL");
     expect(container.textContent).toContain("$10 → LIGHTER · OWNER");
     expect(container.textContent).toContain("LEDGER");
-    expect(container.textContent).toContain("$19.5 REAL · +$4.5 Δ");
+    expect(container.textContent).toContain("LEDGERUNVERIFIED");
+    expect(container.textContent).not.toContain("$19.5 REAL · +$4.5 Δ");
     expect(container.textContent).toContain("EXEC Δ");
-    expect(container.textContent).toContain("FEE +$0.5 · SLIP −$0.25");
+    expect(container.textContent).toContain("EXEC ΔUNVERIFIED");
     expect(container.textContent).toContain("MONITOR");
     expect(container.textContent).toContain("0S AGO");
     expect(container.textContent).toContain("PORTFOLIO CAPITAL · $15 REALLOCATE · $10 NEW CASH · OWNER ONLY");
@@ -1380,6 +1386,84 @@ describe("CarryTerminalBuilder", () => {
       automatic_transfer_permitted: false,
       owner_only_operations: ["fund", "transfer", "withdraw"],
     })).toEqual({ value: "UNVERIFIED FX BASIS", tone: "bad" });
+  });
+
+  it("labels portfolio P&L real only when every finalized position has an authoritative boundary", () => {
+    const report = {
+      kind: "ghola_carry_portfolio_value_report",
+      value_proof_status: "finalized",
+      position_count: 1,
+      open_position_count: 0,
+      finalized_position_count: 1,
+      authoritative_finalized_position_count: 1,
+      finalized_value_provenance: "authoritative_exchange_fill_time",
+      real_value_verified: true,
+      modeled: { net_value_micro_usdc: 20_000_000 },
+      finalized_after_costs: {
+        net_value_micro_usdc: 19_500_000,
+        variance_from_modeled_micro_usdc: -500_000,
+        complete: true,
+      },
+      unfinalized: { modeled_net_value_micro_usdc: 0 },
+      valuation_asset: "USDC",
+      funding_valuation_basis: "usdc_equivalent_at_ledger_ingestion",
+      proposal_only: true,
+      transaction_broadcast: false,
+      automatic_transfer_permitted: false,
+      owner_only_operations: ["fund", "transfer", "withdraw"],
+    };
+    expect(carryPortfolioValueSummary(report)).toEqual({
+      value: "$19.5 REAL · −$0.5 Δ · ALL COSTS · USDC @ BOOKED FX",
+      tone: "good",
+    });
+    expect(carryPortfolioValueSummary({
+      ...report,
+      value_proof_status: "finalized_unverified",
+      authoritative_finalized_position_count: 0,
+      finalized_value_provenance: "unverified_or_conservative",
+      real_value_verified: false,
+      finalized_after_costs: { ...report.finalized_after_costs, complete: false },
+    })).toEqual({ value: "UNVERIFIED", tone: "bad" });
+  });
+
+  it("labels a finalized ledger real only with authoritative exchange boundaries", () => {
+    const record = {
+      ...carryRecord(),
+      value_boundary_authoritative: true,
+      position: {
+        ...carryRecord().position,
+        status: "reconciled",
+        active_boundary_provenance: "authoritative_exchange_fill_time",
+      },
+      value_ledger: {
+        status: "finalized" as const,
+        modeled: { net_value_micro_usdc: 15_000_000 },
+        realized: {
+          net_value_micro_usdc: 19_500_000,
+          variance_from_modeled_micro_usdc: 4_500_000,
+          attribution: {
+            status: "finalized" as const,
+            trading_fee_micro_usdc: 500_000,
+            slippage_micro_usdc: -250_000,
+          },
+        },
+      },
+    };
+    expect(carryLedgerSummary(record)).toMatchObject({
+      value: "$19.5 REAL · +$4.5 Δ",
+      execution: "FEE +$0.5 · SLIP −$0.25",
+    });
+    expect(carryLedgerSummary({
+      ...record,
+      value_boundary_authoritative: false,
+    })).toMatchObject({ value: "UNVERIFIED", execution: "UNVERIFIED" });
+    expect(carryLedgerSummary({
+      ...record,
+      position: {
+        ...record.position,
+        active_boundary_provenance: "worker_observed_positive_fill_conservative",
+      },
+    })).toMatchObject({ value: "UNVERIFIED", execution: "UNVERIFIED" });
   });
 
   it("shows fresh account-state proof after an approved capital plan restores safe runway", async () => {

@@ -98,6 +98,17 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
   const lifecycleExpiresAt = integer(pairedLifecycle.expires_at_ms);
   const lifecycleRealizedNet = integer(pairedLifecycle.realized_net_value_micro_usdc);
   const lifecycleAttribution = parseLifecycleValueAttribution(pairedLifecycle.value_attribution);
+  const lifecycleFirstExposure = integer(pairedLifecycle.first_exposure_observed_at_ms);
+  const lifecycleBoundaries = record(pairedLifecycle.first_exposure_observed_at_ms_by_venue);
+  const lifecycleProvenances = record(pairedLifecycle.exposure_boundary_provenance_by_venue);
+  const lifecycleBoundaryReady = lifecycleVenues.length === 2
+    && Object.keys(lifecycleBoundaries).length === 2
+    && Object.keys(lifecycleProvenances).length === 2
+    && lifecycleVenues.every((venueId) => integer(lifecycleBoundaries[venueId]) !== null
+      && Number(lifecycleBoundaries[venueId]) > 0
+      && lifecycleProvenances[venueId] === "authoritative_exchange_fill_time")
+    && lifecycleFirstExposure !== null
+    && lifecycleFirstExposure === Math.min(...lifecycleVenues.map((venueId) => Number(lifecycleBoundaries[venueId])));
   const lifecycleReady = pairedLifecycle.verified === true
     && pairedLifecycle.asset === value.asset
     && lifecycleVenues.length === 2
@@ -112,6 +123,9 @@ export function carryPrivatePrimeSummary(input: unknown, nowMs = Date.now()): Ca
     && pairedLifecycle.supervised_monitoring_proven === true
     && pairedLifecycle.final_flat_zero_orders === true
     && pairedLifecycle.value_ledger_finalized === true
+    && pairedLifecycle.value_boundary_authoritative === true
+    && pairedLifecycle.exposure_boundary_provenance === "authoritative_exchange_fill_time"
+    && lifecycleBoundaryReady
     && lifecycleRealizedNet !== null
     && lifecycleAttribution?.realized.net_value_micro_usdc === lifecycleRealizedNet
     && pairedLifecycle.ambiguity_retry_count === 0

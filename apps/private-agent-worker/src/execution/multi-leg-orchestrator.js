@@ -11,6 +11,12 @@ import {
 
 const MAX_EXACT_BASE_DIGITS = 80;
 const MAX_EXACT_BASE_SCALE = 40;
+const AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE = "authoritative_exchange_fill_time";
+const AUTHORITATIVE_FILL_TIME_PROVENANCE_BY_VENUE = Object.freeze({
+  hyperliquid: "hyperliquid_user_fills_time_v1",
+  lighter: "lighter_authenticated_order_trades_timestamp_v1",
+  aster: "aster_fapi_v3_user_trades_time_v1",
+});
 
 export async function createDurableMultiLegSaga({ state, definition, execution_context = null }) {
   assertState(state);
@@ -324,7 +330,8 @@ function assessOriginalOrderReconciliation({ leg, context, receipt, env }) {
   if (env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true" && !recoveryProofTargetsLeg(leg.venue_id, proof)) {
     return { ok: false, error: "original_order_target_unproven" };
   }
-  if (proof?.final_venue_execution_proven !== true) {
+  if (proof?.final_venue_execution_proven !== true
+    || proof?.target_fill_set_complete !== true) {
     return { ok: false, error: "original_order_terminal_unproven" };
   }
   const baseModeReduceOnly = context.instruction?.order?.reduce_only === true
@@ -1020,6 +1027,10 @@ async function applyRecoveryFillIfNew({ state, saga, leg, evidence, nowMs }) {
     values: {
       leg_id: leg.leg_id,
       cumulative_filled_micro_usdc: evidence.filledMicro,
+      ...(evidence.exposureBoundary ? {
+        first_exposure_observed_at_ms: evidence.exposureBoundary.first_fill_at_ms,
+        exposure_boundary_provenance: AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE,
+      } : {}),
     },
     nowMs,
   });
@@ -1056,6 +1067,7 @@ async function recoveryEvidence({ state, saga, leg, extraReceipts = [], env }) {
   let terminal = false;
   let selectedEvidence = false;
   let terminalRegressed = false;
+  let exposureBoundary = null;
   for (const record of records) {
     const proof = record.final_proof;
     if (env.PRIVATE_AGENT_VENUE_DRY_RUN !== "true" && !recoveryProofTargetsLeg(leg.venue_id, proof)) continue;
@@ -1072,10 +1084,20 @@ async function recoveryEvidence({ state, saga, leg, extraReceipts = [], env }) {
     if (!Number.isSafeInteger(candidateMicro) || candidateMicro < 0 || candidateMicro > leg.notional_micro_usdc) {
       continue;
     }
+    const candidateBoundary = candidateMicro > 0
+      ? authoritativeRecoveryExposureBoundary(record, leg.venue_id)
+      : null;
+    if (candidateBoundary) {
+      if (exposureBoundary && exposureBoundary.first_fill_at_ms !== candidateBoundary.first_fill_at_ms) {
+        throw new Error("saga_recovery_fill_time_conflict");
+      }
+      exposureBoundary ||= candidateBoundary;
+    }
     if (evidenceMicro === null || candidateMicro > evidenceMicro) {
       evidenceMicro = candidateMicro;
       evidenceBase = candidateBase;
-      terminal = proof?.final_venue_execution_proven === true;
+      terminal = proof?.final_venue_execution_proven === true
+        && proof?.target_fill_set_complete === true;
       selectedEvidence = true;
       terminalRegressed = false;
     } else if (candidateMicro === evidenceMicro) {
@@ -1083,7 +1105,8 @@ async function recoveryEvidence({ state, saga, leg, extraReceipts = [], env }) {
         throw new Error("saga_recovery_fill_base_conflict");
       }
       if (candidateBase) evidenceBase = candidateBase;
-      const candidateTerminal = proof?.final_venue_execution_proven === true;
+      const candidateTerminal = proof?.final_venue_execution_proven === true
+        && proof?.target_fill_set_complete === true;
       if (selectedEvidence && terminal && !candidateTerminal) {
         terminal = false;
         terminalRegressed = true;
@@ -1103,7 +1126,36 @@ async function recoveryEvidence({ state, saga, leg, extraReceipts = [], env }) {
       denominatorMicro: leg.notional_micro_usdc,
     });
   }
-  return { filledMicro, filledBase, terminal };
+  return { filledMicro, filledBase, terminal, exposureBoundary };
+}
+
+function authoritativeRecoveryExposureBoundary(record, venueId) {
+  const proof = record?.final_proof;
+  const expectedProvenance = AUTHORITATIVE_FILL_TIME_PROVENANCE_BY_VENUE[venueId];
+  const firstFillAtMs = Number(proof?.first_fill_at_ms);
+  const lastFillAtMs = Number(proof?.last_fill_at_ms);
+  if (!expectedProvenance
+    || proof?.final_venue_execution_proven !== true
+    || proof?.target_fill_set_complete !== true
+    || proof?.fill_times_authoritative !== true
+    || proof?.fill_time_provenance !== expectedProvenance
+    || !Number.isSafeInteger(firstFillAtMs) || firstFillAtMs <= 0
+    || !Number.isSafeInteger(lastFillAtMs) || lastFillAtMs < firstFillAtMs) return null;
+  const fills = Array.isArray(record?.fills) ? record.fills : [];
+  const positiveFills = fills.filter((fill) =>
+    canonicalExactPositiveDecimal(String(fill?.size ?? fill?.sz ?? fill?.totalSz ?? ""))
+    && canonicalExactPositiveDecimal(String(fill?.price ?? fill?.px ?? fill?.avgPx ?? "")));
+  if (positiveFills.length === 0) return null;
+  const fillTimes = positiveFills.map((fill) => Number(fill?.executed_at_ms));
+  if (fillTimes.some((value) => !Number.isSafeInteger(value)
+      || value < firstFillAtMs || value > lastFillAtMs)
+    || Math.min(...fillTimes) !== firstFillAtMs
+    || Math.max(...fillTimes) !== lastFillAtMs) return null;
+  return Object.freeze({
+    first_fill_at_ms: firstFillAtMs,
+    last_fill_at_ms: lastFillAtMs,
+    source_provenance: expectedProvenance,
+  });
 }
 
 function fillTotalsForRecord(record) {
@@ -1127,7 +1179,8 @@ function unwindProgress({ receipt, requestedBase, remainingMicro, venueId, env }
   const proof = receipt?.final_proof;
   if (!recoveryProofTargetsLeg(venueId, proof)) return { terminal: false, filledMicro: 0 };
   return {
-    terminal: proof?.final_venue_execution_proven === true,
+    terminal: proof?.final_venue_execution_proven === true
+      && proof?.target_fill_set_complete === true,
     filledMicro: proportionalMicroForExactBase({
       requestedBase,
       filledBase: proof?.filled_base_size,

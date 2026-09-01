@@ -462,6 +462,7 @@ test("submits Aster once and reconciles only the exact client order until termin
   assert.equal(result.final_proof.fee_asset, "USDT");
   assert.equal(result.final_proof.realized_fees_exact, true);
   assert.equal(result.final_proof.realized_fee_source, "aster_fapi_v3_user_trades_v1");
+  assert.equal(result.final_proof.target_fill_set_complete, true);
   assert.equal(result.fills.length, 2);
   assert.equal(result.provider_ref_seed.submission_order_id, 44);
 });
@@ -509,6 +510,43 @@ test("fails closed when bounded Aster user-trade size, notional, or commission-a
         && /trade/.test(error.message));
     });
   }
+});
+
+test("proves complete authoritative timing for a terminal partial Aster fill", async () => {
+  const result = await submitAndReconcileAsterExecution({
+    credential: credential(),
+    instruction: orderInstruction(),
+    clientOrderId: "ghola-carry-partial-1",
+    env: ENV,
+    now: () => 1_800_000_000_000,
+    sleep: async () => {},
+    fetchImpl: async (url, init) => {
+      const parsed = new URL(url);
+      if (init.method === "POST") {
+        return jsonResponse({ symbol: "BTCUSDT", clientOrderId: "ghola-carry-partial-1", orderId: 81, status: "NEW", executedQty: "0" });
+      }
+      if (parsed.pathname.endsWith("/userTrades")) {
+        return jsonResponse([{ symbol: "BTCUSDT", id: 8101, orderId: 81, price: "60000", qty: "0.005", quoteQty: "300", commission: "-0.105", commissionAsset: "USDT", time: 1_800_000_000_100 }]);
+      }
+      return jsonResponse({
+        symbol: "BTCUSDT",
+        clientOrderId: "ghola-carry-partial-1",
+        orderId: 81,
+        status: "CANCELED",
+        executedQty: "0.005",
+        cumQuote: "300",
+        avgPrice: "60000",
+        time: 1_800_000_000_000,
+        updateTime: 1_800_000_000_100,
+      });
+    },
+  });
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.final_proof.final_venue_execution_proven, true);
+  assert.equal(result.final_proof.final_fill_proven, false);
+  assert.equal(result.final_proof.target_fill_set_complete, true);
+  assert.equal(result.final_proof.fill_times_authoritative, true);
+  assert.equal(result.final_proof.first_fill_at_ms, 1_800_000_000_100);
 });
 
 test("uses bounded monotonic Aster user-trade pagination to complete one exact order", async () => {
@@ -784,6 +822,7 @@ test("recovers an ambiguous Aster cancel by reconciling the exact original order
   assert.equal(result.reconciliation.submission_retry_count, 0);
   assert.equal(result.final_proof.realized_fees_exact, true);
   assert.equal(result.final_proof.fee_quote_amount, "0");
+  assert.equal(result.final_proof.target_fill_set_complete, true);
 });
 
 test("bounds exact-order reconciliation when an ambiguous Aster submit cannot be found", async () => {
@@ -856,6 +895,34 @@ test("reads signed Aster funding settlements without submitting", async () => {
   assert.match(valuation.evidence_commitment, /^carry:cashflow-valuation:evidence:[0-9a-f]{64}$/);
 });
 
+test("rejects mixed or cross-symbol rows from an Aster funding read", async () => {
+  for (const invalidRow of [
+    { symbol: "BTCUSDT", incomeType: "COMMISSION", income: "-0.01", asset: "USDT", time: 1_800_003_600_000, tranId: 43 },
+    { symbol: "ETHUSDT", incomeType: "FUNDING_FEE", income: "-0.01", asset: "USDT", time: 1_800_003_600_000, tranId: 44 },
+    { symbol: "BTCUSDT", incomeType: "FUNDING_FEE", income: "-0.01", asset: "USDT", time: 1_799_999_999_999, tranId: 45 },
+    { symbol: "BTCUSDT", incomeType: "FUNDING_FEE", income: "-0.01", asset: "USDT", time: 1_800_003_600_001, tranId: 46 },
+    { symbol: "BTCUSDT", incomeType: "FUNDING_FEE", income: "-0.01", time: 1_800_003_600_000, tranId: 47 },
+  ]) {
+    let valuationReads = 0;
+    await assert.rejects(readAsterFundingSettlements({
+      credential: credential(),
+      symbol: "BTC",
+      start_time_ms: 1_800_000_000_000,
+      end_time_ms: 1_800_003_600_000,
+      now: () => 1_800_003_600_000,
+      fetchImpl: async (url) => {
+        if (new URL(url).pathname === "/products/USDT-USDC/book") valuationReads += 1;
+        return jsonResponse([
+          { symbol: "BTCUSDT", incomeType: "FUNDING_FEE", income: "0.01", asset: "USDT", time: 1_800_003_600_000, tranId: 42 },
+          invalidRow,
+        ]);
+      },
+    }), (error) => error.code === "connector_submit_failed"
+      && error.message === "aster funding history row binding is invalid");
+    assert.equal(valuationReads, 0);
+  }
+});
+
 test("rejects a malformed Aster funding history response", async () => {
   await assert.rejects(readAsterFundingSettlements({
     credential: credential(),
@@ -881,8 +948,12 @@ test("reconciles by the exact client order id", async () => {
     clientOrderId: "ignored-fallback",
     env: ENV,
     fetchImpl: async (url, init) => {
-      observed = { url: new URL(url), method: init.method };
-      return jsonResponse({ symbol: "BTCUSDT", clientOrderId: "ghola-carry-0003", orderId: 46, status: "FILLED", executedQty: "0.01", cumQuote: "600", avgPrice: "60000" });
+      const parsed = new URL(url);
+      if (parsed.pathname.endsWith("/userTrades")) {
+        return jsonResponse([{ symbol: "BTCUSDT", id: 4601, orderId: 46, price: "60000", qty: "0.01", quoteQty: "600", commission: "-0.21", commissionAsset: "USDT", time: 1_800_000_000_100 }]);
+      }
+      observed = { url: parsed, method: init.method };
+      return jsonResponse({ symbol: "BTCUSDT", clientOrderId: "ghola-carry-0003", orderId: 46, status: "FILLED", executedQty: "0.01", cumQuote: "600", avgPrice: "60000", time: 1_800_000_000_000, updateTime: 1_800_000_000_100 });
     },
   });
   assert.equal(observed.method, "GET");
@@ -893,6 +964,7 @@ test("reconciles by the exact client order id", async () => {
   assert.equal(result.final_proof.query_broadcast, false);
   assert.equal(result.final_proof.original_order_target_matched, true);
   assert.equal(result.final_proof.original_order_broadcast_proven, true);
+  assert.equal(result.final_proof.target_fill_set_complete, true);
 });
 
 test("keeps explicit Aster reconciliation bound to the original order across read failures", async () => {

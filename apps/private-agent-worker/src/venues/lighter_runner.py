@@ -16,6 +16,12 @@ INACTIVE_ORDER_PAGE_SIZE = 100
 MAX_TRADE_PAGES = 8
 TRADE_PAGE_SIZE = 100
 LIGHTER_FEE_TICK_DENOMINATOR = Decimal(1_000_000)
+LIGHTER_ORDER_TIME_SKEW_MS = 300_000
+LIGHTER_TIME_IN_FORCE = {
+    "ioc": "immediate-or-cancel",
+    "gtc": "good-till-time",
+    "alo": "post-only",
+}
 LIGHTER_CANCELED_ORDER_STATUSES = frozenset({
     "canceled",
     "canceled-post-only",
@@ -36,6 +42,14 @@ LIGHTER_CANCELED_ORDER_STATUSES = frozenset({
 def fail(message, code="connector_submit_failed"):
     print(json.dumps({"error": message, "error_code": code}))
     raise SystemExit(1)
+
+
+def exact_timestamp_ms(value, message):
+    timestamp = exact_integer(value, message)
+    timestamp_ms = timestamp * 1000 if timestamp < 10_000_000_000 else timestamp
+    if timestamp_ms <= 0:
+        fail(message)
+    return timestamp_ms
 
 
 def as_dict(value):
@@ -178,6 +192,67 @@ def terminal_order_status(value):
     return status == "filled" or status in LIGHTER_CANCELED_ORDER_STATUSES
 
 
+def submitted_order_fingerprint_matches(
+    order,
+    fingerprint,
+    *,
+    account_index,
+    market_index,
+    market_symbol,
+    expected_order_index=None,
+):
+    if not isinstance(order, dict) or not isinstance(fingerprint, dict):
+        return False
+    try:
+        if fingerprint.get("version") != 1:
+            return False
+        expected_client_order_index = exact_integer(
+            fingerprint.get("client_order_index"), "lighter fingerprint client order is invalid"
+        )
+        expected_side = str(fingerprint.get("side") or "").lower()
+        expected_base = exact_decimal(
+            fingerprint.get("base_size"), "lighter fingerprint base size is invalid", positive=True
+        )
+        expected_price = exact_decimal(
+            fingerprint.get("limit_price"), "lighter fingerprint price is invalid", positive=True
+        )
+        expected_tif = str(fingerprint.get("time_in_force") or "").lower()
+        submitted_at_ms = exact_timestamp_ms(
+            fingerprint.get("submitted_at_ms"), "lighter fingerprint submission time is invalid"
+        )
+        if (
+            str(fingerprint.get("market") or "").upper() != str(market_symbol).upper()
+            or expected_side not in ("buy", "sell")
+            or expected_tif not in LIGHTER_TIME_IN_FORCE
+            or not isinstance(fingerprint.get("reduce_only"), bool)
+            or exact_integer(order.get("owner_account_index"), "lighter order account is invalid") != int(account_index)
+            or exact_integer(order.get("market_index"), "lighter order market is invalid") != int(market_index)
+            or exact_integer(order.get("client_order_index"), "lighter order client id is invalid") != expected_client_order_index
+            or exact_decimal(order.get("initial_base_amount"), "lighter order size is invalid", positive=True) != expected_base
+            or exact_decimal(order.get("price"), "lighter order price is invalid", positive=True) != expected_price
+            or order.get("is_ask") is not (expected_side == "sell")
+            or str(order.get("side") or "").lower() != expected_side
+            or order.get("type") != "limit"
+            or order.get("time_in_force") != LIGHTER_TIME_IN_FORCE[expected_tif]
+            or order.get("reduce_only") is not fingerprint["reduce_only"]
+        ):
+            return False
+        created_at_ms = exact_timestamp_ms(
+            order.get("created_at", order.get("timestamp", order.get("transaction_time"))),
+            "lighter order creation time is invalid",
+        )
+        if abs(created_at_ms - submitted_at_ms) > LIGHTER_ORDER_TIME_SKEW_MS:
+            return False
+        order_index = exact_integer(order.get("order_index"), "lighter order index is invalid")
+        if expected_order_index is not None and order_index != exact_integer(
+            expected_order_index, "lighter expected order lineage is invalid"
+        ):
+            return False
+        return True
+    except (ArithmeticError, TypeError, ValueError):
+        return False
+
+
 def incomplete_trade_fee_proof(account_index, market_index, order_index, client_order_index, reason):
     return {
         "version": 1,
@@ -193,13 +268,45 @@ def incomplete_trade_fee_proof(account_index, market_index, order_index, client_
     }
 
 
+def zero_trade_fee_proof(account_index, market_index, order_index, client_order_index):
+    evidence = "[]"
+    return {
+        "version": 1,
+        "proof_kind": "lighter_authenticated_order_trades_fee_v1",
+        "complete": True,
+        "pagination_complete": True,
+        "transaction_broadcast": False,
+        "account_index": int(account_index),
+        "market_id": int(market_index),
+        "order_index": str(order_index),
+        "client_order_index": int(client_order_index),
+        "trade_count": 0,
+        "first_trade_id": None,
+        "last_trade_id": None,
+        "first_fill_at_ms": None,
+        "last_fill_at_ms": None,
+        "fill_time_provenance": None,
+        "fill_times_authoritative": False,
+        "authenticated_fills": [],
+        "filled_base_amount": "0",
+        "filled_quote_amount": "0",
+        "fee_quote_amount": "0",
+        "fee_asset": "USDC",
+        "fee_rate_tick_denominator": int(LIGHTER_FEE_TICK_DENOMINATOR),
+        "quote_atomic_denominator": 1_000_000,
+        "evidence_commitment": "sha256:" + hashlib.sha256(evidence.encode("utf-8")).hexdigest(),
+    }
+
+
 async def exact_account_order_trades(client, account_index, market_index, client_order_index, order):
     account_index = int(account_index)
     market_index = int(market_index)
     client_order_index = int(client_order_index)
     order_index = exact_integer(order.get("order_index"), "lighter terminal order index is invalid")
-    expected_base = exact_decimal(order.get("filled_base_amount"), "lighter terminal fill size is invalid", positive=True)
-    expected_quote = exact_decimal(order.get("filled_quote_amount"), "lighter terminal fill quote is invalid", positive=True)
+    expected_base = exact_decimal(order.get("filled_base_amount"), "lighter terminal fill size is invalid")
+    expected_quote = exact_decimal(order.get("filled_quote_amount"), "lighter terminal fill quote is invalid")
+    if expected_base < 0 or expected_quote < 0 or (expected_base == 0) != (expected_quote == 0):
+        fail("lighter terminal fill totals are invalid")
     auth = await auth_token(client)
     cursor = None
     seen_cursors = set()
@@ -239,6 +346,7 @@ async def exact_account_order_trades(client, account_index, market_index, client
         fail("lighter terminal order side is invalid")
     for trade in rows:
         trade_id = exact_integer(trade.get("trade_id"), "lighter trade id is invalid")
+        executed_at_ms = exact_timestamp_ms(trade.get("timestamp"), "lighter trade timestamp is invalid")
         if trade_id in seen_trade_ids:
             fail("lighter trade evidence contains a duplicate trade")
         seen_trade_ids.add(trade_id)
@@ -291,8 +399,13 @@ async def exact_account_order_trades(client, account_index, market_index, client
             "quote_size": decimal_text(quote),
             "fee_rate_tick": fee_tick,
             "fee_quote_amount": decimal_text(fee),
+            "executed_at_ms": executed_at_ms,
         })
 
+    if not normalized and expected_base == 0 and expected_quote == 0:
+        return zero_trade_fee_proof(
+            account_index, market_index, order_index, client_order_index
+        )
     if not normalized:
         return incomplete_trade_fee_proof(
             account_index, market_index, order_index, client_order_index, "no_order_trades"
@@ -317,6 +430,21 @@ async def exact_account_order_trades(client, account_index, market_index, client
         "trade_count": len(normalized),
         "first_trade_id": str(normalized[0]["trade_id"]),
         "last_trade_id": str(normalized[-1]["trade_id"]),
+        "first_fill_at_ms": min(item["executed_at_ms"] for item in normalized),
+        "last_fill_at_ms": max(item["executed_at_ms"] for item in normalized),
+        "fill_time_provenance": "lighter_authenticated_order_trades_timestamp_v1",
+        "fill_times_authoritative": True,
+        "authenticated_fills": [
+            {
+                "size": item["size"],
+                "quote_size": item["quote_size"],
+                "price": item["price"],
+                "fee": item["fee_quote_amount"],
+                "fee_asset": "USDC",
+                "executed_at_ms": item["executed_at_ms"],
+            }
+            for item in normalized
+        ],
         "filled_base_amount": decimal_text(base_total),
         "filled_quote_amount": decimal_text(quote_total),
         "fee_quote_amount": decimal_text(fee_total),
@@ -566,6 +694,19 @@ async def run(payload):
                 target,
                 include_inactive=True,
             )
+            expected_fingerprint = payload.get("expected_order_fingerprint")
+            fingerprint_checked = isinstance(expected_fingerprint, dict)
+            fingerprint_matched = fingerprint_checked and order is not None and submitted_order_fingerprint_matches(
+                order,
+                expected_fingerprint,
+                account_index=credential["account_index"],
+                market_index=market.market_id,
+                market_symbol=market.symbol,
+                expected_order_index=payload.get("expected_order_index"),
+            )
+            identifier_collision = order is not None and not fingerprint_matched
+            if not fingerprint_matched:
+                order = None
             fee_proof = None
             if order is not None:
                 status = str(order.get("status") or "").lower()
@@ -576,14 +717,13 @@ async def run(payload):
                     )
                     if filled == 0 and filled_quote != 0:
                         fail("lighter zero-fill terminal order quote is invalid")
-                    if filled > 0:
-                        fee_proof = await exact_account_order_trades(
-                            client,
-                            credential["account_index"],
-                            market.market_id,
-                            target,
-                            order,
-                        )
+                    fee_proof = await exact_account_order_trades(
+                        client,
+                        credential["account_index"],
+                        market.market_id,
+                        target,
+                        order,
+                    )
             outbound_order = None
             if order is not None:
                 outbound_order = dict(order)
@@ -591,7 +731,16 @@ async def run(payload):
                     outbound_order["order_index"] = str(exact_integer(
                         outbound_order["order_index"], "lighter order index is invalid"
                     ))
-            return {"order": outbound_order, "fee_proof": fee_proof, "target_market_checked": True}
+            return {
+                "order": outbound_order,
+                "fee_proof": fee_proof,
+                "account_index": int(credential["account_index"]),
+                "market_id": int(market.market_id),
+                "target_market_checked": True,
+                "target_fingerprint_checked": fingerprint_checked,
+                "target_fingerprint_matched": fingerprint_matched,
+                "target_identifier_collision": identifier_collision,
+            }
         if action == "funding":
             market = await market_for(client, payload.get("market"))
             auth = await auth_token(client)
@@ -616,7 +765,18 @@ async def run(payload):
             if len(content) > 20_000_000:
                 fail("lighter funding export is too large")
             rows = list(csv.DictReader(io.StringIO(content.decode("utf-8-sig"))))
-            return {"funding_rows": rows, "market_id": int(market.market_id), "symbol": str(market.symbol)}
+            market_id = int(market.market_id)
+            for row in rows:
+                if row.get("type") != "funding":
+                    fail("lighter funding type binding failed")
+                if exact_integer(row.get("market_id"), "lighter funding market is invalid") != market_id:
+                    fail("lighter funding market binding failed")
+            return {
+                "funding_rows": rows,
+                "account_index": int(credential["account_index"]),
+                "market_id": market_id,
+                "symbol": str(market.symbol),
+            }
         fail("unsupported lighter runner action")
     finally:
         await client.close()

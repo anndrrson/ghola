@@ -270,6 +270,58 @@ test("event IDs are idempotent and sequence gaps fail closed", () => {
   assert.equal(gap.error, "event_sequence_invalid");
 });
 
+test("missing exchange fill time uses an immutable conservative pre-submit boundary", () => {
+  let saga = readySaga();
+  saga = advance(saga, 3, "submission_started", {}, NOW + 1_000);
+  const fillEvent = event(4, "leg_fill", {
+    leg_id: "leg:spot:0001",
+    cumulative_filled_micro_usdc: 1_000_000,
+  });
+  const filled = advanceMultiLegSaga({ saga, event: fillEvent, now_ms: NOW + 9_000 });
+  assert.equal(filled.ok, true);
+  assert.equal(filled.saga.first_exposure_observed_at_ms, NOW);
+  assert.equal(filled.saga.exposure_boundary_provenance, "worker_observed_positive_fill_conservative");
+  const replay = advanceMultiLegSaga({ saga: filled.saga, event: fillEvent, now_ms: NOW + 30_000 });
+  assert.equal(replay.duplicate, true);
+  assert.equal(replay.saga.first_exposure_observed_at_ms, NOW);
+  const later = advance(replay.saga, 5, "leg_fill", {
+    leg_id: "leg:perp:0001",
+    cumulative_filled_micro_usdc: 1_000_000,
+  }, NOW + 40_000);
+  assert.equal(later.first_exposure_observed_at_ms, NOW);
+});
+
+test("authoritative per-leg fill boundaries use exchange time despite reversed processing", () => {
+  let saga = readySaga();
+  saga = advance(saga, 3, "submission_started", {}, NOW + 1_000);
+  saga = advance(saga, 4, "leg_fill", {
+    leg_id: "leg:spot:0001",
+    cumulative_filled_micro_usdc: 1_000_000,
+    first_exposure_observed_at_ms: NOW + 8_000,
+    exposure_boundary_provenance: "authoritative_exchange_fill_time",
+  }, NOW + 10_000);
+  assert.equal(saga.first_exposure_observed_at_ms, NOW + 8_000);
+  saga = advance(saga, 5, "leg_fill", {
+    leg_id: "leg:perp:0001",
+    cumulative_filled_micro_usdc: 1_000_000,
+    first_exposure_observed_at_ms: NOW + 4_000,
+    exposure_boundary_provenance: "authoritative_exchange_fill_time",
+  }, NOW + 11_000);
+  assert.equal(saga.first_exposure_observed_at_ms, NOW + 4_000);
+  assert.equal(saga.exposure_boundary_provenance, "authoritative_exchange_fill_time");
+  assert.equal(saga.legs[0].first_exposure_observed_at_ms, NOW + 8_000);
+  assert.equal(saga.legs[1].first_exposure_observed_at_ms, NOW + 4_000);
+});
+
+test("zero-fill terminal paths never claim exposure", () => {
+  let saga = readySaga();
+  saga = advance(saga, 3, "submission_started");
+  saga = advance(saga, 4, "leg_finalized", { leg_id: "leg:spot:0001", cumulative_filled_micro_usdc: 0 });
+  saga = advance(saga, 5, "leg_finalized", { leg_id: "leg:perp:0001", cumulative_filled_micro_usdc: 0 });
+  assert.equal(saga.first_exposure_observed_at_ms, null);
+  assert.equal(saga.exposure_boundary_provenance, null);
+});
+
 test("submission timeout always compensates because venue fill state is unknown", () => {
   let partiallyFilled = readySaga();
   partiallyFilled = advance(partiallyFilled, 3, "submission_started");

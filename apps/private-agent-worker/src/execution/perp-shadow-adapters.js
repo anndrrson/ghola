@@ -74,11 +74,12 @@ export async function fetchPerpShadowVenue({
   if (!CORE_PERP_VENUES.includes(venueId) || declared?.status !== "enabled") throw new Error("shadow_venue_unsupported");
   const adapterId = declared.adapter_id;
   if (adapterId === "hyperliquid_shadow_v1") {
-    const body = await jsonRequest(fetchImpl, "https://api.hyperliquid.xyz/info", {
+    const contextObservation = await jsonObservedRequest(fetchImpl, "https://api.hyperliquid.xyz/info", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ type: "metaAndAssetCtxs" }),
     }, timeoutMs);
+    const body = contextObservation.body;
     const allowed = normalizedAssetSet(assets);
     const universe = Array.isArray(body?.[0]?.universe) ? body[0].universe : [];
     const coins = universe
@@ -96,6 +97,7 @@ export async function fetchPerpShadowVenue({
     return bindShadowValuations(selectAssets(parseHyperliquidShadow({
       body,
       books,
+      context_observed_at_ms: contextObservation.observed_at_ms,
       now_ms: observedAtMs,
       max_age_ms: maxAgeMs,
     }), assets), { fetchImpl, checkedAtMs: observedAtMs });
@@ -262,10 +264,17 @@ export async function fetchPerpShadowVenue({
   throw new Error("shadow_adapter_unimplemented");
 }
 
-export function parseHyperliquidShadow({ body, books = {}, now_ms: nowMs, max_age_ms: maxAgeMs = DEFAULT_MAX_AGE_MS }) {
+export function parseHyperliquidShadow({
+  body,
+  books = {},
+  context_observed_at_ms: contextObservedAtMs,
+  now_ms: nowMs,
+  max_age_ms: maxAgeMs = DEFAULT_MAX_AGE_MS,
+}) {
   const pair = Array.isArray(body) ? body : [];
   const universe = Array.isArray(pair[0]?.universe) ? pair[0].universe : [];
   const contexts = Array.isArray(pair[1]) ? pair[1] : [];
+  const contextSourceAtMs = timestamp(contextObservedAtMs) || null;
   const marginTables = new Map((Array.isArray(pair[0]?.marginTables) ? pair[0].marginTables : [])
     .map((row) => [String(row?.[0]), row?.[1]]));
   return freezeSnapshots(universe.map((meta, index) => {
@@ -306,10 +315,13 @@ export function parseHyperliquidShadow({ body, books = {}, now_ms: nowMs, max_ag
       margin_tiers: marginTiers,
       margin_model: PERP_SHADOW_ADAPTERS.hyperliquid.margin_model,
       liquidation_model: PERP_SHADOW_ADAPTERS.hyperliquid.liquidation_model,
-      as_of_ms: bookObservedAtMs,
+      as_of_ms: completeSourceTimestamp([
+        contextSourceAtMs,
+        bookObservedAtMs,
+      ]),
       source_observed_at_ms: {
-        market: bookObservedAtMs,
-        funding: bookObservedAtMs,
+        market: contextSourceAtMs,
+        funding: contextSourceAtMs,
         orderbook: bookObservedAtMs,
       },
       now_ms: nowMs,
@@ -321,7 +333,7 @@ export function parseHyperliquidShadow({ body, books = {}, now_ms: nowMs, max_ag
         "price_tick_current_market",
         "liquidation_has_no_clearance_fee",
         hyperliquidQuoteEvidenceFlag(asset),
-        "market_funding_bound_to_public_l2_time",
+        ...(contextSourceAtMs ? ["market_funding_bound_to_meta_context_response_time"] : []),
         ...(levels.length >= 2 ? ["public_l2_bbo"] : ["orderbook_bbo_missing"]),
       ],
       ...PERP_SHADOW_ADAPTERS.hyperliquid,

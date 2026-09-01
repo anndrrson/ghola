@@ -10,6 +10,8 @@ const EVENT_TYPES = new Set([
   "cancel_confirmed", "unwind_fill", "unwind_failed", "completion_fill", "completion_failed", "timeout",
 ]);
 const RECOVERY_MODES = new Set(["unwind", "complete_reduce_only"]);
+const AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE = "authoritative_exchange_fill_time";
+const CONSERVATIVE_EXPOSURE_BOUNDARY_PROVENANCE = "worker_observed_positive_fill_conservative";
 
 export function createMultiLegSaga(value) {
   const raw = object(value, "saga_required");
@@ -38,6 +40,8 @@ export function createMultiLegSaga(value) {
       cancel_confirmed: false,
       unwind_filled_micro_usdc: 0,
       failure_code: null,
+      first_exposure_observed_at_ms: null,
+      exposure_boundary_provenance: null,
     })),
     signed_filled_exposure_micro_usdc_by_asset: {},
     hedge_error_micro_usdc: 0,
@@ -47,6 +51,8 @@ export function createMultiLegSaga(value) {
     processed_event_ids: [],
     last_event_sequence: 0,
     unhedged_deadline_ms: null,
+    first_exposure_observed_at_ms: null,
+    exposure_boundary_provenance: null,
     created_at_ms: nowMs,
     updated_at_ms: nowMs,
     terminal_reason: null,
@@ -116,7 +122,7 @@ function applyEvent(saga, event, nowMs) {
     return;
   }
   if (event.type === "leg_fill") {
-    applyFill(sagaLeg(saga, event.leg_id), event.cumulative_filled_micro_usdc, "filled_micro_usdc");
+    applyEntryFill(saga, sagaLeg(saga, event.leg_id), event.cumulative_filled_micro_usdc, nowMs, event);
     if (saga.status !== "compensating") settleFillState(saga, nowMs);
     return;
   }
@@ -131,7 +137,7 @@ function applyEvent(saga, event, nowMs) {
   }
   if (event.type === "leg_finalized") {
     const leg = sagaLeg(saga, event.leg_id);
-    applyFill(leg, event.cumulative_filled_micro_usdc, "filled_micro_usdc");
+    applyEntryFill(saga, leg, event.cumulative_filled_micro_usdc, nowMs, event);
     leg.submission_status = "finalized";
     if (saga.status === "compensating") settleCompensation(saga);
     else settleFinalizedFillState(saga, nowMs);
@@ -150,7 +156,7 @@ function applyEvent(saga, event, nowMs) {
   }
   if (event.type === "cancel_confirmed") {
     const leg = sagaLeg(saga, event.leg_id);
-    applyFill(leg, event.cumulative_filled_micro_usdc, "filled_micro_usdc");
+    applyEntryFill(saga, leg, event.cumulative_filled_micro_usdc, nowMs, event);
     leg.cancel_confirmed = true;
     if (saga.status === "compensating") settleCompensation(saga);
     else settleFinalizedFillState(saga, nowMs);
@@ -170,7 +176,7 @@ function applyEvent(saga, event, nowMs) {
   if (event.type === "completion_fill") {
     const leg = sagaLeg(saga, event.leg_id);
     const originalSubmissionStatus = leg.submission_status;
-    applyFill(leg, event.cumulative_filled_micro_usdc, "filled_micro_usdc");
+    applyEntryFill(saga, leg, event.cumulative_filled_micro_usdc, nowMs, event);
     leg.submission_status = originalSubmissionStatus;
     settleCompensation(saga);
     return;
@@ -400,6 +406,56 @@ function applyFill(leg, value, field, maximum = leg.notional_micro_usdc) {
   if (cumulative > maximum) fail("cumulative_fill_exceeds_target");
   leg[field] = cumulative;
   if (field === "filled_micro_usdc" && cumulative > 0) leg.submission_status = "filled";
+}
+
+function applyEntryFill(saga, leg, value, nowMs, event) {
+  const previousLegFill = leg.filled_micro_usdc;
+  applyFill(leg, value, "filled_micro_usdc");
+  if (previousLegFill === 0 && leg.filled_micro_usdc > 0) {
+    const boundary = exposureBoundaryFromEvent(saga, event, nowMs);
+    leg.first_exposure_observed_at_ms = boundary.observed_at_ms;
+    leg.exposure_boundary_provenance = boundary.provenance;
+  }
+  refreshExposureBoundary(saga);
+}
+
+function exposureBoundaryFromEvent(saga, event, nowMs) {
+  const provenance = event?.exposure_boundary_provenance;
+  const observedAtMs = event?.first_exposure_observed_at_ms;
+  if (provenance === undefined && observedAtMs === undefined) {
+    return {
+      observed_at_ms: positiveInteger(saga.created_at_ms, "first_exposure_observed_at_ms"),
+      provenance: CONSERVATIVE_EXPOSURE_BOUNDARY_PROVENANCE,
+    };
+  }
+  if (provenance !== AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE) {
+    fail("first_exposure_boundary_provenance_invalid");
+  }
+  const authoritativeAtMs = positiveInteger(observedAtMs, "first_exposure_observed_at_ms");
+  if (authoritativeAtMs < saga.created_at_ms || authoritativeAtMs > nowMs) {
+    fail("first_exposure_boundary_invalid");
+  }
+  return {
+    observed_at_ms: authoritativeAtMs,
+    provenance: AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE,
+  };
+}
+
+function refreshExposureBoundary(saga) {
+  const exposed = saga.legs.filter((leg) => leg.filled_micro_usdc > 0);
+  if (exposed.length === 0) return;
+  const allAuthoritative = exposed.every((leg) =>
+    leg.exposure_boundary_provenance === AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE
+    && Number.isSafeInteger(leg.first_exposure_observed_at_ms)
+    && leg.first_exposure_observed_at_ms >= saga.created_at_ms
+  );
+  if (!allAuthoritative) {
+    saga.first_exposure_observed_at_ms = saga.created_at_ms;
+    saga.exposure_boundary_provenance = CONSERVATIVE_EXPOSURE_BOUNDARY_PROVENANCE;
+    return;
+  }
+  saga.first_exposure_observed_at_ms = Math.min(...exposed.map((leg) => leg.first_exposure_observed_at_ms));
+  saga.exposure_boundary_provenance = AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE;
 }
 
 function sagaLeg(saga, legId) {

@@ -13,6 +13,13 @@ const UINT48_MAX = 281_474_976_710_655;
 const GOLDILOCKS_MODULUS = 0xffffffff00000001n;
 const LIGHTER_ACCOUNT_STATUS_INACTIVE = 0;
 const LIGHTER_ACCOUNT_STATUS_ACTIVE = 1;
+const LIGHTER_ORDER_FINGERPRINT_VERSION = 1;
+const LIGHTER_ORDER_TIME_SKEW_MS = 300_000;
+const LIGHTER_TIME_IN_FORCE = Object.freeze({
+  ioc: "immediate-or-cancel",
+  gtc: "good-till-time",
+  alo: "post-only",
+});
 const LIGHTER_CANCELED_ORDER_STATUSES = new Set([
   "canceled",
   "canceled-post-only",
@@ -148,6 +155,21 @@ export function lighterClientOrderIndex(workOrderCommitment) {
   return 1 + (head % 2_147_483_646);
 }
 
+export function lighterOrderFingerprint(instruction, clientOrderIndex, { submittedAtMs = Date.now() } = {}) {
+  const order = normalizeOrder(instruction, clientOrderIndex);
+  return normalizeSubmittedOrderFingerprint({
+    version: LIGHTER_ORDER_FINGERPRINT_VERSION,
+    market: order.market,
+    client_order_index: order.client_order_index,
+    side: order.side,
+    base_size: order.base_size,
+    limit_price: order.limit_price,
+    reduce_only: order.reduce_only,
+    time_in_force: order.tif,
+    submitted_at_ms: submittedAtMs,
+  });
+}
+
 export async function verifyLighterCredential({ credential, runner = defaultRunner }) {
   assertLighterPilotMode(credential, "read");
   const result = await runner({ action: "credential", credential, timeout_ms: timeoutMs() });
@@ -230,7 +252,13 @@ export async function verifyLighterNoSubmit({ credential, instruction, clientOrd
   return normalizedVerification(result, order, credential.account_index);
 }
 
-export async function submitLighterExecution({ credential, instruction, clientOrderIndex, runner = defaultRunner }) {
+export async function submitLighterExecution({
+  credential,
+  instruction,
+  clientOrderIndex,
+  submittedOrderFingerprint = null,
+  runner = defaultRunner,
+}) {
   const operationClass = instruction?.operation_class;
   assertLighterPilotMode(credential, operationClass);
   if (operationClass === "reconcile") {
@@ -239,6 +267,9 @@ export async function submitLighterExecution({ credential, instruction, clientOr
       credential,
       clientOrderIndex: integer(target, "lighter reconcile target is invalid"),
       market: instruction.reconcile?.target_market || instruction.reconcile?.market || instruction.reconcile?.product_id,
+      expectedOrderFingerprint: instruction.reconcile?.expected_order_fingerprint,
+      expectedOrderIndex: instruction.reconcile?.expected_order_index,
+      submissionTxHash: instruction.reconcile?.submission_tx_hash,
       runner,
     });
   }
@@ -254,25 +285,35 @@ export async function submitLighterExecution({ credential, instruction, clientOr
         client_order_index: targetClientOrderIndex,
         timeout_ms: timeoutMs(),
       });
-      return normalizedSubmit(result, targetClientOrderIndex, "cancelled");
+      return normalizedSubmit(
+        result,
+        targetClientOrderIndex,
+        "cancelled",
+        normalizeSubmittedOrderFingerprint(instruction.cancel?.expected_order_fingerprint),
+      );
     } catch (error) {
       throw ambiguousLighterWrite(error);
     }
   }
   const order = normalizeOrder(instruction, clientOrderIndex);
+  const fingerprint = submittedOrderFingerprint
+    ? normalizeSubmittedOrderFingerprint(submittedOrderFingerprint)
+    : lighterOrderFingerprint(instruction, clientOrderIndex);
+  assertFingerprintMatchesRequestedOrder(fingerprint, order);
   let result;
   try {
     result = await runner({ action: "submit", credential, order, timeout_ms: timeoutMs() });
   } catch (error) {
     throw ambiguousLighterWrite(error);
   }
-  return normalizedSubmit(result, clientOrderIndex, "submitted");
+  return normalizedSubmit(result, clientOrderIndex, "submitted", fingerprint);
 }
 
 export async function submitAndReconcileLighterExecution({
   credential,
   instruction,
   clientOrderIndex,
+  submittedOrderFingerprint = null,
   runner = defaultRunner,
   now = () => Date.now(),
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -290,9 +331,43 @@ export async function submitAndReconcileLighterExecution({
     : cancelOnly
       ? instruction?.cancel?.market
       : instruction?.order?.market;
+  const reconciliationFingerprint = reconcileOnly
+    ? normalizeSubmittedOrderFingerprint(instruction?.reconcile?.expected_order_fingerprint)
+    : cancelOnly
+      ? normalizeSubmittedOrderFingerprint(instruction?.cancel?.expected_order_fingerprint)
+      : submittedOrderFingerprint
+        ? normalizeSubmittedOrderFingerprint(submittedOrderFingerprint)
+        : lighterOrderFingerprint(instruction, reconciliationClientOrderIndex, { submittedAtMs: now() });
+  if (!reconciliationFingerprint) {
+    throw new LighterExecutionError(
+      "lighter reconciliation requires the original submitted order fingerprint",
+      503,
+      "submission_ambiguous",
+    );
+  }
+  let expectedOrderIndex = unsignedDecimalIntegerText(
+    reconcileOnly
+      ? instruction?.reconcile?.expected_order_index
+      : cancelOnly
+        ? instruction?.cancel?.expected_order_index
+        : null,
+  );
+  const submissionTxHash = String(
+    reconcileOnly
+      ? instruction?.reconcile?.submission_tx_hash || ""
+      : cancelOnly
+        ? instruction?.cancel?.submission_tx_hash || ""
+        : "",
+  ) || null;
   let submitted = reconcileOnly ? {
     status: "outcome_unknown",
-    provider_ref_seed: { venue: "lighter", client_order_index: reconciliationClientOrderIndex, tx_hash: null },
+    provider_ref_seed: {
+      venue: "lighter",
+      client_order_index: reconciliationClientOrderIndex,
+      tx_hash: submissionTxHash,
+      submitted_order_fingerprint: reconciliationFingerprint,
+      submitted_order_fingerprint_commitment: orderFingerprintCommitment(reconciliationFingerprint),
+    },
     result_seed: { kind: "lighter_reconcile_started" },
     fills: [],
     final_proof: null,
@@ -300,13 +375,25 @@ export async function submitAndReconcileLighterExecution({
   let submissionResponseAmbiguous = false;
   if (!reconcileOnly) {
     try {
-      submitted = await submitLighterExecution({ credential, instruction, clientOrderIndex, runner });
+      submitted = await submitLighterExecution({
+        credential,
+        instruction,
+        clientOrderIndex,
+        submittedOrderFingerprint: reconciliationFingerprint,
+        runner,
+      });
     } catch (error) {
       if (error?.code !== "submission_ambiguous") throw error;
       submissionResponseAmbiguous = true;
       submitted = {
         status: "outcome_unknown",
-        provider_ref_seed: { venue: "lighter", client_order_index: reconciliationClientOrderIndex, tx_hash: null },
+        provider_ref_seed: {
+          venue: "lighter",
+          client_order_index: reconciliationClientOrderIndex,
+          tx_hash: null,
+          submitted_order_fingerprint: reconciliationFingerprint,
+          submitted_order_fingerprint_commitment: orderFingerprintCommitment(reconciliationFingerprint),
+        },
         result_seed: { kind: "lighter_submission_response_ambiguous" },
         fills: [],
         final_proof: null,
@@ -329,11 +416,16 @@ export async function submitAndReconcileLighterExecution({
         credential,
         clientOrderIndex: reconciliationClientOrderIndex,
         market: reconciliationMarket,
+        expectedOrderFingerprint: reconciliationFingerprint,
+        expectedOrderIndex,
+        submissionTxHash: submitted.provider_ref_seed?.tx_hash || submissionTxHash,
         runner,
       });
       if (reconciled.final_proof?.target_client_order_matched === true) {
         exactOrderObserved = true;
         last = reconciled;
+        expectedOrderIndex = unsignedDecimalIntegerText(reconciled.provider_ref_seed?.order_index)
+          || expectedOrderIndex;
       }
     } catch {
       readFailures += 1;
@@ -367,11 +459,21 @@ export async function submitAndReconcileLighterExecution({
 }
 
 function reconciledLighterResult(result, submitted, reconciliation) {
+  const fingerprint = result.provider_ref_seed?.submitted_order_fingerprint
+    || submitted.provider_ref_seed?.submitted_order_fingerprint
+    || null;
   return {
     ...result,
     provider_ref_seed: {
       ...result.provider_ref_seed,
-      submission_tx_hash: submitted.provider_ref_seed?.tx_hash || null,
+      submission_tx_hash: submitted.provider_ref_seed?.tx_hash
+        || submitted.provider_ref_seed?.submission_tx_hash
+        || result.provider_ref_seed?.submission_tx_hash
+        || null,
+      submitted_order_fingerprint: fingerprint,
+      submitted_order_fingerprint_commitment: fingerprint
+        ? orderFingerprintCommitment(fingerprint)
+        : null,
     },
     reconciliation: {
       ...reconciliation,
@@ -388,19 +490,48 @@ function reconciledLighterResult(result, submitted, reconciliation) {
   };
 }
 
-export async function reconcileLighterExecution({ credential, clientOrderIndex, market, runner = defaultRunner }) {
+export async function reconcileLighterExecution({
+  credential,
+  clientOrderIndex,
+  market,
+  expectedOrderFingerprint = null,
+  expectedOrderIndex = null,
+  submissionTxHash = null,
+  runner = defaultRunner,
+}) {
   assertLighterPilotMode(credential, "reconcile");
   const targetClientOrderIndex = integer(clientOrderIndex, "lighter reconcile target is invalid");
+  const normalizedMarket = lighterMarket(market);
+  const fingerprint = normalizeSubmittedOrderFingerprint(expectedOrderFingerprint);
+  const fingerprintCommitment = fingerprint ? orderFingerprintCommitment(fingerprint) : null;
+  const lineageOrderIndex = unsignedDecimalIntegerText(expectedOrderIndex);
   const result = await runner({
     action: "reconcile",
     credential,
     client_order_index: targetClientOrderIndex,
-    market: lighterMarket(market),
+    market: normalizedMarket,
+    expected_order_fingerprint: fingerprint,
+    expected_order_index: lineageOrderIndex,
     timeout_ms: timeoutMs(),
   });
   const candidate = result?.target_market_checked === true ? result?.order || null : null;
   const returnedClientOrderIndex = Number(candidate?.client_order_index);
-  const targetMatched = candidate !== null &&
+  const resultAccountIndex = nonnegativeIntegerOrNull(result?.account_index);
+  const resultMarketId = nonnegativeIntegerOrNull(result?.market_id);
+  const localFingerprintMatched = candidate !== null
+    && fingerprint !== null
+    && resultAccountIndex === credential.account_index
+    && resultMarketId !== null
+    && nonnegativeIntegerOrNull(candidate?.market_index ?? candidate?.market_id) === resultMarketId
+    && submittedOrderMatchesCandidate(candidate, fingerprint, {
+      expectedAccountIndex: credential.account_index,
+      expectedOrderIndex: lineageOrderIndex,
+    });
+  const fingerprintMatched = result?.target_fingerprint_checked === true
+    && result?.target_fingerprint_matched === true
+    && result?.target_identifier_collision !== true
+    && localFingerprintMatched;
+  const targetMatched = fingerprintMatched &&
     Number.isSafeInteger(returnedClientOrderIndex) &&
     returnedClientOrderIndex === targetClientOrderIndex;
   const order = targetMatched ? candidate : null;
@@ -423,12 +554,19 @@ export async function reconcileLighterExecution({ credential, clientOrderIndex, 
     && terminal
     && status !== "filled"
     && filledBase === "0"
-    && filledQuote === "0";
+    && filledQuote === "0"
+    && feeProof.complete === true
+    && feeProof.trade_count === 0;
   const feeExact = zeroFillFeeExact || (hasFill && feeProof.complete === true);
+  const targetFillSetComplete = exactOriginalOrderObserved
+    && terminal
+    && feeProof.complete === true
+    && (hasFill || zeroFillFeeExact);
   const terminalEvidenceComplete = terminal
     && fillAmountValid
     && (status !== "filled" || hasFill)
-    && feeExact;
+    && feeExact
+    && targetFillSetComplete;
   return {
     status,
     provider_ref_seed: {
@@ -436,6 +574,9 @@ export async function reconcileLighterExecution({ credential, clientOrderIndex, 
       client_order_index: targetClientOrderIndex,
       order_index: order?.order_index ?? null,
       venue_status: order?.status || null,
+      submission_tx_hash: String(submissionTxHash || "") || null,
+      submitted_order_fingerprint: fingerprint,
+      submitted_order_fingerprint_commitment: fingerprintCommitment,
     },
     result_seed: {
       kind: "lighter_exact_reconcile",
@@ -443,25 +584,35 @@ export async function reconcileLighterExecution({ credential, clientOrderIndex, 
       fee_exact: feeExact,
       fee_evidence_commitment: feeProof.evidence_commitment || null,
     },
-    fills: order && hasFill ? [{
-      size: String(order.filled_base_amount),
-      quote_size: String(order.filled_quote_amount || "0"),
-      price: averagePrice(order),
-      fee: feeProof.complete === true ? feeProof.fee_quote_amount : null,
-      fee_asset: feeProof.complete === true ? feeProof.fee_asset : null,
-    }] : [],
+    fills: order && hasFill
+      ? feeProof.complete === true
+        ? feeProof.fills
+        : [{
+          size: String(order.filled_base_amount),
+          quote_size: String(order.filled_quote_amount || "0"),
+          price: averagePrice(order),
+          fee: null,
+          fee_asset: null,
+          executed_at_ms: null,
+        }]
+      : [],
     final_proof: {
       version: 1,
       proof_kind: "lighter_client_order_index_reconciliation_v1",
       status,
       venue_id: "lighter",
       target_client_order_matched: targetMatched,
+      submitted_order_fingerprint_matched: fingerprintMatched,
+      submitted_order_fingerprint_commitment: fingerprintCommitment,
+      target_identifier_collision: result?.target_identifier_collision === true,
+      venue_order_lineage_matched: exactOriginalOrderObserved,
       query_broadcast: false,
       broadcast_performed: false,
       original_order_target_matched: exactOriginalOrderObserved,
       original_order_broadcast_proven: exactOriginalOrderObserved,
       final_venue_execution_proven: terminalEvidenceComplete,
       final_fill_proven: status === "filled" && hasFill && feeProof.complete === true,
+      target_fill_set_complete: targetFillSetComplete,
       filled_base_size: order?.filled_base_amount || "0",
       average_fill_price: order ? averagePrice(order) : "0",
       fee_exact: feeExact,
@@ -472,6 +623,10 @@ export async function reconcileLighterExecution({ credential, clientOrderIndex, 
       fee_evidence_trade_count: feeProof.trade_count ?? null,
       fee_evidence_pagination_complete: feeProof.pagination_complete === true,
       fee_evidence_incomplete_reason: feeExact ? null : feeProof.reason || null,
+      first_fill_at_ms: feeProof.complete === true ? feeProof.first_fill_at_ms : null,
+      last_fill_at_ms: feeProof.complete === true ? feeProof.last_fill_at_ms : null,
+      fill_times_authoritative: hasFill && feeProof.complete === true && feeProof.fill_times_authoritative === true,
+      fill_time_provenance: hasFill && feeProof.complete === true ? feeProof.fill_time_provenance : null,
       open_order_count: status === "open" || status === "partially_filled"
         ? 1
         : terminal
@@ -525,16 +680,57 @@ function normalizedLighterFeeProof(raw, { credential, order, targetClientOrderIn
   const tradeCount = nonnegativeIntegerOrNull(raw.trade_count);
   const firstTradeId = unsignedDecimalIntegerText(raw.first_trade_id);
   const lastTradeId = unsignedDecimalIntegerText(raw.last_trade_id);
-  const proofBase = canonicalDecimal(raw.filled_base_amount, { positive: true });
-  const proofQuote = canonicalDecimal(raw.filled_quote_amount, { positive: true });
-  const orderBase = canonicalDecimal(order?.filled_base_amount, { positive: true });
-  const orderQuote = canonicalDecimal(order?.filled_quote_amount, { positive: true });
+  const proofBase = canonicalDecimal(raw.filled_base_amount);
+  const proofQuote = canonicalDecimal(raw.filled_quote_amount);
+  const orderBase = canonicalDecimal(order?.filled_base_amount);
+  const orderQuote = canonicalDecimal(order?.filled_quote_amount);
   const fee = canonicalDecimal(raw.fee_quote_amount, { signed: true });
-  if (tradeCount === null || tradeCount < 1 || tradeCount > 800
-    || firstTradeId === null || lastTradeId === null
-    || proofBase === null || proofBase !== orderBase
-    || proofQuote === null || proofQuote !== orderQuote
-    || fee === null) invalid();
+  const firstFillAtMs = positiveSafeIntegerOrNull(raw.first_fill_at_ms);
+  const lastFillAtMs = positiveSafeIntegerOrNull(raw.last_fill_at_ms);
+  const authenticatedFills = Array.isArray(raw.authenticated_fills)
+    ? raw.authenticated_fills.map((fill) => {
+      if (!fill || typeof fill !== "object" || Array.isArray(fill)) invalid();
+      const size = canonicalDecimal(fill.size, { positive: true });
+      const quoteSize = canonicalDecimal(fill.quote_size, { positive: true });
+      const price = canonicalDecimal(fill.price, { positive: true });
+      const fillFee = canonicalDecimal(fill.fee, { signed: true });
+      const executedAtMs = positiveSafeIntegerOrNull(fill.executed_at_ms);
+      if (size === null || quoteSize === null || price === null || fillFee === null
+        || fill.fee_asset !== "USDC" || executedAtMs === null) invalid();
+      return {
+        size,
+        quote_size: quoteSize,
+        price,
+        fee: fillFee,
+        fee_asset: "USDC",
+        executed_at_ms: executedAtMs,
+      };
+    })
+    : null;
+  const zeroFillProof = tradeCount === 0
+    && proofBase === "0" && proofQuote === "0"
+    && orderBase === "0" && orderQuote === "0"
+    && fee === "0"
+    && firstTradeId === null && lastTradeId === null
+    && firstFillAtMs === null && lastFillAtMs === null
+    && raw.fill_times_authoritative === false
+    && raw.fill_time_provenance === null
+    && Array.isArray(authenticatedFills) && authenticatedFills.length === 0;
+  const positiveFillProof = tradeCount !== null && tradeCount >= 1 && tradeCount <= 800
+    && firstTradeId !== null && lastTradeId !== null
+    && proofBase !== null && proofBase !== "0" && proofBase === orderBase
+    && proofQuote !== null && proofQuote !== "0" && proofQuote === orderQuote
+    && fee !== null
+    && firstFillAtMs !== null && lastFillAtMs !== null && lastFillAtMs >= firstFillAtMs
+    && raw.fill_times_authoritative === true
+    && raw.fill_time_provenance === "lighter_authenticated_order_trades_timestamp_v1"
+    && Array.isArray(authenticatedFills) && authenticatedFills.length === tradeCount
+    && sumCanonicalDecimals(authenticatedFills.map((fill) => fill.size)) === proofBase
+    && sumCanonicalDecimals(authenticatedFills.map((fill) => fill.quote_size)) === proofQuote
+    && sumCanonicalDecimals(authenticatedFills.map((fill) => fill.fee), { signed: true }) === fee
+    && Math.min(...authenticatedFills.map((fill) => fill.executed_at_ms)) === firstFillAtMs
+    && Math.max(...authenticatedFills.map((fill) => fill.executed_at_ms)) === lastFillAtMs;
+  if (!zeroFillProof && !positiveFillProof) invalid();
   return {
     complete: true,
     pagination_complete: true,
@@ -543,6 +739,11 @@ function normalizedLighterFeeProof(raw, { credential, order, targetClientOrderIn
     fee_asset: "USDC",
     trade_count: tradeCount,
     evidence_commitment: raw.evidence_commitment,
+    first_fill_at_ms: firstFillAtMs,
+    last_fill_at_ms: lastFillAtMs,
+    fill_times_authoritative: true,
+    fill_time_provenance: raw.fill_time_provenance,
+    fills: authenticatedFills,
   };
 }
 
@@ -558,7 +759,13 @@ export async function readLighterFundingSettlements({
   const end = integer(endTimeMs, "lighter funding end is invalid");
   if (start <= 0 || end < start || end - start > 366 * 86_400_000) throw new LighterExecutionError("lighter funding window is invalid", 400, "venue_rejected");
   const result = await runner({ action: "funding", credential, market: lighterMarket(market), start_time_ms: start, end_time_ms: end, timeout_ms: fundingTimeoutMs() });
-  if (!Array.isArray(result?.funding_rows)) {
+  const expectedMarket = lighterMarket(market);
+  const returnedAccountIndex = nonnegativeIntegerOrNull(result?.account_index);
+  const returnedMarketId = nonnegativeIntegerOrNull(result?.market_id);
+  if (!Array.isArray(result?.funding_rows)
+    || returnedAccountIndex !== credential.account_index
+    || returnedMarketId === null
+    || String(result?.symbol || "").toUpperCase() !== expectedMarket) {
     throw new LighterExecutionError("lighter funding history response is invalid", 502, "connector_submit_failed");
   }
   const rows = result.funding_rows;
@@ -566,7 +773,7 @@ export async function readLighterFundingSettlements({
     const rawTime = Number(row.timestamp ?? row.time ?? row.funding_timestamp);
     const occurredAt = rawTime > 0 && rawTime < 10_000_000_000 ? rawTime * 1_000 : rawTime;
     const amount = row.change ?? row.funding_payment ?? row.payment ?? row.amount;
-    return {
+    const settlement = {
       venue_id: "lighter",
       asset: String(result?.symbol || market || "").toUpperCase(),
       occurred_at_ms: occurredAt,
@@ -574,7 +781,19 @@ export async function readLighterFundingSettlements({
       quote_asset: String(row.quote_asset || row.asset || "USDC").toUpperCase(),
       settlement_id: String(row.funding_id ?? row.id ?? row.tx_hash ?? `${occurredAt}:${amount}`),
     };
-  }).filter((row) => Number.isSafeInteger(row.occurred_at_ms) && /^-?\d+(?:\.\d+)?$/.test(row.amount_quote));
+    if (!row || typeof row !== "object" || Array.isArray(row)
+      || row.type !== "funding"
+      || nonnegativeIntegerOrNull(row.market_id ?? row.market_index) !== returnedMarketId
+      || !Number.isSafeInteger(settlement.occurred_at_ms)
+      || settlement.occurred_at_ms < start
+      || settlement.occurred_at_ms > end
+      || !/^-?\d+(?:\.\d+)?$/.test(settlement.amount_quote)
+      || !new Set(["USD", "USDC", "USDT"]).has(settlement.quote_asset)
+      || settlement.settlement_id.length === 0) {
+      throw new LighterExecutionError("lighter funding history row is invalid", 502, "connector_submit_failed");
+    }
+    return settlement;
+  });
 }
 
 function normalizeOrder(instruction, clientOrderIndex) {
@@ -599,6 +818,89 @@ function normalizeOrder(instruction, clientOrderIndex) {
     reduce_only: order.reduce_only === true,
     client_order_index: integer(clientOrderIndex, "lighter client order index is invalid"),
   };
+}
+
+function normalizeSubmittedOrderFingerprint(value) {
+  if (value === undefined || value === null) return null;
+  const invalid = () => {
+    throw new LighterExecutionError(
+      "lighter submitted order fingerprint is invalid",
+      503,
+      "submission_ambiguous",
+    );
+  };
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || value.version !== LIGHTER_ORDER_FINGERPRINT_VERSION) invalid();
+  const market = String(value.market || "").toUpperCase();
+  const clientOrderIndex = nonnegativeIntegerOrNull(value.client_order_index);
+  const side = String(value.side || "").toLowerCase();
+  const baseSize = canonicalDecimal(value.base_size, { positive: true });
+  const limitPrice = canonicalDecimal(value.limit_price, { positive: true });
+  const timeInForce = String(value.time_in_force || "").toLowerCase();
+  const submittedAtMs = positiveSafeIntegerOrNull(value.submitted_at_ms);
+  if (!/^[A-Z0-9._-]{1,16}$/.test(market)
+    || clientOrderIndex === null
+    || (side !== "buy" && side !== "sell")
+    || baseSize === null
+    || limitPrice === null
+    || typeof value.reduce_only !== "boolean"
+    || !Object.hasOwn(LIGHTER_TIME_IN_FORCE, timeInForce)
+    || submittedAtMs === null) invalid();
+  return Object.freeze({
+    version: LIGHTER_ORDER_FINGERPRINT_VERSION,
+    market,
+    client_order_index: clientOrderIndex,
+    side,
+    base_size: baseSize,
+    limit_price: limitPrice,
+    reduce_only: value.reduce_only,
+    time_in_force: timeInForce,
+    submitted_at_ms: submittedAtMs,
+  });
+}
+
+function assertFingerprintMatchesRequestedOrder(fingerprint, order) {
+  if (!fingerprint
+    || fingerprint.market !== order.market
+    || fingerprint.client_order_index !== order.client_order_index
+    || fingerprint.side !== order.side
+    || fingerprint.base_size !== canonicalDecimal(order.base_size, { positive: true })
+    || fingerprint.limit_price !== canonicalDecimal(order.limit_price, { positive: true })
+    || fingerprint.reduce_only !== order.reduce_only
+    || fingerprint.time_in_force !== order.tif) {
+    throw new LighterExecutionError(
+      "lighter submitted order fingerprint does not match the requested order",
+      503,
+      "submission_ambiguous",
+    );
+  }
+}
+
+function submittedOrderMatchesCandidate(candidate, fingerprint, {
+  expectedAccountIndex,
+  expectedOrderIndex,
+}) {
+  const candidateTimestampMs = venueTimestampMs(
+    candidate?.created_at ?? candidate?.timestamp ?? candidate?.transaction_time,
+  );
+  const candidateOrderIndex = unsignedDecimalIntegerText(candidate?.order_index);
+  return nonnegativeIntegerOrNull(candidate?.owner_account_index) === expectedAccountIndex
+    && nonnegativeIntegerOrNull(candidate?.client_order_index) === fingerprint.client_order_index
+    && canonicalDecimal(candidate?.initial_base_amount, { positive: true }) === fingerprint.base_size
+    && canonicalDecimal(candidate?.price, { positive: true }) === fingerprint.limit_price
+    && candidate?.is_ask === (fingerprint.side === "sell")
+    && String(candidate?.side || "").toLowerCase() === fingerprint.side
+    && candidate?.type === "limit"
+    && candidate?.time_in_force === LIGHTER_TIME_IN_FORCE[fingerprint.time_in_force]
+    && candidate?.reduce_only === fingerprint.reduce_only
+    && candidateTimestampMs !== null
+    && Math.abs(candidateTimestampMs - fingerprint.submitted_at_ms) <= LIGHTER_ORDER_TIME_SKEW_MS
+    && candidateOrderIndex !== null
+    && (expectedOrderIndex === null || candidateOrderIndex === expectedOrderIndex);
+}
+
+function orderFingerprintCommitment(fingerprint) {
+  return `sha256:${createHash("sha256").update(JSON.stringify(fingerprint)).digest("hex")}`;
 }
 
 function lighterMarket(value) {
@@ -644,8 +946,9 @@ function normalizedVerification(result, order, expectedAccountIndex) {
   };
 }
 
-function normalizedSubmit(result, clientOrderIndex, fallbackStatus) {
+function normalizedSubmit(result, clientOrderIndex, fallbackStatus, submittedOrderFingerprint = null) {
   if (result?.accepted !== true) throw new LighterExecutionError("lighter rejected the transaction", 422, "venue_rejected");
+  const fingerprint = normalizeSubmittedOrderFingerprint(submittedOrderFingerprint);
   return {
     status: result.status || fallbackStatus,
     provider_ref_seed: {
@@ -653,6 +956,10 @@ function normalizedSubmit(result, clientOrderIndex, fallbackStatus) {
       client_order_index: Number(clientOrderIndex),
       tx_hash: result.tx_hash || null,
       broadcast_acknowledged: true,
+      submitted_order_fingerprint: fingerprint,
+      submitted_order_fingerprint_commitment: fingerprint
+        ? orderFingerprintCommitment(fingerprint)
+        : null,
     },
     result_seed: { kind: "lighter_sdk_result", status: result.status || fallbackStatus },
     fills: [],
@@ -843,12 +1150,49 @@ function canonicalDecimal(value, { signed = false, positive = false } = {}) {
   return `${negative && !zero ? "-" : ""}${whole}${fraction ? `.${fraction}` : ""}`;
 }
 
+function sumCanonicalDecimals(values, { signed = false } = {}) {
+  const parsed = values.map((value) => {
+    const canonical = canonicalDecimal(value, { signed });
+    if (canonical === null) return null;
+    const negative = canonical.startsWith("-");
+    const unsigned = negative ? canonical.slice(1) : canonical;
+    const [whole, fraction = ""] = unsigned.split(".");
+    return {
+      coefficient: BigInt(`${negative ? "-" : ""}${whole}${fraction}`),
+      scale: fraction.length,
+    };
+  });
+  if (parsed.some((value) => value === null)) return null;
+  const scale = Math.max(0, ...parsed.map((value) => value.scale));
+  const total = parsed.reduce(
+    (sum, value) => sum + value.coefficient * (10n ** BigInt(scale - value.scale)),
+    0n,
+  );
+  const negative = total < 0n;
+  const digits = (negative ? -total : total).toString().padStart(scale + 1, "0");
+  const whole = scale === 0 ? digits : digits.slice(0, -scale);
+  const fraction = scale === 0 ? "" : digits.slice(-scale).replace(/0+$/, "");
+  return `${negative && total !== 0n ? "-" : ""}${whole}${fraction ? `.${fraction}` : ""}`;
+}
+
+function venueTimestampMs(value) {
+  const raw = positiveSafeIntegerOrNull(value);
+  if (raw === null) return null;
+  const milliseconds = raw < 10_000_000_000 ? raw * 1_000 : raw;
+  return Number.isSafeInteger(milliseconds) ? milliseconds : null;
+}
+
 function nonnegativeIntegerOrNull(value) {
   if (typeof value !== "number" && (typeof value !== "string" || !/^(?:0|[1-9]\d*)$/.test(value.trim()))) {
     return null;
   }
   const number = Number(value);
   return Number.isSafeInteger(number) && number >= 0 ? number : null;
+}
+
+function positiveSafeIntegerOrNull(value) {
+  const number = nonnegativeIntegerOrNull(value);
+  return number !== null && number > 0 ? number : null;
 }
 
 function unsignedDecimalIntegerText(value) {

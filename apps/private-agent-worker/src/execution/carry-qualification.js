@@ -110,6 +110,7 @@ export async function recordCompletedCarryVenueQualifications({ state, position_
         live_order_broadcast: entryProof.broadcast_performed === true,
         target_client_order_matched: entryProof.target_client_order_matched === true,
         final_venue_execution_proven: entryProof.final_venue_execution_proven === true,
+        target_fill_set_complete: entryProof.target_fill_set_complete === true,
         filled_base_size: String(entryProof.filled_base_size || ""),
         evidence_commitment: receiptCommitment("entry", entry.receipt),
       },
@@ -119,6 +120,7 @@ export async function recordCompletedCarryVenueQualifications({ state, position_
         reduce_only: exit.context?.instruction?.order?.reduce_only === true,
         exact_base_quantity: exactBase,
         final_venue_execution_proven: exitProof.final_venue_execution_proven === true,
+        target_fill_set_complete: exitProof.target_fill_set_complete === true,
         account_state_checked: true,
         gross_exposure_micro_usdc: 0,
         open_order_count: 0,
@@ -164,12 +166,12 @@ export function assessCarryVenueQualification({ venue_id: venueId, evidence, ima
   }
   const entry = evidence.entry_reconciliation || {};
   if (entry.account_commitment !== evidence.account_commitment) reasons.push("entry_account_binding_mismatch");
-  if (entry.live_order_broadcast !== true || entry.target_client_order_matched !== true || entry.final_venue_execution_proven !== true || !positiveDecimal(entry.filled_base_size) || !commitment(entry.evidence_commitment)) {
+  if (entry.live_order_broadcast !== true || entry.target_client_order_matched !== true || entry.final_venue_execution_proven !== true || entry.target_fill_set_complete !== true || !positiveDecimal(entry.filled_base_size) || !commitment(entry.evidence_commitment)) {
     reasons.push("entry_reconciliation_proof_incomplete");
   }
   const exit = evidence.exit_recovery || {};
   if (exit.account_commitment !== evidence.account_commitment) reasons.push("exit_account_binding_mismatch");
-  if (exit.live_order_broadcast !== true || exit.reduce_only !== true || exit.exact_base_quantity !== true || exit.final_venue_execution_proven !== true || exit.account_state_checked !== true || exit.gross_exposure_micro_usdc !== 0 || exit.open_order_count !== 0 || !commitment(exit.evidence_commitment)) {
+  if (exit.live_order_broadcast !== true || exit.reduce_only !== true || exit.exact_base_quantity !== true || exit.final_venue_execution_proven !== true || exit.target_fill_set_complete !== true || exit.account_state_checked !== true || exit.gross_exposure_micro_usdc !== 0 || exit.open_order_count !== 0 || !commitment(exit.evidence_commitment)) {
     reasons.push("exit_recovery_proof_incomplete");
   }
   const attempts = evidence.submission_attempts || {};

@@ -123,6 +123,7 @@ test("persists a Carry Position, lifecycle, and final value proof across state r
   });
   assert.equal(created.ok, true);
   assert.equal(created.record.record_version, 1);
+  assert.equal(created.record.value_boundary_authoritative, false);
   assert.match(created.record.opportunity_provenance.evidence_commitment, /^carry:creation-opportunity:evidence:[0-9a-f]{64}$/);
   assert.equal("opportunity_authentication_material" in created.record, false);
   const storedCreation = await state.getCarryPositionRecord(created.record.position.position_id);
@@ -152,6 +153,8 @@ test("persists a Carry Position, lifecycle, and final value proof across state r
     record = advanced.record;
   }
   assert.equal(record.position.status, "reconciled");
+  assert.equal(record.position.active_observed_at_ms, NOW + 1);
+  assert.equal(record.position.active_boundary_provenance, "worker_observed_positive_fill");
   assert.deepEqual(
     record.lifecycle_events.map((event) => event.recorded_at_ms),
     lifecycle().map((event) => NOW + event.sequence),
@@ -201,6 +204,7 @@ test("persists a Carry Position, lifecycle, and final value proof across state r
   });
   assert.equal(finalized.ok, true);
   assert.equal(finalized.record.value_ledger.status, "finalized");
+  assert.equal(finalized.record.value_boundary_authoritative, false);
 
   state = createWorkerState(dir);
   const reloaded = await state.getCarryPositionRecord(record.position.position_id);
@@ -1455,6 +1459,39 @@ test("funding valuation uses append time after a delayed historical cutoff", asy
   assert.equal(funding.record.value_evidence.funding.valuation_basis, "usdc_equivalent_at_ledger_ingestion");
 });
 
+test("funding begins at first observed exposure, excluding pre-fill settlements", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-funding-entry-boundary-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const active = await activePosition(state);
+  const starts = [];
+  const funding = await collectStoredCarryFundingEvidence({
+    state,
+    ownerCommitment: OWNER,
+    positionId: active.position.position_id,
+    venueAccess: monitoringContext().venue_access,
+    readFundingSettlements: async ({ body }) => {
+      starts.push(body.start_time_ms);
+      return [];
+    },
+    nowMs: NOW + 100,
+  });
+  assert.equal(active.position.active_observed_at_ms, NOW + 1);
+  assert.deepEqual(starts, [NOW + 1, NOW + 1]);
+  assert.equal(funding.record.value_ledger.entries.length, 0);
+
+  const restarted = createWorkerState(dir);
+  const replay = await advanceStoredCarryPosition({
+    state: restarted,
+    position_id: active.position.position_id,
+    owner_commitment: OWNER,
+    event: lifecycle()[1],
+    now_ms: NOW + 1_000,
+  });
+  assert.equal(replay.duplicate, true);
+  assert.equal(replay.record.position.active_observed_at_ms, NOW + 1);
+});
+
 test("inclusive funding boundary replay dedupes before fresh revaluation changes commitment", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-carry-funding-boundary-replay-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -1519,7 +1556,7 @@ test("non-USDC funding without verified conversion evidence cannot become comple
   assert.equal(result.funding.status, "pending");
   assert.equal(result.funding.venue_status.lighter, "funding_cashflow_valuation_required");
   assert.equal(result.record.value_evidence.funding.status, "pending_authoritative_settlement_history");
-  assert.equal(result.record.value_evidence.funding.cursor_ms_by_venue.lighter, NOW);
+  assert.equal(result.record.value_evidence.funding.cursor_ms_by_venue.lighter, NOW + 1);
   assert.equal(result.record.value_ledger.entries.length, 0);
 });
 
@@ -1545,7 +1582,7 @@ test("malformed funding history fails closed without advancing venue completenes
   assert.equal(result.funding.status, "pending");
   assert.equal(result.funding.venue_status.hyperliquid, "funding_settlement_history_invalid");
   assert.equal(result.record.value_evidence.funding.status, "pending_authoritative_settlement_history");
-  assert.equal(result.record.value_evidence.funding.cursor_ms_by_venue.hyperliquid, NOW);
+  assert.equal(result.record.value_evidence.funding.cursor_ms_by_venue.hyperliquid, NOW + 1);
   assert.equal(result.record.value_evidence.funding.cursor_ms_by_venue.lighter, NOW + 100);
   assert.equal(result.record.value_ledger.status, "open");
 });
@@ -1634,8 +1671,8 @@ test("authoritative funding backfill resumes across ticks for a year-long Carry 
     hyperliquid: "history_backfill_pending",
     lighter: "history_backfill_pending",
   });
-  assert.equal(first.record.value_evidence.funding.cursor_ms_by_venue.hyperliquid, NOW + (112 * day));
-  assert.equal(first.record.value_evidence.funding.cursor_ms_by_venue.lighter, NOW + (112 * day));
+  assert.equal(first.record.value_evidence.funding.cursor_ms_by_venue.hyperliquid, NOW + 1 + (112 * day));
+  assert.equal(first.record.value_evidence.funding.cursor_ms_by_venue.lighter, NOW + 1 + (112 * day));
   assert.equal(reads.filter((item) => item.venue_id === "hyperliquid").length, 16);
   assert.equal(reads.filter((item) => item.venue_id === "lighter").length, 16);
 
@@ -1645,8 +1682,8 @@ test("authoritative funding backfill resumes across ticks for a year-long Carry 
   assert.equal(second.funding.status, "current");
   assert.equal(second.record.value_evidence.funding.cursor_ms_by_venue.hyperliquid, firstNow + 1);
   assert.equal(second.record.value_evidence.funding.cursor_ms_by_venue.lighter, firstNow + 1);
-  assert.equal(reads.find((item) => item.venue_id === "hyperliquid")?.start_time_ms, NOW + (112 * day));
-  assert.equal(reads.find((item) => item.venue_id === "lighter")?.start_time_ms, NOW + (112 * day));
+  assert.equal(reads.find((item) => item.venue_id === "hyperliquid")?.start_time_ms, NOW + 1 + (112 * day));
+  assert.equal(reads.find((item) => item.venue_id === "lighter")?.start_time_ms, NOW + 1 + (112 * day));
 });
 
 test("monitoring canonicalizes settlement order and rejects a changed replay", async (t) => {
@@ -2225,6 +2262,8 @@ function lifecycle() {
       long_filled_micro_usdc: 10_000_000,
       short_filled_micro_usdc: 10_000_000,
       hedge_error_micro_usdc: 0,
+      first_exposure_observed_at_ms: NOW + 1,
+      exposure_boundary_provenance: "worker_observed_positive_fill",
     }),
     event(3, "manual_exit_requested"),
     event(4, "exit_reconciled", {

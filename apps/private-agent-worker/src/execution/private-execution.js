@@ -50,6 +50,7 @@ import {
 } from "../venues/aster.js";
 import {
   lighterClientOrderIndex,
+  lighterOrderFingerprint,
   openLighterExecutionCredential,
   readLighterFundingSettlements,
   readLighterWithdrawalRouteQuote,
@@ -1655,6 +1656,7 @@ function exactTerminalReconciliationProven(result, { venueId, proofKind }) {
     && proof?.target_client_order_matched === true
     && proof?.original_order_target_matched === true
     && proof?.final_venue_execution_proven === true
+    && proof?.target_fill_set_complete === true
     && proof?.broadcast_performed === false;
 }
 
@@ -1731,6 +1733,9 @@ export async function reconcileLighterOrder({ body, recipient, state }) {
     market: context.instruction.reconcile?.target_market ||
       context.instruction.reconcile?.market ||
       context.instruction.reconcile?.product_id,
+    expectedOrderFingerprint: context.instruction.reconcile?.expected_order_fingerprint,
+    expectedOrderIndex: context.instruction.reconcile?.expected_order_index,
+    submissionTxHash: context.instruction.reconcile?.submission_tx_hash,
   });
   await persistReadOnlyReconciliation({
     state,
@@ -1949,6 +1954,12 @@ export async function executeLighterOrder({ body, recipient, state, emergencyRis
   }), { state, venue_id: "lighter", body });
   enforceEmergencyRiskReductionInstruction(instruction, emergencyRiskReductionOnly);
   const clientOrderIndex = lighterClientOrderIndex(body.work_order_commitment);
+  const createdAt = new Date().toISOString();
+  const submittedOrderFingerprint = instruction.operation_class === "limit_order"
+    ? lighterOrderFingerprint(instruction, clientOrderIndex, { submittedAtMs: Date.parse(createdAt) })
+    : instruction.reconcile?.expected_order_fingerprint
+      || instruction.cancel?.expected_order_fingerprint
+      || null;
   let pending = {
     venue_id: "lighter",
     account_commitment: body.account_commitment || null,
@@ -1956,12 +1967,17 @@ export async function executeLighterOrder({ body, recipient, state, emergencyRis
     execution_mode: "byo_api_key",
     submit_count: 0,
     ambiguity_retry_count: 0,
-    provider_ref_seed: { venue: "lighter", client_order_index: clientOrderIndex, pending: true },
+    provider_ref_seed: {
+      venue: "lighter",
+      client_order_index: clientOrderIndex,
+      pending: true,
+      submitted_order_fingerprint: submittedOrderFingerprint,
+    },
     result_seed: { kind: "lighter_submission_pending" },
     fills: [],
     final_proof: null,
     status: "pending",
-    created_at: new Date().toISOString(),
+    created_at: createdAt,
   };
   pending = await claimSubmissionAfterPolicyValidation({
     body,
@@ -1975,7 +1991,12 @@ export async function executeLighterOrder({ body, recipient, state, emergencyRis
   });
   let result;
   try {
-    result = await submitAndReconcileLighterExecution({ credential, instruction, clientOrderIndex });
+    result = await submitAndReconcileLighterExecution({
+      credential,
+      instruction,
+      clientOrderIndex,
+      submittedOrderFingerprint,
+    });
   } catch (error) {
     const ambiguous = error?.code === "submission_ambiguous";
     await state.putExecutionAttempt(body.work_order_commitment, {
@@ -2648,6 +2669,9 @@ async function resolvePrivateOrderTarget(instruction, { state, venue_id, body })
       : venue_id === "aster"
         ? await state.deriveClientOrderId("gh", target)
         : await state.deriveClientOrderId("ghola", target);
+  const lighterProviderSeed = venue_id === "lighter"
+    ? attempt?.provider_ref_seed || cached?.provider_ref_seed || {}
+    : {};
   if (instruction.operation_class === "reconcile") {
     return {
       ...instruction,
@@ -2656,6 +2680,11 @@ async function resolvePrivateOrderTarget(instruction, { state, venue_id, body })
         target_client_order_id: clientOrderId,
         ...(venue_id === "lighter" ? { target_client_order_index: clientOrderId } : {}),
         target_order_id: attempt?.provider_ref_seed?.order_id || attempt?.provider_ref_seed?.oid || null,
+        ...(venue_id === "lighter" ? {
+          expected_order_fingerprint: lighterProviderSeed.submitted_order_fingerprint || null,
+          expected_order_index: lighterProviderSeed.order_index || null,
+          submission_tx_hash: lighterProviderSeed.submission_tx_hash || lighterProviderSeed.tx_hash || null,
+        } : {}),
       },
     };
   }
@@ -2664,7 +2693,12 @@ async function resolvePrivateOrderTarget(instruction, { state, venue_id, body })
     cancel: {
       ...instruction.cancel,
       client_order_id: clientOrderId,
-      ...(venue_id === "lighter" ? { client_order_index: clientOrderId } : {}),
+      ...(venue_id === "lighter" ? {
+        client_order_index: clientOrderId,
+        expected_order_fingerprint: lighterProviderSeed.submitted_order_fingerprint || null,
+        expected_order_index: lighterProviderSeed.order_index || null,
+        submission_tx_hash: lighterProviderSeed.submission_tx_hash || lighterProviderSeed.tx_hash || null,
+      } : {}),
     },
   };
 }

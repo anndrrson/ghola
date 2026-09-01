@@ -322,17 +322,16 @@ function verifySourceObservationProgress(previousRows, currentRows, sampleIndex,
       failures.push(`shadow_soak_source_observation_missing:${sampleIndex}:${identity}`);
       continue;
     }
-    let advanced = false;
     for (const source of REQUIRED_SOURCES) {
       const previousTimestamp = previous.source_observed_at_ms[source];
       const currentTimestamp = current.source_observed_at_ms[source];
       if (!Number.isSafeInteger(previousTimestamp) || !Number.isSafeInteger(currentTimestamp)) continue;
       if (currentTimestamp < previousTimestamp) {
         failures.push(`shadow_soak_source_observation_regressed:${sampleIndex}:${identity}:${source}`);
+      } else if (currentTimestamp === previousTimestamp) {
+        failures.push(`shadow_soak_source_observation_reused:${sampleIndex}:${identity}:${source}`);
       }
-      if (currentTimestamp > previousTimestamp) advanced = true;
     }
-    if (!advanced) failures.push(`shadow_soak_source_observation_reused:${sampleIndex}:${identity}`);
   }
 }
 

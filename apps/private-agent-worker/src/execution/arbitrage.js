@@ -568,12 +568,12 @@ async function applySagaEvent(state, sagaId, type, values = {}, nowMs = Date.now
 }
 
 function receiptFillProgress({ receipt, instruction, expectedMicroUsdc, env }) {
-  if (receipt?.status === "failed") return { terminal: true, cumulative_filled_micro_usdc: 0 };
   if (env.PRIVATE_AGENT_VENUE_DRY_RUN === "true") {
     return { terminal: true, cumulative_filled_micro_usdc: expectedMicroUsdc };
   }
   const proof = receipt?.final_proof;
-  const terminal = proof?.final_venue_execution_proven === true;
+  const terminal = proof?.final_venue_execution_proven === true
+    && proof?.target_fill_set_complete === true;
   const targetBase = Number.parseFloat(String(instruction?.order?.base_size || ""));
   const filledBase = Number.parseFloat(String(proof?.filled_base_size || ""));
   if (proof?.final_fill_proven === true) {

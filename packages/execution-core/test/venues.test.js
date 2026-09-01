@@ -65,6 +65,10 @@ test("registry centralizes five core perp candidates without claiming qualificat
   assert.equal(executionVenueLabel("hyperliquid"), "Hyperliquid");
   assert.equal(executionVenueLabel("edgex"), "edgeX");
   assert.equal(executionVenueLabel("venue_unregistered"), "venue_unregistered");
+  assert.equal(
+    venueAdapterCapability("hyperliquid", "perp_shadow")?.source_schema,
+    "hyperliquid_metaAndAssetCtxs_l2Book_v2",
+  );
   assert.equal(venueAdapterCapability("dydx", "perp_shadow")?.adapter_id, "dydx_shadow_v1");
   for (const venueId of CORE_PERP_VENUES) {
     const shadow = venueAdapterCapability(venueId, "perp_shadow");

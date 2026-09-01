@@ -29,6 +29,7 @@ test("normalizes Hyperliquid public base economics conservatively", () => {
         ],
       },
     },
+    context_observed_at_ms: NOW,
     now_ms: NOW,
   });
   assert.equal(snapshot.venue_id, "hyperliquid");
@@ -45,6 +46,12 @@ test("normalizes Hyperliquid public base economics conservatively", () => {
   assert.equal(snapshot.taker_fee_bps, 5);
   assert.equal(snapshot.minimum_notional_micro_usdc, 10_000_000);
   assert.equal(snapshot.liquidation_fee_bps, 0);
+  assert.equal(snapshot.as_of_ms, NOW);
+  assert.deepEqual(snapshot.source_observed_at_ms, {
+    market: NOW,
+    funding: NOW,
+    orderbook: NOW,
+  });
   assert.equal(snapshot.status, "ready");
   assert.equal(snapshot.executable, false);
   assert.ok(snapshot.quality_flags.includes("fees_venue_base_tier_ceiling"));
@@ -52,6 +59,78 @@ test("normalizes Hyperliquid public base economics conservatively", () => {
   assert.ok(snapshot.quality_flags.includes("minimum_notional_protocol_floor"));
   assert.ok(snapshot.quality_flags.includes("liquidation_has_no_clearance_fee"));
   assert.ok(snapshot.quality_flags.includes("contract_specs_usdt_denominated_usdc_margined"));
+  assert.ok(snapshot.quality_flags.includes("market_funding_bound_to_meta_context_response_time"));
+});
+
+test("keeps Hyperliquid context freshness independent from an advancing L2 book", () => {
+  const body = [
+    { universe: [{ name: "BTC", szDecimals: 5, maxLeverage: 40 }] },
+    [{ markPx: "60000.1", oraclePx: "60001.2", funding: "0.0000125" }],
+  ];
+  const parse = (bookObservedAtMs, nowMs) => parseHyperliquidShadow({
+    body,
+    books: { BTC: { time: bookObservedAtMs, levels: [
+      [{ px: "59998", sz: "1" }],
+      [{ px: "60003", sz: "1" }],
+    ] } },
+    context_observed_at_ms: NOW,
+    now_ms: nowMs,
+  })[0];
+
+  const first = parse(NOW, NOW);
+  const second = parse(NOW + 1_000, NOW + 1_000);
+
+  assert.deepEqual(first.source_observed_at_ms, {
+    market: NOW,
+    funding: NOW,
+    orderbook: NOW,
+  });
+  assert.deepEqual(second.source_observed_at_ms, {
+    market: NOW,
+    funding: NOW,
+    orderbook: NOW + 1_000,
+  });
+  assert.equal(second.as_of_ms, NOW);
+});
+
+test("binds fetched Hyperliquid market and funding to the context response, not L2 time", async () => {
+  const contextObservedAtMs = NOW - 4_000;
+  const fetchImpl = async (url, options = {}) => {
+    if (String(url).includes("api.exchange.coinbase.com")) return response({
+      sequence: 1,
+      bids: [["0.9998", "100", "1"]],
+      asks: [["1.0002", "100", "1"]],
+    }, NOW);
+    const request = JSON.parse(options.body);
+    if (request.type === "metaAndAssetCtxs") return response([
+      { universe: [{ name: "BTC", szDecimals: 5, maxLeverage: 40 }] },
+      [{ markPx: "60000.1", oraclePx: "60001.2", funding: "0.0000125" }],
+    ], contextObservedAtMs);
+    assert.equal(request.type, "l2Book");
+    return response({
+      time: NOW,
+      levels: [
+        [{ px: "59998", sz: "1" }],
+        [{ px: "60003", sz: "1" }],
+      ],
+    }, NOW);
+  };
+
+  const [snapshot] = await fetchPerpShadowVenue({
+    venue_id: "hyperliquid",
+    fetchImpl,
+    clock: () => NOW,
+    now_ms: NOW,
+    assets: ["BTC"],
+  });
+
+  assert.deepEqual(snapshot.source_observed_at_ms, {
+    market: contextObservedAtMs,
+    funding: contextObservedAtMs,
+    orderbook: NOW,
+  });
+  assert.equal(snapshot.as_of_ms, contextObservedAtMs);
+  assert.equal(snapshot.status, "ready");
 });
 
 test("maps Hyperliquid's documented USDC-denominated validator-perp exceptions", () => {
@@ -66,6 +145,7 @@ test("maps Hyperliquid's documented USDC-denominated validator-perp exceptions",
         { markPx: "0.1", oraclePx: "0.1", funding: "0" },
       ],
     ],
+    context_observed_at_ms: NOW,
     now_ms: NOW,
   });
   assert.deepEqual(snapshots.map((snapshot) => snapshot.quote_asset), ["USDC", "USDC"]);

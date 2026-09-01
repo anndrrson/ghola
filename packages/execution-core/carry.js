@@ -28,6 +28,14 @@ const DEBIT_ONLY_VALUE_ENTRY_TYPES = new Set([
   "trading_fee", "slippage", "gas", "capital_cost", "transfer_fee",
 ]);
 const CREDIT_ONLY_VALUE_ENTRY_TYPES = new Set(["rebate"]);
+const EXPOSURE_BOUNDARY_PROVENANCE = new Set([
+  "worker_observed_positive_fill",
+  "worker_observed_positive_fill_conservative",
+  "authoritative_exchange_fill_time",
+  "legacy_worker_observed_alias",
+  "legacy_conservative_saga_creation",
+  "legacy_conservative_position_creation",
+]);
 
 export class CarryModelError extends Error {
   constructor(code) {
@@ -1566,6 +1574,7 @@ export function compileCarryPortfolioValueReport(value) {
   const capital = normalizePortfolioValueCapitalEvidence(raw.capital_evidence);
   const open = positions.filter((position) => position.ledger_status === "open");
   const finalized = positions.filter((position) => position.ledger_status === "finalized");
+  const authoritativeFinalized = finalized.filter((position) => position.value_boundary_authoritative === true);
   const sum = (items, field, code) => items.reduce(
     (total, item) => safeAdd(total, item[field], code),
     0,
@@ -1590,9 +1599,9 @@ export function compileCarryPortfolioValueReport(value) {
   const valueProofStatus = positions.length === 0
     ? "empty"
     : finalized.length === positions.length
-      ? "finalized"
+      ? authoritativeFinalized.length === finalized.length ? "finalized" : "finalized_unverified"
       : finalized.length > 0
-        ? "mixed"
+        ? authoritativeFinalized.length === finalized.length ? "mixed" : "mixed_unverified"
         : "accruing";
   return deepFreeze({
     version: 1,
@@ -1603,17 +1612,23 @@ export function compileCarryPortfolioValueReport(value) {
     position_count: positions.length,
     open_position_count: open.length,
     finalized_position_count: finalized.length,
+    authoritative_finalized_position_count: authoritativeFinalized.length,
+    finalized_value_provenance: finalized.length > 0 && authoritativeFinalized.length === finalized.length
+      ? "authoritative_exchange_fill_time"
+      : "unverified_or_conservative",
+    real_value_verified: finalized.length > 0 && authoritativeFinalized.length === finalized.length,
     modeled,
     observed_cashflows: {
       ...observed,
-      complete: positions.length > 0 && open.length === 0,
+      complete: positions.length > 0 && open.length === 0
+        && authoritativeFinalized.length === finalized.length,
     },
     finalized_after_costs: {
       ...finalizedRealized,
       modeled_net_value_micro_usdc: finalizedModeledNet,
       variance_from_modeled_micro_usdc: finalizedVariance,
       position_count: finalized.length,
-      complete: finalized.length > 0,
+      complete: finalized.length > 0 && authoritativeFinalized.length === finalized.length,
     },
     unfinalized: {
       position_count: open.length,
@@ -2072,6 +2087,10 @@ export function createCarryPosition(value) {
     processed_event_ids: [],
     next_actions: ["run_preflight"],
     retry_permitted: false,
+    active_observed_at_ms: null,
+    active_boundary_provenance: null,
+    active_observed_at_ms_by_venue: {},
+    active_boundary_provenance_by_venue: {},
     created_at_ms: nowMs,
     updated_at_ms: nowMs,
     terminal_reason: null,
@@ -2361,9 +2380,53 @@ function applyEvent(position, event, nowMs) {
     const longFilled = nonNegativeInteger(event.long_filled_micro_usdc, "carry_long_filled");
     const shortFilled = nonNegativeInteger(event.short_filled_micro_usdc, "carry_short_filled");
     const hedgeError = nonNegativeInteger(event.hedge_error_micro_usdc, "carry_hedge_error");
+    const activeObservedAtMs = positiveInteger(
+      event.first_exposure_observed_at_ms ?? event.first_exposure_at_ms,
+      "carry_first_exposure_observed_at_ms",
+    );
+    if (activeObservedAtMs > nowMs || activeObservedAtMs < position.created_at_ms) {
+      fail("carry_first_exposure_boundary_invalid");
+    }
+    const boundaryProvenance = event.exposure_boundary_provenance === undefined
+      ? event.first_exposure_observed_at_ms === undefined
+        ? "legacy_worker_observed_alias"
+        : "worker_observed_positive_fill"
+      : enumValue(event.exposure_boundary_provenance, EXPOSURE_BOUNDARY_PROVENANCE, "carry_exposure_boundary_provenance");
+    const venueIds = [position.long_venue_id, position.short_venue_id];
+    if (boundaryProvenance === "authoritative_exchange_fill_time"
+      && (event.first_exposure_observed_at_ms_by_venue === undefined
+        || event.exposure_boundary_provenance_by_venue === undefined)) {
+      fail("carry_exposure_boundary_venue_binding_invalid");
+    }
+    const boundaryByVenue = carryExposureBoundaryRecord(
+      event.first_exposure_observed_at_ms_by_venue,
+      venueIds,
+      activeObservedAtMs,
+      position.created_at_ms,
+      nowMs,
+      "carry_first_exposure_observed_at_ms_by_venue",
+    );
+    const provenanceByVenue = carryExposureProvenanceRecord(
+      event.exposure_boundary_provenance_by_venue,
+      venueIds,
+      boundaryProvenance,
+    );
+    const allAuthoritative = venueIds.every((venueId) =>
+      provenanceByVenue[venueId] === "authoritative_exchange_fill_time");
+    if (Math.min(...venueIds.map((venueId) => boundaryByVenue[venueId])) !== activeObservedAtMs
+      || (boundaryProvenance === "authoritative_exchange_fill_time") !== allAuthoritative) {
+      fail("carry_exposure_boundary_venue_binding_invalid");
+    }
     position.long_filled_micro_usdc = longFilled;
     position.short_filled_micro_usdc = shortFilled;
     position.hedge_error_micro_usdc = hedgeError;
+    if (position.active_observed_at_ms !== null && position.active_observed_at_ms !== undefined) {
+      fail("carry_active_boundary_already_set");
+    }
+    position.active_observed_at_ms = activeObservedAtMs;
+    position.active_boundary_provenance = boundaryProvenance;
+    position.active_observed_at_ms_by_venue = boundaryByVenue;
+    position.active_boundary_provenance_by_venue = provenanceByVenue;
     const mandateExpiresAt = position.mandate_authorization?.signed_mandate?.expires_at_ms;
     const mandateValid = Number.isSafeInteger(mandateExpiresAt) && mandateExpiresAt > nowMs;
     if (longFilled === position.target_notional_micro_usdc && shortFilled === position.target_notional_micro_usdc
@@ -3116,6 +3179,8 @@ function normalizePortfolioValuePosition(value) {
     new Set(["open", "finalized"]),
     "carry_portfolio_value_ledger_status",
   );
+  const valueBoundaryAuthoritative = raw.value_boundary_authoritative === true
+    && raw.exposure_boundary_provenance === "authoritative_exchange_fill_time";
   if ((ledgerStatus === "finalized") !== (positionStatus === "reconciled")) {
     fail("carry_portfolio_value_finalization_status_mismatch");
   }
@@ -3245,6 +3310,7 @@ function normalizePortfolioValuePosition(value) {
     position_status: positionStatus,
     target_notional_micro_usdc: targetNotional,
     ledger_status: ledgerStatus,
+    value_boundary_authoritative: valueBoundaryAuthoritative,
     modeled_gross_funding_micro_usdc: modeledGrossFunding,
     modeled_trading_cost_micro_usdc: modeledTradingCost,
     modeled_capital_cost_micro_usdc: modeledCapitalCost,
@@ -3982,6 +4048,31 @@ function assertContractValuationsCurrent(contract, nowMs) {
       fail("carry_cashflow_valuation_stale");
     }
   }
+}
+
+function carryExposureBoundaryRecord(value, venueIds, fallback, createdAtMs, nowMs, code) {
+  if (value === undefined) return Object.fromEntries(venueIds.map((venueId) => [venueId, fallback]));
+  const raw = object(value, code);
+  if (Object.keys(raw).length !== venueIds.length
+    || !venueIds.every((venueId) => Object.hasOwn(raw, venueId))) fail(code);
+  return Object.fromEntries(venueIds.map((venueId) => {
+    const boundary = positiveInteger(raw[venueId], code);
+    if (boundary < createdAtMs || boundary > nowMs) fail(code);
+    return [venueId, boundary];
+  }));
+}
+
+function carryExposureProvenanceRecord(value, venueIds, fallback) {
+  if (value === undefined) return Object.fromEntries(venueIds.map((venueId) => [venueId, fallback]));
+  const raw = object(value, "carry_exposure_boundary_provenance_by_venue");
+  if (Object.keys(raw).length !== venueIds.length
+    || !venueIds.every((venueId) => Object.hasOwn(raw, venueId))) {
+    fail("carry_exposure_boundary_provenance_by_venue");
+  }
+  return Object.fromEntries(venueIds.map((venueId) => [
+    venueId,
+    enumValue(raw[venueId], EXPOSURE_BOUNDARY_PROVENANCE, "carry_exposure_boundary_provenance_by_venue"),
+  ]));
 }
 
 function requireStatus(position, allowed) {

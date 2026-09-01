@@ -30,6 +30,7 @@ function emptyState() {
     tick_snapshots: {},
     multi_leg_sagas: {},
     carry_positions: {},
+    carry_exposure_reservations: {},
     carry_lifecycle_events: {},
     revenue_evidence: [],
     hyperliquid_managed_allocations: {},
@@ -81,6 +82,7 @@ export function createWorkerState(dir) {
       tick_snapshots: loaded.tick_snapshots || {},
       multi_leg_sagas: loaded.multi_leg_sagas || {},
       carry_positions: loaded.carry_positions || {},
+      carry_exposure_reservations: loaded.carry_exposure_reservations || {},
       carry_lifecycle_events: loaded.carry_lifecycle_events || {},
       revenue_evidence: Array.isArray(loaded.revenue_evidence) ? loaded.revenue_evidence : [],
       hyperliquid_managed_allocations: loaded.hyperliquid_managed_allocations || {},
@@ -309,6 +311,18 @@ export function createPostgresWorkerState(databaseUrl) {
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `;
+        await sql`
+          CREATE TABLE IF NOT EXISTS worker_carry_exposure_reservations (
+            reservation_key TEXT PRIMARY KEY,
+            position_id TEXT NOT NULL,
+            bindings_commitment TEXT NOT NULL,
+            reservation_json JSONB NOT NULL,
+            active BOOLEAN NOT NULL DEFAULT TRUE,
+            generation INTEGER NOT NULL DEFAULT 1,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `;
+        await sql`ALTER TABLE worker_carry_exposure_reservations ADD COLUMN IF NOT EXISTS generation INTEGER NOT NULL DEFAULT 1`;
         await sql`
           CREATE TABLE IF NOT EXISTS worker_execution_attempts (
             work_order_commitment TEXT PRIMARY KEY,
@@ -681,6 +695,169 @@ export function createPostgresWorkerState(databaseUrl) {
         WHERE work_order_commitment = ${workOrderCommitment}
       `;
       return { ok: false, existing: decodeJson(existingRows[0]?.receipt_json) || null };
+    },
+
+    async claimCarryExposureReservations(positionId, bindingsCommitment, reservations) {
+      await ensureInitialized();
+      const client = await (await transactionPool()).connect();
+      const ordered = [...reservations].sort((a, b) => a.reservation_key.localeCompare(b.reservation_key));
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", ["carry:exposure:claim:v2"]);
+        for (const item of ordered) await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [item.reservation_key]);
+        const positionRows = await client.query(
+          "SELECT position_id, record_json FROM worker_carry_positions FOR UPDATE",
+        );
+        const sagaRows = await client.query(
+          "SELECT saga_id, saga_json FROM worker_multi_leg_sagas FOR UPDATE",
+        );
+        const persisted = assessCarryExposureClaim({
+          positionId,
+          bindingsCommitment,
+          reservations: ordered,
+          positions: Object.fromEntries(positionRows.rows.map((row) => [row.position_id, decodeJson(row.record_json)])),
+          sagas: Object.fromEntries(sagaRows.rows.map((row) => [row.saga_id, decodeJson(row.saga_json)])),
+        });
+        if (!persisted.ok) {
+          await client.query("ROLLBACK");
+          return persisted;
+        }
+        for (const item of ordered) {
+          const selected = await client.query(
+            "SELECT position_id, bindings_commitment, active FROM worker_carry_exposure_reservations WHERE reservation_key=$1 FOR UPDATE",
+            [item.reservation_key],
+          );
+          const row = selected.rows[0];
+          if (row?.active && (row.position_id !== positionId || row.bindings_commitment !== bindingsCommitment)) {
+            await client.query("ROLLBACK");
+            return { ok: false, conflicting_position_id: row.position_id };
+          }
+        }
+        for (const item of ordered) await client.query(
+          `INSERT INTO worker_carry_exposure_reservations
+             (reservation_key, position_id, bindings_commitment, reservation_json, active, updated_at)
+           VALUES ($1,$2,$3,$4::jsonb,TRUE,NOW())
+           ON CONFLICT (reservation_key) DO UPDATE SET
+             position_id=excluded.position_id, bindings_commitment=excluded.bindings_commitment,
+             reservation_json=excluded.reservation_json, active=TRUE,
+             generation=CASE WHEN worker_carry_exposure_reservations.active THEN worker_carry_exposure_reservations.generation ELSE worker_carry_exposure_reservations.generation + 1 END,
+             updated_at=NOW()`,
+          [item.reservation_key, positionId, bindingsCommitment, JSON.stringify(item)],
+        );
+        await client.query("COMMIT");
+        return { ok: true };
+      } catch (error) {
+        try { await client.query("ROLLBACK"); } catch {}
+        throw error;
+      } finally { client.release(); }
+    },
+
+    async listActiveCarryExposureReservationPositionIds() {
+      const sql = await ensureInitialized();
+      const rows = await sql`
+        SELECT DISTINCT position_id
+        FROM worker_carry_exposure_reservations
+        WHERE active=TRUE
+        ORDER BY position_id ASC
+      `;
+      return rows.map((row) => row.position_id);
+    },
+
+    async releaseCarryExposureReservations(positionId, bindingsCommitment, reservationKeys, expectedFlat) {
+      await ensureInitialized();
+      const client = await (await transactionPool()).connect();
+      const ordered = [...reservationKeys].sort();
+      try {
+        await client.query("BEGIN");
+        for (const key of ordered) await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [key]);
+        const positionRows = await client.query(
+          "SELECT record_json FROM worker_carry_positions WHERE position_id=$1 FOR UPDATE",
+          [positionId],
+        );
+        if (!exactFlatReservationRecord(decodeJson(positionRows.rows[0]?.record_json), expectedFlat)) {
+          await client.query("ROLLBACK");
+          return { ok: false, reason: "exact_flat_reconciliation_required" };
+        }
+        let present = 0;
+        for (const key of ordered) {
+          const selected = await client.query(
+            "SELECT position_id, bindings_commitment, active FROM worker_carry_exposure_reservations WHERE reservation_key=$1 FOR UPDATE",
+            [key],
+          );
+          const row = selected.rows[0];
+          if (row) present += 1;
+          if (row?.active && (row.position_id !== positionId || row.bindings_commitment !== bindingsCommitment)) {
+            await client.query("ROLLBACK");
+            return { ok: false };
+          }
+        }
+        if (present !== 0 && present !== ordered.length) {
+          await client.query("ROLLBACK");
+          return { ok: false, reason: "reservation_set_incomplete" };
+        }
+        await client.query(
+          "UPDATE worker_carry_exposure_reservations SET active=FALSE, updated_at=NOW() WHERE reservation_key = ANY($1::text[])",
+          [ordered],
+        );
+        await client.query("COMMIT");
+        return { ok: true, already_released: present === 0 };
+      } catch (error) {
+        try { await client.query("ROLLBACK"); } catch {}
+        throw error;
+      } finally { client.release(); }
+    },
+
+    async releaseCarryExposureReservationsBeforeSubmit(positionId, bindingsCommitment, reservationKeys, sagaId) {
+      await ensureInitialized();
+      const client = await (await transactionPool()).connect();
+      const ordered = [...reservationKeys].sort();
+      try {
+        await client.query("BEGIN");
+        for (const key of ordered) await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [key]);
+        const positionRows = await client.query(
+          "SELECT record_json FROM worker_carry_positions WHERE position_id=$1 FOR UPDATE",
+          [positionId],
+        );
+        const sagaRows = await client.query(
+          "SELECT saga_json FROM worker_multi_leg_sagas WHERE saga_id=$1 FOR UPDATE",
+          [sagaId],
+        );
+        if (!exactNoSubmitReservationRecord(
+          decodeJson(positionRows.rows[0]?.record_json),
+          decodeJson(sagaRows.rows[0]?.saga_json),
+          positionId,
+          sagaId,
+        )) {
+          await client.query("ROLLBACK");
+          return { ok: false, reason: "durable_no_submit_proof_required" };
+        }
+        let present = 0;
+        for (const key of ordered) {
+          const selected = await client.query(
+            "SELECT position_id, bindings_commitment, active FROM worker_carry_exposure_reservations WHERE reservation_key=$1 FOR UPDATE",
+            [key],
+          );
+          const row = selected.rows[0];
+          if (row) present += 1;
+          if (row?.active && (row.position_id !== positionId || row.bindings_commitment !== bindingsCommitment)) {
+            await client.query("ROLLBACK");
+            return { ok: false };
+          }
+        }
+        if (present !== 0 && present !== ordered.length) {
+          await client.query("ROLLBACK");
+          return { ok: false, reason: "reservation_set_incomplete" };
+        }
+        await client.query(
+          "UPDATE worker_carry_exposure_reservations SET active=FALSE, updated_at=NOW() WHERE reservation_key = ANY($1::text[])",
+          [ordered],
+        );
+        await client.query("COMMIT");
+        return { ok: true, already_released: present === 0 };
+      } catch (error) {
+        try { await client.query("ROLLBACK"); } catch {}
+        throw error;
+      } finally { client.release(); }
     },
 
     async putExecutionAttempt(workOrderCommitment, attempt) {
@@ -2632,6 +2809,81 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save, atomicU
       });
     },
 
+    async claimCarryExposureReservations(positionId, bindingsCommitment, reservations) {
+      return updateState((state) => {
+        const persisted = assessCarryExposureClaim({
+          positionId,
+          bindingsCommitment,
+          reservations,
+          positions: state.carry_positions,
+          sagas: state.multi_leg_sagas,
+        });
+        if (!persisted.ok) return persisted;
+        for (const item of reservations) {
+          const existing = state.carry_exposure_reservations[item.reservation_key];
+          if (existing?.active && (existing.position_id !== positionId || existing.bindings_commitment !== bindingsCommitment)) {
+            return { ok: false, conflicting_position_id: existing.position_id };
+          }
+        }
+        for (const item of reservations) {
+          const existing = state.carry_exposure_reservations[item.reservation_key];
+          state.carry_exposure_reservations[item.reservation_key] = {
+            ...structuredClone(item), position_id: positionId, bindings_commitment: bindingsCommitment, active: true,
+            generation: existing?.active ? existing.generation : Number(existing?.generation || 0) + 1,
+          };
+        }
+        return { ok: true };
+      });
+    },
+
+    async listActiveCarryExposureReservationPositionIds() {
+      const state = await loadState();
+      return [...new Set(Object.values(state.carry_exposure_reservations)
+        .filter((item) => item?.active === true)
+        .map((item) => item.position_id))].sort();
+    },
+
+    async releaseCarryExposureReservations(positionId, bindingsCommitment, reservationKeys, expectedFlat) {
+      return updateState((state) => {
+        if (!exactFlatReservationRecord(state.carry_positions[positionId], expectedFlat)) {
+          return { ok: false, reason: "exact_flat_reconciliation_required" };
+        }
+        let present = 0;
+        for (const key of reservationKeys) {
+          const existing = state.carry_exposure_reservations[key];
+          if (existing) present += 1;
+          if (existing?.active && (existing.position_id !== positionId || existing.bindings_commitment !== bindingsCommitment)) return { ok: false };
+        }
+        if (present !== 0 && present !== reservationKeys.length) return { ok: false, reason: "reservation_set_incomplete" };
+        for (const key of reservationKeys) {
+          if (state.carry_exposure_reservations[key]) state.carry_exposure_reservations[key].active = false;
+        }
+        return { ok: true, already_released: present === 0 };
+      });
+    },
+
+    async releaseCarryExposureReservationsBeforeSubmit(positionId, bindingsCommitment, reservationKeys, sagaId) {
+      return updateState((state) => {
+        if (!exactNoSubmitReservationRecord(
+          state.carry_positions[positionId],
+          state.multi_leg_sagas[sagaId],
+          positionId,
+          sagaId,
+        )) return { ok: false, reason: "durable_no_submit_proof_required" };
+        let present = 0;
+        for (const key of reservationKeys) {
+          const existing = state.carry_exposure_reservations[key];
+          if (existing) present += 1;
+          if (existing?.active && (existing.position_id !== positionId || existing.bindings_commitment !== bindingsCommitment)) return { ok: false };
+        }
+        if (present !== 0 && present !== reservationKeys.length) return { ok: false, reason: "reservation_set_incomplete" };
+        for (const key of reservationKeys) {
+          if (state.carry_exposure_reservations[key]) state.carry_exposure_reservations[key].active = false;
+        }
+        return { ok: true, already_released: present === 0 };
+      });
+    },
+
     async putExecutionAttempt(workOrderCommitment, attempt) {
       return updateState((state) => {
         state.execution_attempts[workOrderCommitment] = {
@@ -3138,6 +3390,216 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save, atomicU
   };
 }
 
+function exactFlatReservationRecord(record, expected) {
+  const evidence = record?.final_reconciliation_evidence;
+  if (record?.position?.status !== "reconciled" || !evidence || evidence.account_state_checked !== true
+    || evidence.transaction_broadcast !== false || evidence.gross_exposure_micro_usdc !== 0
+    || evidence.open_order_count !== 0 || evidence.owner_commitment !== expected?.owner_commitment
+    || evidence.carry_position_id !== expected?.position_id
+    || !Number.isSafeInteger(evidence.checked_at_ms) || evidence.checked_at_ms <= 0
+    || !/^[A-Za-z0-9:_-]{8,180}$/.test(String(evidence.reconciliation_commitment || ""))) return false;
+  const venues = Array.isArray(evidence.venues) ? evidence.venues : [];
+  return Array.isArray(expected?.venue_ids) && expected.venue_ids.length === 2
+    && new Set(expected.venue_ids).size === 2
+    && venues.length === 2
+    && new Set(venues.map((item) => item?.venue_id)).size === 2
+    && expected.venue_ids.every((venueId) => venues.some((item) => item?.venue_id === venueId
+      && item.account_commitment === expected.account_commitments?.[venueId]
+      && item.authorized === true && item.account_state_checked === true && item.flat_zero_orders === true
+      && item.position_count === 0 && item.open_order_count === 0));
+}
+
+function exactNoSubmitReservationRecord(record, saga, positionId, sagaId) {
+  const venueIds = [record?.position?.long_venue_id, record?.position?.short_venue_id];
+  const accountCommitments = Object.fromEntries(venueIds.map((venueId) => [
+    venueId,
+    record?.monitoring_context?.venue_access?.[venueId]?.account_commitment,
+  ]));
+  return record?.position?.position_id === positionId
+    && record.position.status === "reconciled"
+    && record.position.terminal_reason === "entry_failed_no_fill"
+    && record.entry_saga_id === sagaId
+    && saga?.saga_id === sagaId
+    && saga.terminal === true
+    && saga.status === "failed_no_submit"
+    && saga.terminal_reason === "cancelled_before_submit"
+    && saga.unhedged_deadline_ms === null
+    && saga.execution_context?.carry_position_id === positionId
+    && saga.execution_context?.owner_commitment === record.owner_commitment
+    && Array.isArray(saga.legs)
+    && saga.legs.length === 2
+    && saga.legs.every((leg) => leg.submission_status === "pending"
+      && leg.provider_ref_commitment === null
+      && leg.filled_micro_usdc === 0)
+    && exactFlatReservationRecord(record, {
+      owner_commitment: record.owner_commitment,
+      position_id: positionId,
+      venue_ids: venueIds,
+      account_commitments: accountCommitments,
+    });
+}
+
+const CARRY_EXPOSURE_BEARING_STATUSES = new Set([
+  "active", "rebalancing", "exiting", "frozen", "manual_intervention",
+]);
+const CARRY_KNOWN_STATUSES = new Set([
+  "draft", "opening", "active", "rebalancing", "exiting", "reconciled", "frozen", "manual_intervention",
+]);
+
+function assessCarryExposureClaim({ positionId, bindingsCommitment, reservations, positions, sagas }) {
+  const targetRecord = positions?.[positionId];
+  const targetBinding = durableCarryExposureBinding(targetRecord, positionId);
+  const targetSaga = targetRecord?.entry_saga_id ? sagas?.[targetRecord.entry_saga_id] : null;
+  if (!targetBinding
+    || targetBinding.status !== "opening"
+    || !provablyPreSubmitCarryOpening(targetRecord, targetSaga, { readyOnly: true })
+    || !exactCarryExposureClaimBinding(targetBinding, targetSaga, bindingsCommitment, reservations)) {
+    return { ok: false, reason: "carry_exposure_target_binding_invalid" };
+  }
+
+  for (const [persistedId, record] of Object.entries(positions || {})) {
+    if (persistedId === positionId) continue;
+    const status = record?.position?.status;
+    if (record?.position?.position_id !== persistedId || !CARRY_KNOWN_STATUSES.has(status)) {
+      return {
+        ok: false,
+        reason: "carry_legacy_exposure_binding_unverifiable",
+        conflicting_position_id: persistedId,
+      };
+    }
+    if (status === "draft" || status === "reconciled") continue;
+    const persistedBinding = durableCarryExposureBinding(record, persistedId);
+    if (!persistedBinding) {
+      return {
+        ok: false,
+        reason: "carry_legacy_exposure_binding_unverifiable",
+        conflicting_position_id: persistedId,
+      };
+    }
+    if (status === "opening") {
+      const saga = record.entry_saga_id ? sagas?.[record.entry_saga_id] : null;
+      if (provablyPreSubmitCarryOpening(record, saga)) continue;
+    } else if (!CARRY_EXPOSURE_BEARING_STATUSES.has(status)) {
+      return {
+        ok: false,
+        reason: "carry_legacy_exposure_binding_unverifiable",
+        conflicting_position_id: persistedId,
+      };
+    }
+    if (carryExposureBindingsOverlap(targetBinding, persistedBinding)) {
+      return {
+        ok: false,
+        reason: "carry_legacy_exposure_overlap",
+        conflicting_position_id: persistedId,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+function durableCarryExposureBinding(record, expectedPositionId) {
+  const position = record?.position;
+  const ownerCommitment = String(record?.owner_commitment || "");
+  const asset = String(position?.asset || "");
+  const venueIds = [position?.long_venue_id, position?.short_venue_id];
+  if (position?.position_id !== expectedPositionId
+    || !/^[A-Za-z0-9:_-]{8,180}$/.test(ownerCommitment)
+    || !/^[A-Z0-9][A-Z0-9._-]{0,31}$/.test(asset)
+    || venueIds.some((venueId) => !/^[a-z0-9][a-z0-9_-]{1,47}$/.test(String(venueId || "")))
+    || new Set(venueIds).size !== 2) return null;
+  const accountsByVenue = Object.fromEntries(venueIds.map((venueId) => [
+    venueId,
+    record?.monitoring_context?.venue_access?.[venueId]?.account_commitment,
+  ]));
+  const accountCommitments = Object.values(accountsByVenue);
+  if (accountCommitments.some((value) => !/^[A-Za-z0-9:_-]{8,180}$/.test(String(value || "")))) return null;
+  return {
+    position_id: expectedPositionId,
+    status: position.status,
+    owner_commitment: ownerCommitment,
+    asset,
+    venue_ids: venueIds,
+    accounts_by_venue: accountsByVenue,
+    account_commitments: accountCommitments,
+  };
+}
+
+function provablyPreSubmitCarryOpening(record, saga, { readyOnly = false } = {}) {
+  const statusAllowed = readyOnly
+    ? saga?.status === "ready" && saga?.terminal === false
+    : ((saga?.status === "preflighting" || saga?.status === "ready") && saga?.terminal === false)
+      || (saga?.status === "failed_no_submit" && saga?.terminal === true
+        && (saga?.terminal_reason === "preflight_failed" || saga?.terminal_reason === "cancelled_before_submit"));
+  const exposureByAsset = saga?.signed_filled_exposure_micro_usdc_by_asset;
+  return record?.position?.status === "opening"
+    && typeof record.entry_saga_id === "string"
+    && saga?.saga_id === record.entry_saga_id
+    && statusAllowed
+    && saga.recovery_mode === "unwind"
+    && saga.unhedged_deadline_ms === null
+    && saga.first_exposure_observed_at_ms === null
+    && saga.exposure_boundary_provenance === null
+    && exposureByAsset && typeof exposureByAsset === "object" && !Array.isArray(exposureByAsset)
+    && Object.values(exposureByAsset).every((value) => value === 0)
+    && saga.execution_context?.carry_position_id === record.position.position_id
+    && saga.execution_context?.owner_commitment === record.owner_commitment
+    && Array.isArray(saga.execution_context?.legs)
+    && Array.isArray(saga.legs)
+    && saga.legs.length === 2
+    && saga.execution_context.legs.length === 2
+    && saga.legs.every((leg) => leg?.submission_status === "pending"
+      && leg.provider_ref_commitment === null
+      && leg.filled_micro_usdc === 0
+      && leg.unwind_filled_micro_usdc === 0);
+}
+
+function exactCarryExposureClaimBinding(binding, saga, bindingsCommitment, reservations) {
+  const contextLegs = saga.execution_context.legs;
+  const legs = saga.legs.map((leg) => {
+    const context = contextLegs.find((item) => item?.leg_id === leg?.leg_id);
+    return {
+      venue_id: leg?.venue_id,
+      leg_id: leg?.leg_id,
+      work_order_commitment: context?.work_order_commitment,
+    };
+  });
+  if (legs.some((leg, index) => leg.venue_id !== binding.venue_ids[index]
+    || !/^[A-Za-z0-9:_-]{8,180}$/.test(String(leg.leg_id || ""))
+    || !/^[A-Za-z0-9:_-]{8,180}$/.test(String(leg.work_order_commitment || "")))) return false;
+  const expectedBindingsCommitment = `carry:exposure-bindings:${stateDigest(JSON.stringify({
+    owner_commitment: binding.owner_commitment,
+    asset: binding.asset,
+    venue_ids: binding.venue_ids,
+    accounts_by_venue: binding.accounts_by_venue,
+    legs,
+  })).slice(0, 40)}`;
+  if (bindingsCommitment !== expectedBindingsCommitment || !Array.isArray(reservations)) return false;
+  const expected = new Map([
+    [`carry:exposure:owner:${stateDigest(`${binding.owner_commitment}:${binding.asset}`).slice(0, 40)}`, null],
+    ...[...binding.account_commitments].sort().map((accountCommitment) => [
+      `carry:exposure:account:${stateDigest(`${accountCommitment}:${binding.asset}`).slice(0, 40)}`,
+      accountCommitment,
+    ]),
+  ]);
+  if (reservations.length !== expected.size
+    || new Set(reservations.map((item) => item?.reservation_key)).size !== reservations.length) return false;
+  return reservations.every((item) => expected.has(item?.reservation_key)
+    && (expected.get(item.reservation_key) === null
+      ? item.account_commitment === undefined
+      : item.account_commitment === expected.get(item.reservation_key)));
+}
+
+function carryExposureBindingsOverlap(left, right) {
+  if (left.asset !== right.asset) return false;
+  if (left.owner_commitment === right.owner_commitment) return true;
+  const rightAccounts = new Set(right.account_commitments);
+  return left.account_commitments.some((account) => rightAccounts.has(account));
+}
+
+function stateDigest(value) {
+  return createHash("sha256").update(String(value)).digest("hex");
+}
+
 function normalizeState(value) {
   if (typeof value === "string") {
     try {
@@ -3165,6 +3627,7 @@ function normalizeState(value) {
     tick_snapshots: loaded.tick_snapshots || {},
     multi_leg_sagas: loaded.multi_leg_sagas || {},
     carry_positions: loaded.carry_positions || {},
+    carry_exposure_reservations: loaded.carry_exposure_reservations || {},
     carry_lifecycle_events: loaded.carry_lifecycle_events || {},
     revenue_evidence: Array.isArray(loaded.revenue_evidence) ? loaded.revenue_evidence : [],
     hyperliquid_managed_allocations: loaded.hyperliquid_managed_allocations || {},

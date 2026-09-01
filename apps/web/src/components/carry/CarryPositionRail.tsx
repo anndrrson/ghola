@@ -9,6 +9,7 @@ type SyncState = "checking" | "signed_out" | "syncing" | "ready" | "stale" | "un
 
 export interface CarryPositionRailRecord {
   updated_at?: string;
+  value_boundary_authoritative?: boolean;
   position: {
     position_id: string;
     asset: string;
@@ -17,8 +18,10 @@ export interface CarryPositionRailRecord {
     target_notional_micro_usdc: number;
     status: string;
     next_actions?: string[];
+    active_boundary_provenance?: string | null;
   };
   value_ledger?: {
+    status?: "open" | "finalized";
     modeled?: { net_value_micro_usdc?: number };
     realized?: { net_value_micro_usdc?: number };
   };
@@ -112,7 +115,7 @@ export function CarryPositionRail() {
   const status = selected.position.status;
   const route = `L ${venueName(selected.position.long_venue_id)} / S ${venueName(selected.position.short_venue_id)}`;
   const modeledNet = microUsd(selected.value_ledger?.modeled?.net_value_micro_usdc);
-  const realizedNet = microUsd(selected.value_ledger?.realized?.net_value_micro_usdc);
+  const ledgerMetric = positionLedgerMetric(selected);
   const runway = positionRunway(selected);
   const nextAction = selected.position.next_actions?.[0];
 
@@ -135,7 +138,11 @@ export function CarryPositionRail() {
         <span className="truncate text-[#c8d0dc]" title={route}>{route}</span>
         <RailMetric label="NOTIONAL" value={`${formatUsdMicro(selected.position.target_notional_micro_usdc)}/LEG`} />
         <RailMetric label="MODEL NET" value={modeledNet} tone={signedTone(selected.value_ledger?.modeled?.net_value_micro_usdc)} />
-        <RailMetric label="REAL NET" value={realizedNet} tone={signedTone(selected.value_ledger?.realized?.net_value_micro_usdc)} />
+        <RailMetric
+          label={ledgerMetric.label}
+          value={ledgerMetric.value}
+          tone={ledgerMetric.tone}
+        />
         <RailMetric label="RUNWAY" value={runway.value} tone={runway.tone} />
         <RailMetric
           label={nextAction ? "NEXT" : "AGE"}
@@ -145,6 +152,31 @@ export function CarryPositionRail() {
       </div>
     </section>
   );
+}
+
+function positionLedgerMetric(record: CarryPositionRailRecord): {
+  label: "REAL NET" | "VALUE";
+  value: string;
+  tone?: "good" | "warn" | "bad";
+} {
+  const positionStatus = record.position.status;
+  const ledgerStatus = record.value_ledger?.status;
+  const realized = record.value_ledger?.realized?.net_value_micro_usdc;
+  if (positionStatus === "reconciled" && ledgerStatus === "finalized") {
+    if (record.value_boundary_authoritative === true
+      && record.position.active_boundary_provenance === "authoritative_exchange_fill_time"
+      && Number.isFinite(realized)) {
+      return { label: "REAL NET", value: microUsd(realized), tone: signedTone(realized) };
+    }
+    return { label: "VALUE", value: "UNVERIFIED", tone: "warn" };
+  }
+  if (positionStatus === "reconciled" && ledgerStatus === "open") {
+    return { label: "VALUE", value: "FINALIZING", tone: "warn" };
+  }
+  if (["active", "rebalancing"].includes(positionStatus) && ledgerStatus === "open") {
+    return { label: "VALUE", value: "ACCRUING" };
+  }
+  return { label: "VALUE", value: "UNVERIFIED", tone: "warn" };
 }
 
 function RailMetric({

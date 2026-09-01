@@ -222,6 +222,7 @@ function evidence(venueId) {
       live_order_broadcast: true,
       target_client_order_matched: true,
       final_venue_execution_proven: true,
+      target_fill_set_complete: true,
       filled_base_size: "0.001",
       evidence_commitment: "entry_evidence_0001",
     },
@@ -231,6 +232,7 @@ function evidence(venueId) {
       reduce_only: true,
       exact_base_quantity: true,
       final_venue_execution_proven: true,
+      target_fill_set_complete: true,
       account_state_checked: true,
       gross_exposure_micro_usdc: 0,
       open_order_count: 0,
@@ -271,7 +273,7 @@ function executionAttempt(accountCommitment) {
     status: "filled",
     provider_ref_seed: { order_id: "42" },
     result_seed: { kind: "aster_order_filled" },
-    final_proof: { final_venue_execution_proven: true },
+    final_proof: { final_venue_execution_proven: true, target_fill_set_complete: true },
   };
 }
 
@@ -284,6 +286,7 @@ function executionReceipt(filledBaseSize, accountCommitment) {
       broadcast_performed: true,
       target_client_order_matched: true,
       final_venue_execution_proven: true,
+      target_fill_set_complete: true,
       filled_base_size: filledBaseSize,
       open_order_count: 0,
     },

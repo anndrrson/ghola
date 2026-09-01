@@ -8,6 +8,7 @@ import {
 import {
   advanceStoredCarryPosition,
   appendStoredCarryValueEntry,
+  authoritativeStoredCarryValueBoundary,
   collectStoredCarryFundingEvidence,
   finalizeStoredCarryValueLedger,
   verifyStoredCarryOpportunityBinding,
@@ -36,6 +37,12 @@ import {
 
 const MAX_EXACT_BASE_DIGITS = 80;
 const MAX_EXACT_BASE_SCALE = 40;
+const AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE = "authoritative_exchange_fill_time";
+const AUTHORITATIVE_FILL_TIME_PROVENANCE_BY_VENUE = Object.freeze({
+  hyperliquid: "hyperliquid_user_fills_time_v1",
+  lighter: "lighter_authenticated_order_trades_timestamp_v1",
+  aster: "aster_fapi_v3_user_trades_time_v1",
+});
 
 export async function executeStoredCarryEntry({
   state,
@@ -182,6 +189,25 @@ export async function executeStoredCarryEntry({
     now_ms: now(),
   });
   if (!opened.ok) return denied(opened.error || "carry_entry_lifecycle_failed");
+  const reservationRecord = await state.getCarryPositionRecord(positionId);
+  if (!reservationRecord) return denied("carry_record_missing_after_preflight");
+  const exposureReservation = carryExposureReservation(reservationRecord, legs.legs);
+  const reservationClaim = await state.claimCarryExposureReservations(
+    positionId,
+    exposureReservation.bindings_commitment,
+    exposureReservation.reservations,
+  );
+  if (!reservationClaim.ok) {
+    await sagaEvent(state, sagaId, "cancel_before_submit", {}, now());
+    const reconciled = await advanceStoredCarryPosition({
+      state,
+      owner_commitment: ownerCommitment,
+      position_id: positionId,
+      event: carryEvent(opened.record.position, "entry_failed_no_fill"),
+      now_ms: now(),
+    });
+    return { ...denied("carry_account_asset_exposure_overlap"), record: reconciled.record };
+  }
   await sagaEvent(state, sagaId, "submission_started", {}, now());
 
   let outcomes;
@@ -228,16 +254,19 @@ export async function executeStoredCarryEntry({
       provider_ref_commitment: receipt?.provider_ref_commitment || null,
     }, now());
     const progress = fillProgress(receipt, leg, record.position.target_notional_micro_usdc, env);
+    const exposureBoundary = authoritativeReceiptExposureBoundary(receipt, leg.venue_id);
     if (progress.filled_micro_usdc > 0) {
       await sagaEvent(state, sagaId, "leg_fill", {
         leg_id: leg.leg_id,
         cumulative_filled_micro_usdc: progress.filled_micro_usdc,
+        ...exposureBoundaryEvent(exposureBoundary),
       }, now());
     }
     if (progress.terminal && progress.filled_micro_usdc < record.position.target_notional_micro_usdc) {
       await sagaEvent(state, sagaId, "leg_finalized", {
         leg_id: leg.leg_id,
         cumulative_filled_micro_usdc: progress.filled_micro_usdc,
+        ...exposureBoundaryEvent(exposureBoundary),
       }, now());
     } else if (!progress.terminal) {
       ambiguous = true;
@@ -251,13 +280,35 @@ export async function executeStoredCarryEntry({
     saga = await state.getMultiLegSaga(sagaId);
   }
   if (saga.legs.every((leg) => leg.filled_micro_usdc === 0)) {
+    const current = await state.getCarryPositionRecord(positionId);
+    const accountState = await inspectCarryAccountState({
+      state,
+      record: current,
+      saga,
+      recipient,
+      verifyOrder,
+      preflight,
+      env,
+      nowMs: now(),
+    });
+    if (!accountState.ok || !accountState.known_flat) {
+      return freezeAmbiguous({ state, record: current, positionId, ownerCommitment, sagaId, nowMs: now() });
+    }
     const result = await advanceStoredCarryPosition({
       state,
       owner_commitment: ownerCommitment,
       position_id: positionId,
-      event: carryEvent(opened.record.position, "entry_failed_no_fill"),
+      event: carryEvent(current.position, "entry_failed_no_fill", {
+        known_flat: true,
+        ...accountState.evidence,
+      }),
       now_ms: now(),
     });
+    if (!result.ok) return result;
+    const released = await releaseCarryExposureReservation({ state, record: result.record });
+    if (!released.ok) {
+      return { ok: false, error: "carry_exposure_reservation_release_failed", saga, record: result.record };
+    }
     return { ok: false, error: "carry_entry_failed_no_fill", saga, record: result.record };
   }
   const completionNow = now();
@@ -470,9 +521,18 @@ export async function executeStoredCarryExit({
     receiptByLeg[leg.leg_id] = receipt;
     await sagaEvent(state, sagaId, "leg_acknowledged", { leg_id: leg.leg_id, provider_ref_commitment: receipt?.provider_ref_commitment || null }, now());
     const progress = fillProgress(receipt, leg, leg.notional_micro_usdc, env);
-    if (progress.filled_micro_usdc > 0) await sagaEvent(state, sagaId, "leg_fill", { leg_id: leg.leg_id, cumulative_filled_micro_usdc: progress.filled_micro_usdc }, now());
+    const exposureBoundary = authoritativeReceiptExposureBoundary(receipt, leg.venue_id);
+    if (progress.filled_micro_usdc > 0) await sagaEvent(state, sagaId, "leg_fill", {
+      leg_id: leg.leg_id,
+      cumulative_filled_micro_usdc: progress.filled_micro_usdc,
+      ...exposureBoundaryEvent(exposureBoundary),
+    }, now());
     if (progress.terminal && progress.filled_micro_usdc < leg.notional_micro_usdc) {
-      await sagaEvent(state, sagaId, "leg_finalized", { leg_id: leg.leg_id, cumulative_filled_micro_usdc: progress.filled_micro_usdc }, now());
+      await sagaEvent(state, sagaId, "leg_finalized", {
+        leg_id: leg.leg_id,
+        cumulative_filled_micro_usdc: progress.filled_micro_usdc,
+        ...exposureBoundaryEvent(exposureBoundary),
+      }, now());
     } else if (!progress.terminal) ambiguous = true;
   }
   if (ambiguous) return freezeAmbiguous({ state, record, positionId, ownerCommitment, sagaId, nowMs: now() });
@@ -507,6 +567,10 @@ export async function executeStoredCarryExit({
     now_ms: now(),
   });
   if (!advanced.ok) return { ok: false, error: advanced.error, saga, record: advanced.record };
+  const released = await releaseCarryExposureReservation({ state, record: advanced.record });
+  if (!released.ok) {
+    return { ok: false, error: "carry_exposure_reservation_release_failed", saga, record: advanced.record };
+  }
   const accounting = await recordExecutionValueEvidence({
     state,
     ownerCommitment,
@@ -549,11 +613,15 @@ export async function runCarryExecutionTick({
   env = process.env,
   now = () => Date.now(),
 }) {
-  const [records, frozenRecords, reconciledRecords] = await Promise.all([
+  const [records, frozenRecords, reconciledRecords, activeReservationPositionIds] = await Promise.all([
     listAllCarryPositionRecords({ state, status: "exiting" }),
     listAllCarryPositionRecords({ state, status: "frozen" }),
     listAllCarryPositionRecords({ state, status: "reconciled" }),
+    typeof state.listActiveCarryExposureReservationPositionIds === "function"
+      ? state.listActiveCarryExposureReservationPositionIds()
+      : [],
   ]);
+  const activeReservationPositions = new Set(activeReservationPositionIds);
   const pendingAbortedFinalization = reconciledRecords.filter((record) =>
     record.value_ledger?.status === "open"
     && record.value_evidence?.aborted_entry_recovery?.status === "complete"
@@ -565,6 +633,10 @@ export async function runCarryExecutionTick({
     && record.value_evidence?.exit?.status === "complete"
     && typeof readFundingSettlements === "function"
     && typeof readCashflowValuation === "function"
+  );
+  const pendingExposureRelease = reconciledRecords.filter((record) =>
+    record.final_reconciliation_evidence
+    && activeReservationPositions.has(record.position.position_id)
   );
   const tasks = [
     ...records.map((record) => ({
@@ -645,6 +717,15 @@ export async function runCarryExecutionTick({
         readCashflowValuation,
         nowMs: now(),
       }),
+    })),
+    ...pendingExposureRelease.map((record) => ({
+      position_id: record.position?.position_id,
+      run: async () => {
+        const released = await releaseCarryExposureReservation({ state, record });
+        return released.ok
+          ? { ok: true, exposure_reservation_released: true }
+          : { ok: false, error: "carry_exposure_reservation_release_failed" };
+      },
     })),
   ];
   const concurrency = boundedMs(env.PRIVATE_AGENT_CARRY_EXECUTION_CONCURRENCY, 1, 32, 8);
@@ -730,6 +811,10 @@ async function processExitingCarryRecord({
     now_ms: now(),
   });
   if (!advanced.ok) return advanced;
+  const released = await releaseCarryExposureReservation({ state, record: advanced.record });
+  if (!released.ok) {
+    return { ok: false, error: "carry_exposure_reservation_release_failed", record: advanced.record };
+  }
   const accounting = await recordRecoveredExitValueEvidence({
     state,
     ownerCommitment: record.owner_commitment,
@@ -780,7 +865,14 @@ async function recordLifecycleProofAfterExit({ state, ownerCommitment, positionI
   }
 }
 
-export async function auditCarryPositionsAfterRestart({ state, now_ms: nowMs = Date.now(), env = process.env }) {
+export async function auditCarryPositionsAfterRestart({
+  state,
+  recipient,
+  verifyOrder,
+  preflight = preflightCarryPair,
+  now_ms: nowMs = Date.now(),
+  env = process.env,
+}) {
   const [draftRecords, openingRecords, exitingRecords] = await Promise.all([
     listAllCarryPositionRecords({ state, status: "draft" }),
     listAllCarryPositionRecords({ state, status: "opening" }),
@@ -814,14 +906,46 @@ export async function auditCarryPositionsAfterRestart({ state, now_ms: nowMs = D
         }
       }
       if (phase === "entry" && record.position.status === "opening") {
+        const accountState = await inspectCarryAccountState({
+          state,
+          record,
+          saga: cancelled,
+          recipient,
+          verifyOrder,
+          preflight,
+          env,
+          nowMs,
+        });
+        if (!accountState.ok || !accountState.known_flat) {
+          results.push({
+            ok: false,
+            error: accountState.error || "carry_restart_pre_submit_flat_proof_required",
+            saga: cancelled,
+          });
+          continue;
+        }
         const reconciled = await advanceStoredCarryPosition({
           state,
           owner_commitment: record.owner_commitment,
           position_id: record.position.position_id,
-          event: carryEvent(record.position, "entry_failed_no_fill"),
+          event: carryEvent(record.position, "entry_failed_no_fill", {
+            known_flat: true,
+            ...accountState.evidence,
+          }),
           now_ms: nowMs,
         });
-        results.push({ ...reconciled, restart_action: "entry_cancelled_before_submit", saga: cancelled });
+        if (!reconciled.ok) {
+          results.push(reconciled);
+          continue;
+        }
+        const released = await releaseCarryExposureReservationBeforeSubmit({
+          state,
+          record: reconciled.record,
+          saga: cancelled,
+        });
+        results.push(released.ok
+          ? { ...reconciled, restart_action: "entry_cancelled_before_submit", saga: cancelled }
+          : { ok: false, error: "carry_exposure_reservation_release_failed", record: reconciled.record, saga: cancelled });
       } else {
         results.push(await detachPreSubmitCarrySaga({ state, record, phase, saga: cancelled, nowMs }));
       }
@@ -898,18 +1022,102 @@ async function completeReconciledCarryEntry({ state, record, saga, env, nowMs = 
       long_filled_micro_usdc: material.longLeg.filled_micro_usdc,
       short_filled_micro_usdc: material.shortLeg.filled_micro_usdc,
       hedge_error_micro_usdc: saga.hedge_error_micro_usdc,
+      first_exposure_observed_at_ms: material.exposure_boundary.observed_at_ms,
+      exposure_boundary_provenance: material.exposure_boundary.provenance,
+      first_exposure_observed_at_ms_by_venue: material.exposure_boundary.observed_at_ms_by_venue,
+      exposure_boundary_provenance_by_venue: material.exposure_boundary.provenance_by_venue,
     }),
     now_ms: transitionAt,
   });
   return { ...advanced, completion_proven: true, accounting: accounting.summary };
 }
 
+function carryExposureReservation(record, boundLegs = null) {
+  const venueIds = [record.position.long_venue_id, record.position.short_venue_id];
+  const accountsByVenue = Object.fromEntries(venueIds.map((venueId) => [
+    venueId, record.monitoring_context?.venue_access?.[venueId]?.account_commitment,
+  ]));
+  const accountCommitments = [...new Set(Object.values(accountsByVenue).filter(Boolean))].sort();
+  const legs = Array.isArray(boundLegs) && boundLegs.length === 2
+    ? boundLegs.map((leg) => ({
+        venue_id: leg.venue_id,
+        leg_id: leg.leg_id,
+        work_order_commitment: leg.work_order_commitment,
+      }))
+    : ["long", "short"].map((side, index) => ({
+        venue_id: venueIds[index],
+        leg_id: `leg:carry:${digest(`${record.position.position_id}:${side}`).slice(0, 32)}`,
+        work_order_commitment: `work:carry:${digest(`${record.position.position_id}:${side}:entry`).slice(0, 40)}`,
+      }));
+  const bindingsCommitment = `carry:exposure-bindings:${digest(JSON.stringify({
+    owner_commitment: record.owner_commitment,
+    asset: record.position.asset,
+    venue_ids: venueIds,
+    accounts_by_venue: accountsByVenue,
+    legs,
+  })).slice(0, 40)}`;
+  return {
+    bindings_commitment: bindingsCommitment,
+    reservations: [
+      { reservation_key: `carry:exposure:owner:${digest(`${record.owner_commitment}:${record.position.asset}`).slice(0, 40)}` },
+      ...accountCommitments.map((account) => ({
+        reservation_key: `carry:exposure:account:${digest(`${account}:${record.position.asset}`).slice(0, 40)}`,
+        account_commitment: account,
+      })),
+    ],
+  };
+}
+
+async function releaseCarryExposureReservation({ state, record }) {
+  const durable = record?.position?.position_id
+    ? await state.getCarryPositionRecord(record.position.position_id)
+    : null;
+  if (!durable) return { ok: false };
+  const venueIds = [durable.position.long_venue_id, durable.position.short_venue_id];
+  const accountCommitments = Object.fromEntries(venueIds.map((venueId) => [
+    venueId, durable.monitoring_context?.venue_access?.[venueId]?.account_commitment,
+  ]));
+  if (durable.position.status !== "reconciled" || !hasExactCarryFlatReconciliation(
+    durable.final_reconciliation_evidence,
+    venueIds,
+    { owner_commitment: durable.owner_commitment, carry_position_id: durable.position.position_id, account_commitments: accountCommitments },
+  )) return { ok: false };
+  const reservation = carryExposureReservation(durable);
+  return state.releaseCarryExposureReservations(
+    durable.position.position_id,
+    reservation.bindings_commitment,
+    reservation.reservations.map((item) => item.reservation_key),
+    {
+      owner_commitment: durable.owner_commitment,
+      position_id: durable.position.position_id,
+      venue_ids: venueIds,
+      account_commitments: accountCommitments,
+    },
+  );
+}
+
+async function releaseCarryExposureReservationBeforeSubmit({ state, record, saga }) {
+  const durable = record?.position?.position_id
+    ? await state.getCarryPositionRecord(record.position.position_id)
+    : null;
+  if (!durable) return { ok: false };
+  const reservation = carryExposureReservation(durable);
+  return state.releaseCarryExposureReservationsBeforeSubmit(
+    durable.position.position_id,
+    reservation.bindings_commitment,
+    reservation.reservations.map((item) => item.reservation_key),
+    saga.saga_id,
+  );
+}
+
 async function reconciledCarryEntryMaterial({ state, record, saga, env, liveLegs, receiptByLeg }) {
+  const exposureBoundary = resolveSagaExposureBoundary(saga);
   if (!record || !entryParentCanComplete(record.position) || record.entry_saga_id !== saga?.saga_id
     || saga?.terminal !== true || saga.status !== "reconciled" || saga.terminal_reason !== "all_legs_reconciled"
     || saga.recovery_mode !== "unwind" || saga.execution_context?.carry_position_id !== record.position.position_id
     || saga.execution_context?.owner_commitment !== record.owner_commitment
     || !Number.isSafeInteger(saga.updated_at_ms) || saga.updated_at_ms <= 0
+    || !exposureBoundary.ok || exposureBoundary.observed_at_ms > saga.updated_at_ms
     || !Number.isSafeInteger(saga.hedge_error_micro_usdc) || saga.hedge_error_micro_usdc < 0
     || !Array.isArray(saga.legs) || saga.legs.length !== 2
     || !Array.isArray(saga.execution_context?.legs) || saga.execution_context.legs.length !== 2) {
@@ -984,12 +1192,153 @@ async function reconciledCarryEntryMaterial({ state, record, saga, env, liveLegs
   }
   const longLeg = saga.legs.find((leg) => leg.venue_id === record.position.long_venue_id && leg.side === "buy");
   const shortLeg = saga.legs.find((leg) => leg.venue_id === record.position.short_venue_id && leg.side === "sell");
-  return { ok: true, legs, receiptByLeg: recoveredReceipts, longLeg, shortLeg };
+  return { ok: true, legs, receiptByLeg: recoveredReceipts, longLeg, shortLeg, exposure_boundary: exposureBoundary };
 }
 
 function entryParentCanComplete(position) {
   return position?.status === "opening"
     || (position?.status === "frozen" && position.terminal_reason === "restart_detected");
+}
+
+function resolveSagaExposureBoundary(saga, { allowNoExposure = false } = {}) {
+  const hasExposure = Array.isArray(saga?.legs)
+    && saga.legs.some((leg) => Number(leg?.filled_micro_usdc) > 0);
+  if (!hasExposure) {
+    return allowNoExposure
+      ? { ok: true, has_exposure: false, observed_at_ms: null, provenance: "no_observed_exposure" }
+      : { ok: false, has_exposure: false };
+  }
+  const createdAtMs = Number(saga?.created_at_ms);
+  const updatedAtMs = Number(saga?.updated_at_ms);
+  let observedAtMs;
+  let provenance;
+  if (saga?.first_exposure_observed_at_ms !== undefined && saga.first_exposure_observed_at_ms !== null) {
+    observedAtMs = Number(saga.first_exposure_observed_at_ms);
+    provenance = saga.exposure_boundary_provenance || "worker_observed_positive_fill_conservative";
+  } else if (saga?.first_exposure_at_ms !== undefined && saga.first_exposure_at_ms !== null) {
+    observedAtMs = Number(saga.first_exposure_at_ms);
+    provenance = "legacy_worker_observed_alias";
+  } else {
+    observedAtMs = createdAtMs;
+    provenance = "legacy_conservative_saga_creation";
+  }
+  const ok = Number.isSafeInteger(observedAtMs) && observedAtMs > 0
+    && Number.isSafeInteger(createdAtMs) && createdAtMs > 0
+    && Number.isSafeInteger(updatedAtMs) && updatedAtMs >= observedAtMs
+    && observedAtMs >= createdAtMs;
+  const exposedLegs = saga.legs.filter((leg) => Number(leg?.filled_micro_usdc) > 0);
+  const observedAtMsByVenue = {};
+  const provenanceByVenue = {};
+  for (const leg of exposedLegs) {
+    const legBoundary = Number(leg?.first_exposure_observed_at_ms);
+    const legProvenance = leg?.exposure_boundary_provenance;
+    const legAuthoritative = Number.isSafeInteger(legBoundary)
+      && legBoundary >= createdAtMs && legBoundary <= updatedAtMs
+      && legProvenance === AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE;
+    observedAtMsByVenue[leg.venue_id] = legAuthoritative ? legBoundary : observedAtMs;
+    provenanceByVenue[leg.venue_id] = legAuthoritative ? legProvenance : provenance;
+  }
+  const everyLegAuthoritative = exposedLegs.every((leg) =>
+    provenanceByVenue[leg.venue_id] === AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE);
+  const venueMinimum = Math.min(...Object.values(observedAtMsByVenue));
+  return {
+    ok: ok && venueMinimum === observedAtMs
+      && (provenance === AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE) === everyLegAuthoritative,
+    has_exposure: true,
+    observed_at_ms: observedAtMs,
+    provenance,
+    observed_at_ms_by_venue: observedAtMsByVenue,
+    provenance_by_venue: provenanceByVenue,
+  };
+}
+
+function resolvePositionExposureBoundary(record) {
+  const position = record?.position;
+  const createdAtMs = Number(position?.created_at_ms);
+  const venueIds = [position?.long_venue_id, position?.short_venue_id].filter(Boolean);
+  let observedAtMs;
+  let provenance;
+  if (position?.active_observed_at_ms !== undefined && position.active_observed_at_ms !== null) {
+    observedAtMs = Number(position.active_observed_at_ms);
+    provenance = position.active_boundary_provenance || "worker_observed_positive_fill_conservative";
+  } else if (position?.active_at_ms !== undefined && position.active_at_ms !== null) {
+    observedAtMs = Number(position.active_at_ms);
+    provenance = "legacy_worker_observed_alias";
+  } else {
+    observedAtMs = createdAtMs;
+    provenance = "legacy_conservative_position_creation";
+  }
+  const rawBoundaryByVenue = position?.active_observed_at_ms_by_venue;
+  const rawProvenanceByVenue = position?.active_boundary_provenance_by_venue;
+  const authoritative = provenance === AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE;
+  const explicitMaps = rawBoundaryByVenue && typeof rawBoundaryByVenue === "object" && !Array.isArray(rawBoundaryByVenue)
+    && rawProvenanceByVenue && typeof rawProvenanceByVenue === "object" && !Array.isArray(rawProvenanceByVenue);
+  const boundaryByVenue = rawBoundaryByVenue && typeof rawBoundaryByVenue === "object"
+    ? rawBoundaryByVenue
+    : Object.fromEntries(venueIds.map((venueId) => [venueId, observedAtMs]));
+  const provenanceByVenue = rawProvenanceByVenue && typeof rawProvenanceByVenue === "object"
+    ? rawProvenanceByVenue
+    : Object.fromEntries(venueIds.map((venueId) => [venueId, provenance]));
+  const mapsValid = venueIds.length === 2
+    && (!authoritative || explicitMaps)
+    && Object.keys(boundaryByVenue).length === 2
+    && Object.keys(provenanceByVenue).length === 2
+    && venueIds.every((venueId) => Number.isSafeInteger(boundaryByVenue[venueId])
+      && boundaryByVenue[venueId] >= createdAtMs
+      && typeof provenanceByVenue[venueId] === "string")
+    && Math.min(...venueIds.map((venueId) => boundaryByVenue[venueId])) === observedAtMs
+    && authoritative
+      === venueIds.every((venueId) => provenanceByVenue[venueId] === AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE);
+  return {
+    ok: mapsValid && Number.isSafeInteger(observedAtMs) && observedAtMs > 0
+      && Number.isSafeInteger(createdAtMs) && createdAtMs > 0
+      && observedAtMs >= createdAtMs,
+    observed_at_ms: observedAtMs,
+    provenance,
+    observed_at_ms_by_venue: boundaryByVenue,
+    provenance_by_venue: provenanceByVenue,
+  };
+}
+
+function rebaseAbortedFundingBoundary({
+  funding,
+  venueIds,
+  observedAtMs,
+  provenance,
+  observedAtMsByVenue,
+  provenanceByVenue,
+  noExposureAtMs,
+}) {
+  const current = funding && typeof funding === "object" ? funding : {};
+  const priorBoundary = current.exposure_boundary_observed_at_ms ?? current.exposure_boundary_ms;
+  const target = observedAtMs ?? null;
+  const targetsByVenue = Object.fromEntries(venueIds.map((venueId) => [
+    venueId,
+    observedAtMsByVenue?.[venueId] ?? noExposureAtMs,
+  ]));
+  const targetProvenanceByVenue = Object.fromEntries(venueIds.map((venueId) => [
+    venueId,
+    provenanceByVenue?.[venueId] || (observedAtMsByVenue?.[venueId] ? provenance : "no_observed_exposure"),
+  ]));
+  if (priorBoundary !== undefined && priorBoundary !== null && priorBoundary !== target) {
+    return { ok: false, error: "carry_aborted_funding_boundary_conflict" };
+  }
+  const alreadyRebased = current.exposure_boundary_provenance !== undefined
+    || current.exposure_boundary_observed_at_ms !== undefined
+    || current.exposure_boundary_ms !== undefined;
+  return {
+    ok: true,
+    value: {
+      ...current,
+      ...(!alreadyRebased ? {
+        cursor_ms_by_venue: targetsByVenue,
+      } : {}),
+      exposure_boundary_observed_at_ms: target,
+      exposure_boundary_provenance: current.exposure_boundary_provenance || provenance,
+      exposure_boundary_observed_at_ms_by_venue: current.exposure_boundary_observed_at_ms_by_venue || targetsByVenue,
+      exposure_boundary_provenance_by_venue: current.exposure_boundary_provenance_by_venue || targetProvenanceByVenue,
+    },
+  };
 }
 
 function provablyPreSubmitCarrySaga(saga, record, phase) {
@@ -1094,6 +1443,10 @@ async function synchronizeFrozenCarryRecovery({ state, record, recipient, verify
     now_ms: checkedAt,
   });
   if (!advanced.ok) return advanced;
+  const released = await releaseCarryExposureReservation({ state, record: advanced.record });
+  if (!released.ok) {
+    return { ok: false, error: "carry_exposure_reservation_release_failed", record: advanced.record };
+  }
   if (!record.exit_saga_id) {
     const finalized = await finalizeAbortedCarryValueEvidenceIfComplete({
       state,
@@ -1395,6 +1748,12 @@ async function recordRecoveredEntryUnwindValueEvidence({
   const persistedSettlement = before?.value_ledger?.entries?.find(
     (entry) => entry.entry_id === "carry:value:aborted-entry:round-trip-pnl",
   ) || null;
+  const exposureBoundary = resolveSagaExposureBoundary(saga, { allowNoExposure: true });
+  const hasExposure = exposureBoundary.has_exposure;
+  const exposureObservedAtMs = hasExposure ? exposureBoundary.observed_at_ms : null;
+  if (!exposureBoundary.ok || (hasExposure && exposureObservedAtMs > nowMs)) {
+    return { record: null, summary: { phase: "aborted_entry_recovery", complete: false, error: "carry_aborted_exposure_boundary_invalid" } };
+  }
   for (const sagaLeg of saga.legs) {
     const context = saga.execution_context?.legs?.find((item) => item.leg_id === sagaLeg.leg_id);
     const pnlSettlementAsset = accountingAsset(context?.accounting_pnl_settlement_asset);
@@ -1580,6 +1939,21 @@ async function recordRecoveredEntryUnwindValueEvidence({
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const current = await state.getCarryPositionRecord(positionId);
     if (!current) break;
+    const fundingBoundary = rebaseAbortedFundingBoundary({
+      funding: current.value_evidence?.funding,
+      venueIds: [current.position.long_venue_id, current.position.short_venue_id],
+      observedAtMs: exposureObservedAtMs,
+      provenance: exposureBoundary.provenance,
+      observedAtMsByVenue: exposureBoundary.observed_at_ms_by_venue,
+      provenanceByVenue: exposureBoundary.provenance_by_venue,
+      noExposureAtMs: nowMs,
+    });
+    if (!fundingBoundary.ok) {
+      return {
+        record: publicCarryRecord(current),
+        summary: { phase: "aborted_entry_recovery", complete: false, error: fundingBoundary.error },
+      };
+    }
     const stored = await state.putCarryPositionRecord({
       ...current,
       value_evidence: {
@@ -1594,7 +1968,12 @@ async function recordRecoveredEntryUnwindValueEvidence({
           settlement_adjustment_micro_usdc: settlementAdjustmentMicro,
           venues,
           checked_at_ms: nowMs,
+          exposure_observed_at_ms: exposureObservedAtMs,
+          exposure_boundary_provenance: exposureBoundary.provenance,
+          exposure_observed_at_ms_by_venue: exposureBoundary.observed_at_ms_by_venue,
+          exposure_boundary_provenance_by_venue: exposureBoundary.provenance_by_venue,
         },
+        funding: fundingBoundary.value,
         costs_complete: false,
       },
     }, { expected_version: current.record_version });
@@ -1697,7 +2076,13 @@ async function finalizeAbortedCarryValueEvidenceIfComplete({ state, record, reci
   if (current?.value_evidence?.funding?.status !== "complete_through_exit") {
     return { ok: true, pending: true, error: "carry_aborted_funding_evidence_pending", finalized: false, record: publicCarryRecord(current) };
   }
-  const elapsedMs = Math.max(0, exitAtMs - Number(current.position.created_at_ms));
+  const exposureObservedAtMs = current.value_evidence.aborted_entry_recovery.exposure_observed_at_ms
+    ?? current.value_evidence.aborted_entry_recovery.exposure_started_at_ms;
+  const hasExposure = exposureObservedAtMs !== null && exposureObservedAtMs !== undefined;
+  if (hasExposure && (!Number.isSafeInteger(exposureObservedAtMs) || exposureObservedAtMs <= 0 || exposureObservedAtMs > exitAtMs)) {
+    return { ok: false, error: "carry_aborted_exposure_boundary_invalid", finalized: false, record: publicCarryRecord(current) };
+  }
+  const elapsedMs = hasExposure ? exitAtMs - exposureObservedAtMs : 0;
   const capitalCostBig = roundedDiv(
     BigInt(current.opportunity.projected_capital_cost_micro_usdc) * BigInt(elapsedMs),
     BigInt(current.opportunity.horizon_ms),
@@ -1857,6 +2242,10 @@ async function finalizeCarryValueEvidenceIfComplete({ state, ownerCommitment, po
           slippage_reversal_micro_usdc: economics.slippageReversalMicro,
           settlement_adjustment_micro_usdc: economics.settlementAdjustmentMicro,
           capital_cost_micro_usdc: economics.capitalCostMicro,
+          active_observed_at_ms: economics.evidence.active_observed_at_ms,
+          exposure_boundary_provenance: economics.evidence.exposure_boundary_provenance,
+          active_observed_at_ms_by_venue: economics.evidence.active_observed_at_ms_by_venue,
+          exposure_boundary_provenance_by_venue: economics.evidence.exposure_boundary_provenance_by_venue,
           evidence_commitment: economicCommitment,
           checked_at_ms: nowMs,
         },
@@ -2064,7 +2453,10 @@ async function realizedCarryEconomics(record, { readCashflowValuation, persisted
       return sum + value;
     }, 0n);
     if (contractPnlMicro > BigInt(Number.MAX_SAFE_INTEGER) || contractPnlMicro < BigInt(Number.MIN_SAFE_INTEGER)) return { ok: false };
-    const elapsedMs = Math.max(0, Number(record.final_reconciliation_evidence.checked_at_ms) - Number(record.position.created_at_ms));
+    const activeBoundary = resolvePositionExposureBoundary(record);
+    if (!activeBoundary.ok
+      || activeBoundary.observed_at_ms > Number(record.final_reconciliation_evidence.checked_at_ms)) return { ok: false };
+    const elapsedMs = Number(record.final_reconciliation_evidence.checked_at_ms) - activeBoundary.observed_at_ms;
     const modeledCapital = BigInt(record.opportunity.projected_capital_cost_micro_usdc);
     const horizon = BigInt(record.opportunity.horizon_ms);
     const capitalCost = horizon > 0n ? roundedDiv(modeledCapital * BigInt(elapsedMs), horizon) : 0n;
@@ -2097,6 +2489,10 @@ async function realizedCarryEconomics(record, { readCashflowValuation, persisted
         settlement_adjustment_micro_usdc: Number(settlementAdjustment),
         capital_cost_micro_usdc: Number(capitalCost),
         elapsed_ms: elapsedMs,
+        active_observed_at_ms: activeBoundary.observed_at_ms,
+        exposure_boundary_provenance: activeBoundary.provenance,
+        active_observed_at_ms_by_venue: activeBoundary.observed_at_ms_by_venue,
+        exposure_boundary_provenance_by_venue: activeBoundary.provenance_by_venue,
       },
     };
   } catch {
@@ -2361,7 +2757,14 @@ export function startCarryExecutionLoop({ state, recipient, verifyOrder, execute
   const ensureRestartAudit = () => {
     if (restartAuditComplete) return Promise.resolve({ ok: true, already_complete: true });
     if (activeRestartAudit) return activeRestartAudit;
-    activeRestartAudit = auditCarryPositionsAfterRestart({ state, now_ms: startupAt, env })
+    activeRestartAudit = auditCarryPositionsAfterRestart({
+      state,
+      recipient,
+      verifyOrder,
+      preflight,
+      now_ms: startupAt,
+      env,
+    })
       .catch(() => ({ ok: false, error: "carry_restart_audit_threw" }))
       .then((result) => {
         if (result?.ok === true) restartAuditComplete = true;
@@ -2490,7 +2893,10 @@ function canonicalPositiveDecimal(value) {
 
 function publicCarryRecord(record) {
   const { monitoring_context: _context, ...safe } = record;
-  return structuredClone(safe);
+  return structuredClone({
+    ...safe,
+    value_boundary_authoritative: authoritativeStoredCarryValueBoundary(record),
+  });
 }
 
 function preflightBody(record, nowMs) {
@@ -2700,11 +3106,13 @@ function carryEvent(position, type, values = {}) {
 function fillProgress(receipt, leg, expectedMicro, env) {
   if (env.PRIVATE_AGENT_VENUE_DRY_RUN === "true" && !receipt?.final_proof) return { terminal: true, filled_micro_usdc: expectedMicro };
   const proof = receipt?.final_proof;
+  const terminal = proof?.final_venue_execution_proven === true
+    && proof?.target_fill_set_complete === true;
   const baseModeReduceOnly = leg.instruction?.order?.reduce_only === true
     && leg.instruction?.order?.size_mode === "base";
   if (baseModeReduceOnly) {
     return {
-      terminal: proof?.final_venue_execution_proven === true,
+      terminal,
       filled_micro_usdc: proportionalMicroForExactBase({
         requestedBase: leg.instruction.order.base_size,
         filledBase: proof?.filled_base_size,
@@ -2719,10 +3127,10 @@ function fillProgress(receipt, leg, expectedMicro, env) {
     ? Math.round(expectedMicro * Math.max(0, Math.min(1, filledBase / targetBase)))
     : 0;
   return {
-    terminal: proof?.final_venue_execution_proven === true,
+    terminal,
     filled_micro_usdc: Number.isSafeInteger(reported) && reported >= 0
       ? Math.min(expectedMicro, reported)
-      : proof?.final_fill_proven === true ? proportional : 0,
+      : terminal ? proportional : 0,
   };
 }
 
@@ -2779,10 +3187,48 @@ export function assessCarryTerminalExecutionReceipt({
   if (!proof || typeof proof !== "object" || Array.isArray(proof)
     || proof.target_client_order_matched !== true
     || proof.broadcast_performed !== true
-    || proof.final_venue_execution_proven !== true) {
+    || proof.final_venue_execution_proven !== true
+    || proof.target_fill_set_complete !== true) {
     reasons.push("carry_execution_receipt_terminal_proof_unverified");
   }
   return Object.freeze({ verified: reasons.length === 0, reasons: Object.freeze(reasons) });
+}
+
+function exposureBoundaryEvent(boundary) {
+  return boundary?.authoritative === true ? {
+    first_exposure_observed_at_ms: boundary.first_fill_at_ms,
+    exposure_boundary_provenance: AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE,
+  } : {};
+}
+
+function authoritativeReceiptExposureBoundary(receipt, venueId) {
+  const proof = receipt?.final_proof;
+  const expectedProvenance = AUTHORITATIVE_FILL_TIME_PROVENANCE_BY_VENUE[venueId];
+  const firstFillAtMs = Number(proof?.first_fill_at_ms);
+  const lastFillAtMs = Number(proof?.last_fill_at_ms);
+  if (!expectedProvenance
+    || proof?.final_venue_execution_proven !== true
+    || proof?.target_fill_set_complete !== true
+    || proof?.fill_times_authoritative !== true
+    || proof?.fill_time_provenance !== expectedProvenance
+    || !Number.isSafeInteger(firstFillAtMs) || firstFillAtMs <= 0
+    || !Number.isSafeInteger(lastFillAtMs) || lastFillAtMs < firstFillAtMs) return null;
+  const fills = Array.isArray(receipt?.fills) ? receipt.fills : [];
+  const positiveFills = fills.filter((fill) =>
+    canonicalPositiveDecimal(fill?.size ?? fill?.sz ?? fill?.totalSz)
+    && canonicalPositiveDecimal(fill?.price ?? fill?.px ?? fill?.avgPx));
+  if (positiveFills.length === 0) return null;
+  const fillTimes = positiveFills.map((fill) => Number(fill?.executed_at_ms));
+  if (fillTimes.some((value) => !Number.isSafeInteger(value)
+      || value < firstFillAtMs || value > lastFillAtMs)
+    || Math.min(...fillTimes) !== firstFillAtMs
+    || Math.max(...fillTimes) !== lastFillAtMs) return null;
+  return Object.freeze({
+    authoritative: true,
+    first_fill_at_ms: firstFillAtMs,
+    last_fill_at_ms: lastFillAtMs,
+    source_provenance: expectedProvenance,
+  });
 }
 
 function commitmentValue(value) {

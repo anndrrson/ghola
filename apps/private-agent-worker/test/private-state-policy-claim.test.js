@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -26,6 +27,88 @@ function readJsonState(dir) {
   return JSON.parse(readFileSync(join(dir, "private-agent-execution-state-v1.json"), "utf8"));
 }
 
+function carryReservationCandidate(suffix) {
+  const positionId = `carry:position:reservation:${suffix}`;
+  const sagaId = `saga:carry:reservation:${suffix}`;
+  const ownerCommitment = "owner:reservation:test";
+  const venueIds = ["hyperliquid", "lighter"];
+  const accountsByVenue = {
+    hyperliquid: "account:hyperliquid:test",
+    lighter: "account:lighter:test",
+  };
+  const legs = venueIds.map((venueId, index) => ({
+    venue_id: venueId,
+    leg_id: `leg:carry:reservation:${suffix}:${index}`,
+    work_order_commitment: `work:carry:reservation:${suffix}:${index}`,
+  }));
+  const saga = {
+    version: 1,
+    saga_id: sagaId,
+    status: "ready",
+    terminal: false,
+    recovery_mode: "unwind",
+    unhedged_deadline_ms: null,
+    first_exposure_observed_at_ms: null,
+    exposure_boundary_provenance: null,
+    signed_filled_exposure_micro_usdc_by_asset: {},
+    execution_context: {
+      version: 1,
+      carry_position_id: positionId,
+      owner_commitment: ownerCommitment,
+      legs: legs.map((leg) => ({
+        leg_id: leg.leg_id,
+        work_order_commitment: leg.work_order_commitment,
+      })),
+    },
+    legs: legs.map((leg) => ({
+      venue_id: leg.venue_id,
+      leg_id: leg.leg_id,
+      submission_status: "pending",
+      provider_ref_commitment: null,
+      filled_micro_usdc: 0,
+      unwind_filled_micro_usdc: 0,
+    })),
+  };
+  const record = {
+    owner_commitment: ownerCommitment,
+    entry_saga_id: sagaId,
+    position: {
+      position_id: positionId,
+      status: "opening",
+      asset: "BTC",
+      long_venue_id: venueIds[0],
+      short_venue_id: venueIds[1],
+    },
+    monitoring_context: {
+      venue_access: Object.fromEntries(venueIds.map((venueId) => [
+        venueId,
+        { account_commitment: accountsByVenue[venueId] },
+      ])),
+    },
+  };
+  const digest = (value) => createHash("sha256").update(String(value)).digest("hex");
+  const bindingsCommitment = `carry:exposure-bindings:${digest(JSON.stringify({
+    owner_commitment: ownerCommitment,
+    asset: "BTC",
+    venue_ids: venueIds,
+    accounts_by_venue: accountsByVenue,
+    legs,
+  })).slice(0, 40)}`;
+  return {
+    positionId,
+    record,
+    saga,
+    bindingsCommitment,
+    reservations: [
+      { reservation_key: `carry:exposure:owner:${digest(`${ownerCommitment}:BTC`).slice(0, 40)}` },
+      ...Object.values(accountsByVenue).sort().map((accountCommitment) => ({
+        reservation_key: `carry:exposure:account:${digest(`${accountCommitment}:BTC`).slice(0, 40)}`,
+        account_commitment: accountCommitment,
+      })),
+    ],
+  };
+}
+
 test("atomic policy claim rolls back every quota charge when a later quota denies", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-policy-claim-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -48,6 +131,65 @@ test("atomic policy claim rolls back every quota charge when a later quota denie
   assert.equal(persisted.policy_counts["orders:test"].count, 1);
   assert.equal(persisted.policy_amounts["notional:test"].amount, 5);
   assert.equal(persisted.execution_attempts["work-denied"].status, "failed_no_submit");
+});
+
+test("Carry exposure reservations are atomic, durable, replay-safe, and reusable only after release", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-exposure-reservation-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const first = createWorkerState(dir);
+  const candidates = ["first", "second", "third"].map(carryReservationCandidate);
+  writeFileSync(join(dir, "private-agent-execution-state-v1.json"), JSON.stringify({
+    carry_positions: Object.fromEntries(candidates.map((item) => [item.positionId, item.record])),
+    multi_leg_sagas: Object.fromEntries(candidates.map((item) => [item.saga.saga_id, item.saga])),
+    carry_exposure_reservations: {},
+  }));
+  const simultaneous = await Promise.all([
+    first.claimCarryExposureReservations(candidates[0].positionId, candidates[0].bindingsCommitment, candidates[0].reservations),
+    first.claimCarryExposureReservations(candidates[1].positionId, candidates[1].bindingsCommitment, candidates[1].reservations),
+  ]);
+  assert.equal(simultaneous.filter((item) => item.ok).length, 1);
+  const winner = simultaneous[0].ok ? candidates[0] : candidates[1];
+  const restarted = createWorkerState(dir);
+  assert.equal((await restarted.claimCarryExposureReservations(
+    winner.positionId, winner.bindingsCommitment, winner.reservations,
+  )).ok, true);
+  assert.equal((await restarted.claimCarryExposureReservations(
+    candidates[2].positionId, candidates[2].bindingsCommitment, candidates[2].reservations,
+  )).ok, false);
+  assert.equal((await restarted.releaseCarryExposureReservations(
+    winner.positionId, winner.bindingsCommitment,
+    winner.reservations.map((item) => item.reservation_key), { owner_commitment: "wrong" },
+  )).ok, false);
+  const state = readJsonState(dir);
+  state.carry_positions[winner.positionId] = {
+    ...state.carry_positions[winner.positionId],
+    position: { ...state.carry_positions[winner.positionId].position, status: "reconciled" },
+    final_reconciliation_evidence: {
+      account_state_checked: true, transaction_broadcast: false, gross_exposure_micro_usdc: 0, open_order_count: 0,
+      owner_commitment: winner.record.owner_commitment, carry_position_id: winner.positionId,
+      checked_at_ms: 1_800_000_000_001,
+      reconciliation_commitment: "carry:reconciliation:reservation-test-0001",
+      venues: ["hyperliquid", "lighter"].map((venue_id) => ({
+        venue_id, account_commitment: `account:${venue_id}:test`, authorized: true,
+        account_state_checked: true, flat_zero_orders: true, position_count: 0, open_order_count: 0,
+      })),
+    },
+  };
+  writeFileSync(join(dir, "private-agent-execution-state-v1.json"), JSON.stringify(state));
+  const afterFlat = createWorkerState(dir);
+  assert.equal((await afterFlat.releaseCarryExposureReservations(
+    winner.positionId,
+    winner.bindingsCommitment,
+    winner.reservations.map((item) => item.reservation_key),
+    {
+      owner_commitment: winner.record.owner_commitment, position_id: winner.positionId, venue_ids: ["hyperliquid", "lighter"],
+      account_commitments: { hyperliquid: "account:hyperliquid:test", lighter: "account:lighter:test" },
+    },
+  )).ok, true);
+  assert.equal((await afterFlat.claimCarryExposureReservations(
+    candidates[2].positionId, candidates[2].bindingsCommitment, candidates[2].reservations,
+  )).ok, true);
+  assert.equal(readJsonState(dir).carry_exposure_reservations[winner.reservations[0].reservation_key].generation, 2);
 });
 
 test("duplicate concurrent atomic claims charge quota exactly once", async (t) => {

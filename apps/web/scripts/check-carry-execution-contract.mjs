@@ -53,6 +53,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   recordScan: "apps/private-agent-worker/src/execution/carry-record-scan.js",
   loopSupervisor: "apps/private-agent-worker/src/execution/carry-loop-supervisor.js",
   executor: "apps/private-agent-worker/src/execution/carry-executor.js",
+  arbitrage: "apps/private-agent-worker/src/execution/arbitrage.js",
   multiLegOrchestrator: "apps/private-agent-worker/src/execution/multi-leg-orchestrator.js",
   privateExecution: "apps/private-agent-worker/src/execution/private-execution.js",
   coinbase: "apps/private-agent-worker/src/venues/coinbase.js",
@@ -213,11 +214,32 @@ export function checkCarryExecutionContract(sources) {
   const forbidText = (key, value, code) => {
     if (String(sources[key] || "").includes(value)) failures.push(code);
   };
+  const requireSectionText = (section, value, code) => {
+    if (!String(section || "").includes(value)) failures.push(code);
+  };
+  const requireSectionCount = (section, value, count, code) => {
+    if (String(section || "").split(value).length - 1 < count) failures.push(code);
+  };
+  const forbidSectionText = (section, value, code) => {
+    if (String(section || "").includes(value)) failures.push(code);
+  };
   const sourceSection = (key, start, end) => {
     const source = String(sources[key] || "");
     const startIndex = source.indexOf(start);
     if (startIndex < 0) return "";
     const endIndex = end ? source.indexOf(end, startIndex + start.length) : source.length;
+    return source.slice(startIndex, endIndex < 0 ? source.length : endIndex);
+  };
+  const sourceOccurrenceSection = (key, start, end, occurrence = 0) => {
+    const source = String(sources[key] || "");
+    let startIndex = -1;
+    let cursor = 0;
+    for (let index = 0; index <= occurrence; index += 1) {
+      startIndex = source.indexOf(start, cursor);
+      if (startIndex < 0) return "";
+      cursor = startIndex + start.length;
+    }
+    const endIndex = end ? source.indexOf(end, cursor) : source.length;
     return source.slice(startIndex, endIndex < 0 ? source.length : endIndex);
   };
   const requireOrdered = (section, before, after, code) => {
@@ -323,7 +345,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("lighter", "const zeroFillFeeExact = exactOriginalOrderObserved", "lighter_zero_fill_order_id_binding_missing");
   requireText("lighter", '&& filledBase === "0"', "lighter_zero_fill_base_binding_missing");
   requireText("lighter", '&& filledQuote === "0"', "lighter_zero_fill_quote_binding_missing");
-  requireText("lighter", "fee: feeProof.complete === true ? feeProof.fee_quote_amount : null", "lighter_exact_fee_fill_binding_missing");
+  requireText(
+    "lighter",
+    'fee_quote_amount: zeroFillFeeExact ? "0" : feeProof.complete === true ? feeProof.fee_quote_amount : null',
+    "lighter_exact_fee_fill_binding_missing",
+  );
   forbidText("lighter", "order.fee", "lighter_synthetic_order_fee_fallback_present");
   forbidText("lighter", "order.total_fee", "lighter_synthetic_total_fee_fallback_present");
   forbidText("lighter", "order.trading_fee", "lighter_synthetic_trading_fee_fallback_present");
@@ -337,6 +363,48 @@ export function checkCarryExecutionContract(sources) {
   requireText("lighterTest", "zeroWithoutOrderIndex", "lighter_zero_fill_order_id_negative_test_missing");
   requireText("lighterTest", "contradictoryZero", "lighter_zero_fill_quote_negative_test_missing");
   requireText("lighterTest", '"canceled-unknown"', "lighter_unknown_cancel_status_negative_test_missing");
+  const lighterReconciliation = sourceSection(
+    "lighter",
+    "export async function reconcileLighterExecution({",
+    "function normalizedLighterFeeProof(",
+  );
+  requireSectionText(lighterReconciliation, "resultAccountIndex === credential.account_index", "lighter_reconcile_account_binding_missing");
+  requireSectionText(lighterReconciliation, "resultMarketId !== null", "lighter_reconcile_market_shape_gate_missing");
+  requireSectionText(lighterReconciliation, "nonnegativeIntegerOrNull(candidate?.market_index ?? candidate?.market_id) === resultMarketId", "lighter_reconcile_candidate_market_binding_missing");
+  requireSectionText(lighterReconciliation, "submittedOrderMatchesCandidate(candidate, fingerprint", "lighter_reconcile_local_fingerprint_binding_missing");
+  requireSectionText(lighterReconciliation, "expectedAccountIndex: credential.account_index", "lighter_reconcile_fingerprint_account_binding_missing");
+  requireSectionText(lighterReconciliation, "expectedOrderIndex: lineageOrderIndex", "lighter_reconcile_order_lineage_binding_missing");
+  requireSectionText(lighterReconciliation, "result?.target_fingerprint_checked === true", "lighter_reconcile_runner_fingerprint_check_missing");
+  requireSectionText(lighterReconciliation, "result?.target_fingerprint_matched === true", "lighter_reconcile_runner_fingerprint_match_missing");
+  requireSectionText(lighterReconciliation, "result?.target_identifier_collision !== true", "lighter_reconcile_fingerprint_collision_gate_missing");
+  requireSectionText(lighterReconciliation, "const targetMatched = fingerprintMatched", "lighter_reconcile_target_fingerprint_gate_missing");
+  const lighterCandidateFingerprint = sourceSection(
+    "lighter",
+    "function submittedOrderMatchesCandidate(",
+    "function orderFingerprintCommitment(",
+  );
+  requireSectionText(lighterCandidateFingerprint, "candidate?.owner_account_index) === expectedAccountIndex", "lighter_candidate_fingerprint_account_binding_missing");
+  requireSectionText(lighterCandidateFingerprint, "candidate?.client_order_index) === fingerprint.client_order_index", "lighter_candidate_fingerprint_client_binding_missing");
+  requireSectionText(lighterCandidateFingerprint, "candidate?.initial_base_amount", "lighter_candidate_fingerprint_size_binding_missing");
+  requireSectionText(lighterCandidateFingerprint, "candidate?.price", "lighter_candidate_fingerprint_price_binding_missing");
+  requireSectionText(lighterCandidateFingerprint, 'candidate?.type === "limit"', "lighter_candidate_fingerprint_type_binding_missing");
+  requireSectionText(lighterCandidateFingerprint, "candidate?.reduce_only === fingerprint.reduce_only", "lighter_candidate_fingerprint_reduce_only_binding_missing");
+  requireSectionText(lighterCandidateFingerprint, "candidateTimestampMs !== null", "lighter_candidate_fingerprint_time_binding_missing");
+  requireSectionText(lighterCandidateFingerprint, "candidateOrderIndex !== null", "lighter_candidate_fingerprint_order_lineage_missing");
+  const lighterRunnerFingerprint = sourceSection(
+    "lighterRunner",
+    "def submitted_order_fingerprint_matches(",
+    "def incomplete_trade_fee_proof(",
+  );
+  requireSectionText(lighterRunnerFingerprint, 'order.get("owner_account_index")', "lighter_runner_fingerprint_account_binding_missing");
+  requireSectionText(lighterRunnerFingerprint, 'order.get("market_index")', "lighter_runner_fingerprint_market_binding_missing");
+  requireSectionText(lighterRunnerFingerprint, 'fingerprint.get("market")', "lighter_runner_fingerprint_symbol_binding_missing");
+  requireSectionText(lighterRunnerFingerprint, 'order.get("type") != "limit"', "lighter_runner_fingerprint_type_binding_missing");
+  requireSectionText(lighterRunnerFingerprint, 'order.get("reduce_only") is not fingerprint["reduce_only"]', "lighter_runner_fingerprint_reduce_only_binding_missing");
+  requireSectionText(lighterRunnerFingerprint, "abs(created_at_ms - submitted_at_ms) > LIGHTER_ORDER_TIME_SKEW_MS", "lighter_runner_fingerprint_time_binding_missing");
+  requireSectionText(lighterRunnerFingerprint, "expected_order_index is not None", "lighter_runner_fingerprint_order_lineage_missing");
+  requireText("lighterTest", "rejects reused Lighter client indexes when the submitted fingerprint differs", "lighter_fingerprint_collision_test_missing");
+  requireText("lighterTest", "keeps same-index Lighter side, size, or price collisions ambiguous with no fills", "lighter_fingerprint_ambiguity_test_missing");
 
   requireText(
     "webPrivateAccountStore",
@@ -793,11 +861,16 @@ export function checkCarryExecutionContract(sources) {
   requireText("multiLegOrchestratorTest", "reduce_only === true", "carry_recovery_reduce_only_assertion_missing");
   requireText("coreMultiLeg", '"leg_finalized"', "carry_terminal_reconciliation_event_missing");
   requireText("coreMultiLegTest", "records a venue-terminal leg without claiming that Ghola cancelled it", "carry_terminal_reconciliation_event_test_missing");
-  requireText(
+  const completionFillEvent = sourceSection(
     "coreMultiLeg",
-    "const originalSubmissionStatus = leg.submission_status;\n    applyFill(leg, event.cumulative_filled_micro_usdc, \"filled_micro_usdc\");\n    leg.submission_status = originalSubmissionStatus;",
-    "carry_partial_completion_submission_status_preservation_missing",
+    'if (event.type === "completion_fill") {',
+    'if (event.type === "completion_failed") {',
   );
+  requireSectionText(completionFillEvent, "const originalSubmissionStatus = leg.submission_status", "carry_partial_completion_submission_status_snapshot_missing");
+  requireSectionText(completionFillEvent, "applyEntryFill(saga, leg, event.cumulative_filled_micro_usdc, nowMs, event)", "carry_partial_completion_fill_application_missing");
+  requireSectionText(completionFillEvent, "leg.submission_status = originalSubmissionStatus", "carry_partial_completion_submission_status_preservation_missing");
+  requireOrdered(completionFillEvent, "const originalSubmissionStatus", "applyEntryFill(saga,", "carry_partial_completion_snapshot_before_fill_missing");
+  requireOrdered(completionFillEvent, "applyEntryFill(saga,", "leg.submission_status = originalSubmissionStatus", "carry_partial_completion_restore_after_fill_missing");
   requireText("coreMultiLegTest", 'assert.equal(saga.legs[1].submission_status, "failed")', "carry_partial_completion_submission_status_test_missing");
   requireText("multiLegOrchestrator", '"reconcile_before_cancel"', "carry_reconcile_before_cancel_missing");
   requireText("multiLegOrchestrator", '"reconcile_after_cancel"', "carry_reconcile_after_cancel_missing");
@@ -957,6 +1030,44 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowTest", "fetches Lighter market, funding, and book timing from its public read-only WebSocket", "lighter_provider_timestamp_test_missing");
   forbidText("shadow", "market: nowMs", "carry_shadow_market_worker_clock_fallback_forbidden");
   forbidText("shadow", "funding: nowMs", "carry_shadow_funding_worker_clock_fallback_forbidden");
+  requireText("registry", 'source_schema: "hyperliquid_metaAndAssetCtxs_l2Book_v2"', "hyperliquid_shadow_schema_v2_missing");
+  requireText("registryTest", '"hyperliquid_metaAndAssetCtxs_l2Book_v2"', "hyperliquid_shadow_schema_v2_test_missing");
+  const hyperliquidFetch = sourceSection(
+    "shadow",
+    'if (adapterId === "hyperliquid_shadow_v1") {',
+    'if (adapterId === "lighter_shadow_v1") {',
+  );
+  requireSectionText(hyperliquidFetch, "const contextObservation = await jsonObservedRequest(", "hyperliquid_context_observed_request_missing");
+  requireSectionText(hyperliquidFetch, 'body: JSON.stringify({ type: "metaAndAssetCtxs" })', "hyperliquid_context_observed_meta_request_missing");
+  requireSectionText(hyperliquidFetch, "const body = contextObservation.body;", "hyperliquid_context_observed_body_binding_missing");
+  requireSectionText(hyperliquidFetch, "context_observed_at_ms: contextObservation.observed_at_ms", "hyperliquid_context_observed_time_binding_missing");
+  forbidSectionText(hyperliquidFetch, "const body = await jsonRequest(", "hyperliquid_context_unobserved_request_present");
+  requireOrdered(
+    hyperliquidFetch,
+    "const contextObservation = await jsonObservedRequest(",
+    "context_observed_at_ms: contextObservation.observed_at_ms",
+    "hyperliquid_context_observation_order_missing",
+  );
+  const hyperliquidParser = sourceSection(
+    "shadow",
+    "export function parseHyperliquidShadow({",
+    "export function parseLighterShadow({",
+  );
+  requireSectionText(hyperliquidParser, "context_observed_at_ms: contextObservedAtMs", "hyperliquid_context_parser_input_missing");
+  requireSectionText(hyperliquidParser, "const contextSourceAtMs = timestamp(contextObservedAtMs) || null;", "hyperliquid_context_source_timestamp_missing");
+  requireSectionText(hyperliquidParser, "const bookObservedAtMs = timestamp(book.time) || null;", "hyperliquid_orderbook_source_timestamp_missing");
+  requireSectionText(hyperliquidParser, "as_of_ms: completeSourceTimestamp([", "hyperliquid_complete_source_timestamp_missing");
+  requireSectionText(hyperliquidParser, "contextSourceAtMs,\n        bookObservedAtMs,", "hyperliquid_complete_source_inputs_missing");
+  requireSectionText(hyperliquidParser, "market: contextSourceAtMs", "hyperliquid_market_context_time_missing");
+  requireSectionText(hyperliquidParser, "funding: contextSourceAtMs", "hyperliquid_funding_context_time_missing");
+  requireSectionText(hyperliquidParser, "orderbook: bookObservedAtMs", "hyperliquid_orderbook_book_time_missing");
+  forbidSectionText(hyperliquidParser, "market: bookObservedAtMs", "hyperliquid_market_book_time_present");
+  forbidSectionText(hyperliquidParser, "funding: bookObservedAtMs", "hyperliquid_funding_book_time_present");
+  const completeTimestampHelper = sourceSection("shadow", "function completeSourceTimestamp(values) {", "function completedObservationTime(");
+  requireSectionText(completeTimestampHelper, "values.every((value) => Number.isSafeInteger(value) && value > 0)", "carry_shadow_complete_source_validation_missing");
+  requireSectionText(completeTimestampHelper, "return Math.min(...values);", "carry_shadow_oldest_complete_source_missing");
+  requireText("shadowTest", "keeps Hyperliquid context freshness independent from an advancing L2 book", "hyperliquid_split_source_freshness_test_missing");
+  requireText("shadowTest", "binds fetched Hyperliquid market and funding to the context response, not L2 time", "hyperliquid_context_response_binding_test_missing");
   requireText("shadow", "liquidation_has_no_clearance_fee", "hyperliquid_liquidation_fee_evidence_gate_missing");
   requireText("shadow", "fees_venue_base_tier_ceiling", "hyperliquid_base_fee_provenance_missing");
   requireText("shadow", "minimum_notional_protocol_floor", "hyperliquid_minimum_notional_provenance_missing");
@@ -1022,6 +1133,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowVerifier", "shadow_soak_sample_commitment_invalid", "carry_shadow_sample_commitment_gate_missing");
   requireText("shadowVerifier", "source_observation_commitment", "carry_shadow_source_observation_commitment_missing");
   requireText("shadowVerifier", "shadow_soak_source_observation_commitments_reused", "carry_shadow_source_observation_reuse_gate_missing");
+  requireText("shadowVerifier", "else if (currentTimestamp === previousTimestamp)", "carry_shadow_source_equality_reuse_gate_missing");
+  requireText("shadowVerifier", "shadow_soak_source_observation_reused:${sampleIndex}:${identity}:${source}", "carry_shadow_source_specific_reuse_evidence_missing");
   requireText("shadowVerifier", "shadow_soak_duration_insufficient", "carry_shadow_duration_floor_missing");
   requireText("shadowVerifier", "shadow_soak_snapshot_not_ready", "carry_shadow_degraded_qualification_gate_missing");
   requireText("shadowVerifier", "read_only_boundary_invalid", "carry_shadow_read_only_gate_missing");
@@ -1038,6 +1151,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowVerifierTest", "qualifies only consecutive complete five-venue shadow samples", "carry_shadow_soak_test_missing");
   requireText("shadowVerifierTest", "rejects tampered or reused shadow sample commitments", "carry_shadow_commitment_test_missing");
   requireText("shadowVerifierTest", "rejects wrapper-time progress that reuses every venue source observation", "carry_shadow_source_observation_reuse_test_missing");
+  requireText("shadowVerifierTest", "rejects frozen Hyperliquid context even while every L2 book advances", "hyperliquid_frozen_context_adversarial_test_missing");
   requireText("shadowVerifierTest", "rejects a venue source timestamp that regresses between samples", "carry_shadow_source_observation_regression_test_missing");
   requireText("shadowVerifierTest", "rejects rapid fresh samples that do not meet the durable observation span", "carry_shadow_duration_floor_test_missing");
   requireText("shadowVerifierTest", "rejects a one-shot snapshot as durable shadow qualification", "carry_shadow_one_shot_rejection_test_missing");
@@ -1457,19 +1571,107 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "PORTFOLIO VALUE ·", "carry_terminal_portfolio_value_missing");
   requireText("webCarryBuilder", 'report.funding_valuation_basis !== "usdc_equivalent_at_ledger_ingestion"', "carry_terminal_portfolio_fx_basis_gate_missing");
   requireText("webCarryBuilder", "UNVERIFIED FX BASIS", "carry_terminal_portfolio_fx_basis_failure_missing");
+  const portfolioValueSummary = sourceSection(
+    "webCarryBuilder",
+    "export function carryPortfolioValueSummary(",
+    "export function carryCapitalEfficiencySummary(",
+  );
+  requireSectionText(portfolioValueSummary, "finiteNumber(report.authoritative_finalized_position_count)", "carry_terminal_portfolio_authoritative_count_missing");
+  requireSectionText(portfolioValueSummary, 'const expectedStatus = finalized === positions ? "finalized" : finalized > 0 ? "mixed" : "accruing"', "carry_terminal_portfolio_exact_status_missing");
+  const finalizedPortfolioValueSummary = sourceSection(
+    "webCarryBuilder",
+    "if (finalized > 0) {",
+    "  if (report.value_proof_status !== expectedStatus) return null;",
+  );
+  requireSectionText(finalizedPortfolioValueSummary, "report.value_proof_status !== expectedStatus", "carry_terminal_portfolio_status_gate_missing");
+  requireSectionText(finalizedPortfolioValueSummary, "authoritativeFinalized !== finalized", "carry_terminal_portfolio_authoritative_count_gate_missing");
+  requireSectionText(finalizedPortfolioValueSummary, 'report.finalized_value_provenance !== "authoritative_exchange_fill_time"', "carry_terminal_portfolio_authoritative_provenance_gate_missing");
+  requireSectionText(finalizedPortfolioValueSummary, "report.real_value_verified !== true", "carry_terminal_portfolio_real_value_gate_missing");
+  requireSectionText(finalizedPortfolioValueSummary, "finalizedValues.complete !== true", "carry_terminal_portfolio_complete_value_gate_missing");
+  requireSectionText(finalizedPortfolioValueSummary, 'return { value: "UNVERIFIED", tone: "bad" as const }', "carry_terminal_portfolio_unverified_fallback_missing");
   requireText("webCarryBuilder", "CAPITAL OFFSET ·", "carry_terminal_capital_efficiency_missing");
   requireText("webCarryBuilder", "STALE EVIDENCE · RECONCILE ONLY", "carry_terminal_portfolio_stale_gate_missing");
   requireText("webCarryBuilderTest", "PORTFOLIO CAPITAL · $15 REALLOCATE · $10 NEW CASH · OWNER ONLY", "carry_terminal_portfolio_capital_test_missing");
   requireText("webCarryBuilderTest", "PORTFOLIO CAPITAL · $12.5 RELEASABLE · OWNER ONLY", "carry_terminal_portfolio_optimization_test_missing");
   requireText("webCarryBuilderTest", "PORTFOLIO VALUE · $19.5 REAL · $10 OPEN MODEL · +$4.5 Δ · USDC @ BOOKED FX", "carry_terminal_portfolio_value_test_missing");
   requireText("webCarryBuilderTest", "does not label portfolio P&L real without its worker-bound FX basis", "carry_terminal_portfolio_fx_basis_test_missing");
+  requireText("webCarryBuilderTest", "labels portfolio P&L real only when every finalized position has an authoritative boundary", "carry_terminal_portfolio_authoritative_test_missing");
+  requireText("webCarryBuilderTest", 'finalized_value_provenance: "unverified_or_conservative"', "carry_terminal_portfolio_conservative_fixture_missing");
+  requireText("webCarryBuilderTest", "real_value_verified: false", "carry_terminal_portfolio_unverified_fixture_missing");
+  const portfolioValueCompiler = sourceSection(
+    "coreCarry",
+    "export function compileCarryPortfolioValueReport(",
+    "export function evaluatePerpContractPairBasis(",
+  );
+  requireSectionText(portfolioValueCompiler, "finalized.filter((position) => position.value_boundary_authoritative === true)", "carry_portfolio_authoritative_finalized_filter_missing");
+  requireSectionText(portfolioValueCompiler, 'authoritativeFinalized.length === finalized.length ? "finalized" : "finalized_unverified"', "carry_portfolio_finalized_status_provenance_missing");
+  requireSectionText(portfolioValueCompiler, 'authoritativeFinalized.length === finalized.length ? "mixed" : "mixed_unverified"', "carry_portfolio_mixed_status_provenance_missing");
+  requireSectionText(portfolioValueCompiler, "authoritative_finalized_position_count: authoritativeFinalized.length", "carry_portfolio_authoritative_count_output_missing");
+  requireSectionText(portfolioValueCompiler, 'finalized_value_provenance: finalized.length > 0 && authoritativeFinalized.length === finalized.length', "carry_portfolio_authoritative_provenance_output_missing");
+  requireSectionText(portfolioValueCompiler, ' ? "authoritative_exchange_fill_time"\n      : "unverified_or_conservative"', "carry_portfolio_provenance_value_missing");
+  requireSectionText(portfolioValueCompiler, "real_value_verified: finalized.length > 0 && authoritativeFinalized.length === finalized.length", "carry_portfolio_real_value_verification_output_missing");
+  requireSectionText(portfolioValueCompiler, "complete: finalized.length > 0 && authoritativeFinalized.length === finalized.length", "carry_portfolio_finalized_completeness_output_missing");
+  const portfolioValuePosition = sourceSection(
+    "coreCarry",
+    "function normalizePortfolioValuePosition(",
+    "function portfolioRealizedTotals(",
+  );
+  requireSectionText(portfolioValuePosition, "raw.value_boundary_authoritative === true", "carry_portfolio_position_authoritative_marker_missing");
+  requireSectionText(portfolioValuePosition, 'raw.exposure_boundary_provenance === "authoritative_exchange_fill_time"', "carry_portfolio_position_authoritative_provenance_missing");
+  requireSectionText(portfolioValuePosition, '(ledgerStatus === "finalized") !== (positionStatus === "reconciled")', "carry_portfolio_position_finalization_status_binding_missing");
+  requireText("coreCarryTest", "portfolio value report separates finalized after-cost proof from accruing estimates", "carry_portfolio_authoritative_value_test_missing");
+  requireText("coreCarryTest", "report.authoritative_finalized_position_count, 1", "carry_portfolio_authoritative_count_test_missing");
+  requireText("coreCarryTest", 'report.finalized_value_provenance, "authoritative_exchange_fill_time"', "carry_portfolio_authoritative_provenance_test_missing");
+  requireText("coreCarryTest", "report.real_value_verified, true", "carry_portfolio_real_value_test_missing");
   requireText("webCarryBuilderTest", "CAPITAL OFFSET · $15 NEW CASH AVOIDED · OWNER MOVE", "carry_terminal_capital_efficiency_test_missing");
   requireText("webCarryBuilder", "live_execution_leverage_unchanged !== true", "carry_terminal_stress_leverage_boundary_missing");
   requireText("webCarryBuilderTest", "UP TO 1× OWNER CONFIG", "carry_terminal_stress_capital_test_missing");
   requireText("webCarryBuilderTest", '$10 → LIGHTER · OWNER', "carry_terminal_capital_action_test_missing");
   requireText("webCarryBuilder", 'label="LEDGER"', "carry_terminal_value_ledger_missing");
   requireText("webCarryBuilder", 'label="EXEC Δ"', "carry_terminal_execution_attribution_missing");
-  requireText("webCarryBuilderTest", "FEE +$0.5 · SLIP −$0.25", "carry_terminal_execution_attribution_test_missing");
+  const terminalLedgerSummary = sourceSection(
+    "webCarryBuilder",
+    "function carryLedgerSummary(",
+    "function formatRunway(",
+  );
+  requireSectionText(terminalLedgerSummary, 'ledger.status !== "finalized"', "carry_terminal_ledger_finalized_gate_missing");
+  requireSectionText(terminalLedgerSummary, 'record?.position.status !== "reconciled"', "carry_terminal_ledger_reconciled_gate_missing");
+  requireSectionText(terminalLedgerSummary, "record.value_boundary_authoritative !== true", "carry_terminal_ledger_authoritative_value_gate_missing");
+  requireSectionText(terminalLedgerSummary, 'record.position.active_boundary_provenance !== "authoritative_exchange_fill_time"', "carry_terminal_ledger_authoritative_provenance_gate_missing");
+  const terminalLedgerAuthoritativeGate = sourceSection(
+    "webCarryBuilder",
+    'if (record?.position.status !== "reconciled"',
+    "  const realized = ledger.realized?.net_value_micro_usdc;",
+  );
+  requireSectionText(terminalLedgerAuthoritativeGate, 'return { value: "UNVERIFIED", execution: "UNVERIFIED", tone: "bad", executionTone: "bad" } as const;', "carry_terminal_ledger_unverified_fallback_missing");
+  requireSectionText(terminalLedgerSummary, "Number.isSafeInteger(realized)", "carry_terminal_ledger_finite_realized_gate_missing");
+  requireSectionText(terminalLedgerSummary, "Number.isSafeInteger(variance)", "carry_terminal_ledger_finite_variance_gate_missing");
+  requireSectionText(terminalLedgerSummary, "REAL ·", "carry_terminal_ledger_real_value_missing");
+  requireText("webCarryBuilderTest", "LEDGERUNVERIFIED", "carry_terminal_ledger_unverified_test_missing");
+  requireText("webCarryBuilderTest", "EXEC ΔUNVERIFIED", "carry_terminal_execution_attribution_test_missing");
+  requireText("webCarryBuilderTest", "labels a finalized ledger real only with authoritative exchange boundaries", "carry_terminal_ledger_authoritative_test_missing");
+  requireText("webCarryBuilderTest", 'active_boundary_provenance: "authoritative_exchange_fill_time"', "carry_terminal_ledger_authoritative_fixture_missing");
+  requireText("webCarryBuilderTest", 'active_boundary_provenance: "worker_observed_positive_fill_conservative"', "carry_terminal_ledger_conservative_fixture_missing");
+  requireText("webCarryBuilderTest", "FEE +$0.5 · SLIP −$0.25", "carry_terminal_execution_attribution_verified_test_missing");
+  const authoritativeStoredValueBoundary = sourceSection(
+    "positions",
+    "export function authoritativeStoredCarryValueBoundary(",
+    "export async function runCarryMonitoringTick(",
+  );
+  requireSectionText(authoritativeStoredValueBoundary, 'record.value_ledger?.status === "finalized"', "carry_public_value_finalized_ledger_gate_missing");
+  requireSectionText(authoritativeStoredValueBoundary, "venueIds.length === 2", "carry_public_value_two_venue_gate_missing");
+  requireSectionText(authoritativeStoredValueBoundary, "Object.keys(value).length === venueIds.length", "carry_public_value_map_completeness_missing");
+  requireSectionText(authoritativeStoredValueBoundary, "fundingBoundary[venueId] === positionBoundary[venueId]", "carry_public_value_funding_boundary_binding_missing");
+  requireSectionText(authoritativeStoredValueBoundary, "realizedBoundary[venueId] === positionBoundary[venueId]", "carry_public_value_realized_boundary_binding_missing");
+  requireSectionText(authoritativeStoredValueBoundary, 'positionProvenance[venueId] === "authoritative_exchange_fill_time"', "carry_public_value_position_provenance_missing");
+  requireSectionText(authoritativeStoredValueBoundary, 'fundingProvenance[venueId] === "authoritative_exchange_fill_time"', "carry_public_value_funding_provenance_missing");
+  requireSectionText(authoritativeStoredValueBoundary, 'realizedProvenance[venueId] === "authoritative_exchange_fill_time"', "carry_public_value_realized_provenance_missing");
+  const publicCarryRecord = sourceSection(
+    "positions",
+    "function publicRecord(",
+    "function opportunityAuthenticationMaterial(",
+  );
+  requireSectionText(publicCarryRecord, "value_boundary_authoritative: authoritativeStoredCarryValueBoundary(record)", "carry_public_value_authoritative_marker_computation_missing");
   requireText("webCarryBuilder", "const netUsd = opportunity ? proofNet : model.netUsd", "carry_terminal_proof_economics_fallback_missing");
   requireText("webCarryBuilder", '"CONNECT TO VERIFY · NO EDGE YET"', "carry_terminal_nonpositive_edge_cta_missing");
   requireText("webCarryBuilderTest", "does not invite trading when the public route has no modeled net edge", "carry_terminal_nonpositive_edge_cta_test_missing");
@@ -1750,13 +1952,18 @@ export function checkCarryExecutionContract(sources) {
   );
   requireText(
     "multiLegOrchestrator",
-    "terminal = proof?.final_venue_execution_proven === true;\n      selectedEvidence = true;\n      terminalRegressed = false;",
+    "terminal = proof?.final_venue_execution_proven === true\n        && proof?.target_fill_set_complete === true;\n      selectedEvidence = true;\n      terminalRegressed = false;",
     "carry_recovery_highest_fill_terminal_reset_missing",
   );
   requireText(
     "multiLegOrchestrator",
     "} else if (candidateMicro === evidenceMicro) {",
     "carry_recovery_equal_highest_fill_selection_missing",
+  );
+  requireText(
+    "multiLegOrchestrator",
+    "const candidateTerminal = proof?.final_venue_execution_proven === true\n        && proof?.target_fill_set_complete === true;",
+    "carry_recovery_equal_fill_set_complete_gate_missing",
   );
   requireText(
     "multiLegOrchestrator",
@@ -1768,6 +1975,27 @@ export function checkCarryExecutionContract(sources) {
     "} else if (!terminalRegressed && candidateTerminal) {\n        terminal = true;",
     "carry_recovery_terminal_progression_missing",
   );
+  const executorFillProgress = sourceSection("executor", "function fillProgress(", "function proportionalMicroForExactBase(");
+  requireSectionText(executorFillProgress, "proof?.final_venue_execution_proven === true\n    && proof?.target_fill_set_complete === true", "carry_executor_fill_progress_fill_set_gate_missing");
+  const executorTerminalAssessment = sourceSection("executor", "export function assessCarryTerminalExecutionReceipt({", "function exposureBoundaryEvent(");
+  requireSectionText(executorTerminalAssessment, "proof.final_venue_execution_proven !== true\n    || proof.target_fill_set_complete !== true", "carry_executor_terminal_assessment_fill_set_gate_missing");
+  const originalOrderAssessment = sourceSection("multiLegOrchestrator", "function assessOriginalOrderReconciliation({", "async function applyTimeout(");
+  requireSectionText(originalOrderAssessment, "proof?.final_venue_execution_proven !== true\n    || proof?.target_fill_set_complete !== true", "carry_original_reconciliation_fill_set_gate_missing");
+  const unwindProgress = sourceSection("multiLegOrchestrator", "function unwindProgress({", "function recoveryProofTargetsLeg(");
+  requireSectionText(unwindProgress, "proof?.final_venue_execution_proven === true\n      && proof?.target_fill_set_complete === true", "carry_unwind_progress_fill_set_gate_missing");
+  const arbitrageFillProgress = sourceSection("arbitrage", "function receiptFillProgress({", "export async function bestArbitrageOpportunity(");
+  requireSectionText(arbitrageFillProgress, "proof?.final_venue_execution_proven === true\n    && proof?.target_fill_set_complete === true", "carry_arbitrage_fill_progress_fill_set_gate_missing");
+  const qualificationAssessment = sourceSection("qualification", "export function assessCarryVenueQualification({", "function qualificationAdapters(");
+  requireSectionText(qualificationAssessment, "entry.target_fill_set_complete !== true", "carry_qualification_entry_fill_set_gate_missing");
+  requireSectionText(qualificationAssessment, "exit.target_fill_set_complete !== true", "carry_qualification_exit_fill_set_gate_missing");
+  const releaseFillTiming = sourceSection("releaseMaterial", "function authoritativeReleaseFillTiming(", "async function materialLegs(");
+  requireSectionText(releaseFillTiming, "proof?.final_venue_execution_proven === true\n    && proof?.target_fill_set_complete === true", "carry_release_fill_timing_fill_set_gate_missing");
+  const hyperliquidReconciliation = sourceSection("hyperliquid", "async function reconcileHyperliquidExecution({", "function unresolvedHyperliquidReconciliation(");
+  requireSectionCount(hyperliquidReconciliation, "target_fill_set_complete: targetFillSetComplete", 3, "hyperliquid_target_fill_set_producer_missing");
+  const asterExactTrades = sourceSection("aster", "async function attachExactAsterTrades(", "async function readBoundedAsterUserTrades(");
+  requireSectionText(asterExactTrades, "target_fill_set_complete: true", "aster_target_fill_set_producer_missing");
+  const lighterReconciliationFillSet = sourceSection("lighter", "export async function reconcileLighterExecution({", "function submittedOrderMatchesCandidate(");
+  requireSectionText(lighterReconciliationFillSet, "target_fill_set_complete: targetFillSetComplete", "lighter_target_fill_set_producer_missing");
   requireText(
     "multiLegOrchestrator",
     "let filledBase = evidenceMicro === filledMicro ? evidenceBase : null;",
@@ -1966,7 +2194,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("aster", "original_order_broadcast_proven: exactOriginalOrderObserved", "aster_original_broadcast_proof_missing");
   requireText("lighter", "original_order_broadcast_proven: exactOriginalOrderObserved", "lighter_original_broadcast_proof_missing");
   requireText("lighter", "unsignedDecimalIntegerText(order?.order_index) !== null", "lighter_original_order_id_proof_missing");
-  requireText("lighterTest", "assert.equal(partial.final_proof.original_order_broadcast_proven, false)", "lighter_missing_order_id_negative_test_missing");
+  requireText("lighterTest", "assert.equal(zeroWithoutOrderIndex.final_proof.original_order_target_matched, false)", "lighter_missing_order_id_negative_test_missing");
   requireText("multiLegOrchestrator", "proof?.original_order_broadcast_proven === true", "carry_recovery_original_broadcast_gate_missing");
   requireText("multiLegOrchestratorTest", "restart rejects a read-only query without explicit original-order broadcast proof", "carry_recovery_query_only_negative_test_missing");
   requireText("aster", "submission_outcome_ambiguous", "aster_ambiguity_freeze_missing");
@@ -1975,7 +2203,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("lighter", "submission_retry_count: 0", "lighter_ambiguous_submit_retry_guard_missing");
   requireText("aster", "const maxAttempts = Math.max", "aster_reconciliation_bound_missing");
   requireText("lighter", "const maxAttempts = Math.max", "lighter_reconciliation_bound_missing");
-  requireText("aster", "clientOrderId: reconciliationClientOrderId", "aster_reconciliation_target_drift_guard_missing");
+  requireText("aster", "targetClientOrderId: reconciliationClientOrderId", "aster_reconciliation_target_drift_guard_missing");
   requireText("lighter", "clientOrderIndex: reconciliationClientOrderIndex", "lighter_reconciliation_target_drift_guard_missing");
   requireText("aster", "market: reconciliationMarket", "aster_reconciliation_market_drift_guard_missing");
   requireText("lighter", "market: reconciliationMarket", "lighter_reconciliation_market_drift_guard_missing");
@@ -2206,6 +2434,79 @@ export function checkCarryExecutionContract(sources) {
   requireText("positions", "type: \"manual_exit_requested\"", "carry_owner_exit_event_missing");
   requireText("positions", "if (read.cursor_ms > priorCursor) cursors[read.venue_id] = read.cursor_ms", "carry_funding_backfill_cursor_resume_missing");
   requireText("positionsTest", "authoritative funding backfill resumes across ticks for a year-long Carry Position", "carry_funding_backfill_resume_test_missing");
+  const fundingSettlementReader = sourceSection(
+    "positions",
+    "async function readVenueFundingSettlements({",
+    "function compareFundingEntries(",
+  );
+  requireSectionText(fundingSettlementReader, 'if (!Array.isArray(rows)) throw new Error("funding_settlement_history_invalid")', "carry_funding_history_shape_gate_missing");
+  requireSectionText(fundingSettlementReader, 'throw new Error("funding_settlement_evidence_invalid")', "carry_funding_row_fatal_gate_missing");
+  requireText("positionsTest", "malformed funding history fails closed without advancing venue completeness", "carry_funding_malformed_history_test_missing");
+  requireText("positionsTest", 'result.funding.venue_status.hyperliquid, "funding_settlement_history_invalid"', "carry_funding_malformed_status_assertion_missing");
+  requireText("positionsTest", "cursor_ms_by_venue.hyperliquid, NOW + 1", "carry_funding_malformed_cursor_assertion_missing");
+  const hyperliquidFundingReader = sourceSection(
+    "hyperliquid",
+    "export async function readHyperliquidFundingSettlements({",
+    "export async function createHyperliquidAccountStateStream({",
+  );
+  const hyperliquidFundingHistory = sourceSection(
+    "hyperliquid",
+    "async function readCompleteHyperliquidFundingHistory({",
+    "function dedupeHyperliquidFundingSettlements(",
+  );
+  requireSectionText(hyperliquidFundingHistory, "HYPERLIQUID_FUNDING_MAX_PAGES", "hyperliquid_funding_pagination_bound_missing");
+  requireSectionText(hyperliquidFundingHistory, "HYPERLIQUID_FUNDING_ROW_LIMIT", "hyperliquid_funding_row_bound_missing");
+  requireSectionText(hyperliquidFundingHistory, "if (!Array.isArray(body)", "hyperliquid_funding_history_shape_gate_missing");
+  requireSectionText(hyperliquidFundingHistory, 'type: "userFunding"', "hyperliquid_funding_history_type_binding_missing");
+  requireSectionText(hyperliquidFundingHistory, "user: credential.account_address", "hyperliquid_funding_history_account_binding_missing");
+  requireSectionText(hyperliquidFundingHistory, "startTime: cursor", "hyperliquid_funding_history_cursor_binding_missing");
+  requireSectionText(hyperliquidFundingHistory, "endTime: end", "hyperliquid_funding_history_end_binding_missing");
+  requireSectionText(hyperliquidFundingHistory, "distinctTimeCount < HYPERLIQUID_FUNDING_PAGE_LIMIT", "hyperliquid_funding_pagination_completeness_missing");
+  requireSectionText(hyperliquidFundingHistory, "if (nextCursor <= cursor)", "hyperliquid_funding_pagination_progress_gate_missing");
+  requireSectionText(hyperliquidFundingHistory, "hyperliquid funding history exceeded the bounded pagination window", "hyperliquid_funding_pagination_fail_closed_missing");
+  requireSectionText(hyperliquidFundingReader, "readCompleteHyperliquidFundingHistory({", "hyperliquid_complete_funding_history_reader_missing");
+  requireSectionText(hyperliquidFundingReader, "dedupeHyperliquidFundingSettlements(settlements)", "hyperliquid_funding_deduplication_missing");
+  requireText("hyperliquid", "const HYPERLIQUID_FUNDING_PAGE_LIMIT = 500", "hyperliquid_funding_page_limit_missing");
+  requireText("hyperliquid", "const HYPERLIQUID_FUNDING_MAX_PAGES = 64", "hyperliquid_funding_max_pages_missing");
+  requireText("hyperliquid", "const HYPERLIQUID_FUNDING_ROW_LIMIT = 50_000", "hyperliquid_funding_row_limit_missing");
+  requireText("hyperliquidMetricsTest", "paginates more than 500 Hyperliquid funding blocks with inclusive-boundary dedupe", "hyperliquid_funding_pagination_test_missing");
+  requireText("hyperliquidMetricsTest", "fails closed when Hyperliquid funding pagination does not advance", "hyperliquid_funding_pagination_stall_test_missing");
+  requireText("hyperliquidMetricsTest", "does not mistake a full cross-coin shared-timestamp page for complete funding", "hyperliquid_funding_shared_timestamp_test_missing");
+  requireSectionText(hyperliquidFundingReader, "for (const row of rows)", "hyperliquid_funding_all_rows_validation_missing");
+  requireSectionText(hyperliquidFundingReader, 'throw new HyperliquidExecutionError("hyperliquid funding history row asset is invalid"', "hyperliquid_funding_asset_row_fatal_gate_missing");
+  requireSectionText(hyperliquidFundingReader, "if (rowCoin !== coin) continue", "hyperliquid_funding_target_asset_filter_missing");
+  requireSectionText(hyperliquidFundingReader, 'throw new HyperliquidExecutionError("hyperliquid funding history row is invalid"', "hyperliquid_funding_target_row_fatal_gate_missing");
+  requireOrdered(hyperliquidFundingReader, "funding history row asset is invalid", "if (rowCoin !== coin) continue", "hyperliquid_funding_asset_validation_before_filter_missing");
+  requireText("hyperliquidMetricsTest", "rejects a malformed in-window Hyperliquid target settlement instead of omitting a debit", "hyperliquid_funding_malformed_target_test_missing");
+  requireText("hyperliquidMetricsTest", 'error.message === "hyperliquid funding history row is invalid"', "hyperliquid_funding_malformed_target_assertion_missing");
+  const lighterFundingReader = sourceSection(
+    "lighter",
+    "export async function readLighterFundingSettlements({",
+    "function normalizeOrder(",
+  );
+  requireSectionText(lighterFundingReader, "!Array.isArray(result?.funding_rows)", "lighter_funding_history_shape_gate_missing");
+  requireSectionText(lighterFundingReader, "returnedAccountIndex !== credential.account_index", "lighter_funding_history_account_binding_missing");
+  requireSectionText(lighterFundingReader, "returnedMarketId === null", "lighter_funding_history_market_binding_missing");
+  requireSectionText(lighterFundingReader, 'String(result?.symbol || "").toUpperCase() !== expectedMarket', "lighter_funding_history_symbol_binding_missing");
+  requireSectionText(lighterFundingReader, "return rows.map((row) =>", "lighter_funding_all_rows_validation_missing");
+  requireSectionText(lighterFundingReader, 'row.type !== "funding"', "lighter_funding_row_type_binding_missing");
+  requireSectionText(lighterFundingReader, "nonnegativeIntegerOrNull(row.market_id ?? row.market_index) !== returnedMarketId", "lighter_funding_row_market_binding_missing");
+  requireSectionText(lighterFundingReader, 'throw new LighterExecutionError("lighter funding history row is invalid"', "lighter_funding_row_fatal_gate_missing");
+  const lighterRunnerFunding = sourceSection(
+    "lighterRunner",
+    'if action == "funding":',
+    '        fail("unsupported lighter runner action")',
+  );
+  requireSectionText(lighterRunnerFunding, '"account_index": int(credential["account_index"])', "lighter_runner_funding_account_binding_missing");
+  requireSectionText(lighterRunnerFunding, '"market_id": int(market.market_id)', "lighter_runner_funding_market_binding_missing");
+  requireSectionText(lighterRunnerFunding, '"type": "funding"', "lighter_runner_funding_type_binding_missing");
+  requireSectionText(lighterRunnerFunding, 'if row.get("type") != "funding":', "lighter_runner_funding_row_type_gate_missing");
+  requireSectionText(lighterRunnerFunding, 'exact_integer(row.get("market_id"), "lighter funding market is invalid") != market_id', "lighter_runner_funding_row_market_gate_missing");
+  requireSectionText(lighterRunnerFunding, '"account_index": int(credential["account_index"])', "lighter_runner_funding_account_output_missing");
+  requireSectionText(lighterRunnerFunding, '"market_id": market_id', "lighter_runner_funding_market_output_missing");
+  requireText("lighterTest", "rejects mixed-type or cross-account/market Lighter funding reads", "lighter_funding_binding_test_missing");
+  requireText("lighterTest", "rejects a malformed in-window Lighter settlement instead of omitting a debit", "lighter_funding_malformed_target_test_missing");
+  requireText("lighterTest", 'error.message === "lighter funding history row is invalid"', "lighter_funding_malformed_target_assertion_missing");
   requireText("positionsTest", "requestStoredCarryPositionExit", "carry_owner_exit_boundary_test_missing");
   forbidText("server", '"/carry/positions/events"', "carry_client_lifecycle_mutation_exposed");
   forbidText("server", '"/carry/positions/value-entries"', "carry_client_value_entry_mutation_exposed");
@@ -2296,6 +2597,50 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterial", "proof.evidence_commitment === lifecycleProofCommitment(proof)", "carry_lifecycle_proof_integrity_gate_missing");
   requireText("releaseMaterial", "safeLifecycleValueAttribution(proof.value_attribution)", "carry_lifecycle_proof_value_attribution_gate_missing");
   requireText("releaseMaterial", "normalizeCarryLifecycleValueAttribution", "carry_lifecycle_proof_shared_value_attribution_missing");
+  const lifecycleProofRecorder = sourceSection(
+    "releaseMaterial",
+    "export async function recordCompletedCarryLifecycleProof({",
+    "export async function readCompletedCarryLifecycleProof({",
+  );
+  requireSectionText(lifecycleProofRecorder, "value_boundary_authoritative: true", "carry_lifecycle_proof_authoritative_value_marker_missing");
+  requireSectionText(lifecycleProofRecorder, "exposure_boundary_provenance: AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE", "carry_lifecycle_proof_authoritative_provenance_marker_missing");
+  const lifecycleProofAssessment = sourceSection(
+    "releaseMaterial",
+    "export function assessCompletedCarryLifecycleProof({",
+    "export function carryLifecycleProofKey(",
+  );
+  requireSectionText(lifecycleProofAssessment, "proof.value_boundary_authoritative === true", "carry_lifecycle_proof_authoritative_value_assessment_missing");
+  requireSectionText(lifecycleProofAssessment, "proof.exposure_boundary_provenance === AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE", "carry_lifecycle_proof_authoritative_provenance_assessment_missing");
+  const authoritativeLifecycleBoundary = sourceSection(
+    "releaseMaterial",
+    "function authoritativeLifecycleExposureBoundary(",
+    "export function carryLifecycleProofKey(",
+  );
+  requireSectionText(authoritativeLifecycleBoundary, "venueIds.length === 2", "carry_lifecycle_exposure_two_venue_gate_missing");
+  requireSectionText(authoritativeLifecycleBoundary, "new Set(venueIds).size === 2", "carry_lifecycle_exposure_distinct_venue_gate_missing");
+  requireSectionText(authoritativeLifecycleBoundary, "Object.keys(value).length === venueIds.length", "carry_lifecycle_exposure_map_completeness_missing");
+  requireSectionText(authoritativeLifecycleBoundary, "Object.hasOwn(value, venueId)", "carry_lifecycle_exposure_map_membership_missing");
+  requireSectionText(authoritativeLifecycleBoundary, "Number.isSafeInteger(boundaryByVenue[venueId])", "carry_lifecycle_exposure_time_shape_gate_missing");
+  requireSectionText(authoritativeLifecycleBoundary, "provenanceByVenue[venueId] === AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE", "carry_release_authoritative_venue_provenance_missing");
+  requireSectionText(authoritativeLifecycleBoundary, "Math.min(...venueIds.map((venueId) => boundaryByVenue[venueId]))", "carry_lifecycle_exposure_global_minimum_binding_missing");
+  const authoritativeReleaseBoundary = sourceSection(
+    "releaseMaterial",
+    "function authoritativeCarryExposureBoundary({",
+    "function authoritativeReleaseFillTiming(",
+  );
+  requireSectionText(authoritativeReleaseBoundary, "record.position.active_boundary_provenance !== AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE", "carry_release_authoritative_position_boundary_missing");
+  requireSectionText(authoritativeReleaseBoundary, "Object.keys(boundaryByVenue).length !== 2", "carry_release_authoritative_venue_boundary_completeness_missing");
+  requireSectionText(authoritativeReleaseBoundary, "provenanceByVenue[venueId] === AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE", "carry_release_authoritative_venue_provenance_missing");
+  requireSectionText(authoritativeReleaseBoundary, "leg.first_exposure_observed_at_ms === boundaryByVenue[venueId]", "carry_release_authoritative_saga_boundary_binding_missing");
+  const authoritativeReleaseFillTiming = sourceSection(
+    "releaseMaterial",
+    "function authoritativeReleaseFillTiming(",
+    "async function materialLegs(",
+  );
+  requireSectionText(authoritativeReleaseFillTiming, "proof?.fill_times_authoritative === true", "carry_release_authoritative_fill_time_marker_missing");
+  requireSectionText(authoritativeReleaseFillTiming, "proof?.fill_time_provenance === sourceProvenance", "carry_release_authoritative_fill_time_source_missing");
+  requireSectionText(authoritativeReleaseFillTiming, "Math.min(...fillTimes) === firstFillAtMs", "carry_release_authoritative_fill_time_minimum_missing");
+  requireSectionText(authoritativeReleaseFillTiming, "Math.max(...fillTimes) === lastFillAtMs", "carry_release_authoritative_fill_time_maximum_missing");
   requireText("evidenceVerifier", "leg?.live_order_broadcast !== true", "carry_release_live_broadcast_verifier_missing");
   requireText("executor", "recordLifecycleProofAfterExit", "carry_lifecycle_proof_exit_hook_missing");
   requireText("privatePrimeReadiness", 'proof_level: pairedLifecycle.verified ? "live_paired_lifecycle" : "pre_broadcast_readiness"', "carry_private_prime_proof_level_missing");
@@ -2315,6 +2660,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeReadinessTest", "never lets aggregate readiness outlive its supervision heartbeat", "carry_private_prime_supervision_expiry_test_missing");
   requireText("privatePrimeReadiness", "proof?.owner_commitment === readiness?.owner_commitment", "carry_private_prime_lifecycle_owner_binding_missing");
   requireText("privatePrimeReadiness", "proof?.worker_image_digest === readiness?.image_digest", "carry_private_prime_lifecycle_image_binding_missing");
+  const webLifecycleReadiness = sourceSection(
+    "webPrivatePrimeReadiness",
+    "const lifecycleReady =",
+    "const proofBoundaryValid =",
+  );
+  requireSectionText(webLifecycleReadiness, "pairedLifecycle.value_boundary_authoritative === true", "carry_private_prime_ui_authoritative_value_gate_missing");
+  requireSectionText(webLifecycleReadiness, 'pairedLifecycle.exposure_boundary_provenance === "authoritative_exchange_fill_time"', "carry_private_prime_ui_authoritative_provenance_gate_missing");
+  requireText("webPrivatePrimeReadinessTest", 'exposure_boundary_provenance: "worker_observed_positive_fill_conservative"', "carry_private_prime_ui_conservative_provenance_test_missing");
   requireText("privatePrimeReadiness", "collateral_route_evidence_unverified", "carry_private_prime_route_evidence_gate_missing");
   requireText("privatePrimeReadiness", "verifyCarryExecutionReadinessResult(readiness", "carry_private_prime_readiness_wrapper_verification_missing");
   requireText("privatePrimeReadiness", "verifyCarryShadowQualification(shadowQualification", "carry_private_prime_shadow_wrapper_verification_missing");
@@ -2467,6 +2820,470 @@ export function checkCarryExecutionContract(sources) {
   forbidText("webCarryPositionRail", "requestCarryPositionExit", "carry_position_rail_live_exit_exposed");
   forbidText("webCarryPositionRail", "createCarryPosition", "carry_position_rail_live_creation_exposed");
   requireText("webCarryPositionRailTest", "keeps one authoritative Carry Position visible without a scanner candidate", "carry_position_rail_independence_test_missing");
+  requireText("coreCarry", "active_observed_at_ms: null", "carry_active_observed_boundary_domain_missing");
+  requireText("coreCarry", "active_boundary_provenance: null", "carry_active_boundary_provenance_domain_missing");
+  const coreCarryEntryReconciliation = sourceSection(
+    "coreCarry",
+    'if (event.type === "entry_reconciled") {',
+    'if (event.type === "entry_failed_no_fill") {',
+  );
+  requireSectionText(coreCarryEntryReconciliation, "event.first_exposure_observed_at_ms ?? event.first_exposure_at_ms", "carry_active_observed_event_binding_missing");
+  requireSectionText(coreCarryEntryReconciliation, '"carry_first_exposure_observed_at_ms"', "carry_active_observed_validation_missing");
+  requireSectionText(coreCarryEntryReconciliation, '"legacy_worker_observed_alias"', "carry_active_legacy_provenance_missing");
+  requireSectionText(coreCarryEntryReconciliation, '"worker_observed_positive_fill"', "carry_active_observed_provenance_missing");
+  requireSectionText(coreCarryEntryReconciliation, "enumValue(event.exposure_boundary_provenance", "carry_active_provenance_validation_missing");
+  requireSectionText(coreCarryEntryReconciliation, "carry_active_boundary_already_set", "carry_active_boundary_immutability_missing");
+  requireSectionText(coreCarryEntryReconciliation, "position.active_observed_at_ms = activeObservedAtMs", "carry_active_observed_assignment_missing");
+  requireSectionText(coreCarryEntryReconciliation, "position.active_boundary_provenance = boundaryProvenance", "carry_active_provenance_assignment_missing");
+  requireCount("coreMultiLeg", "first_exposure_observed_at_ms: null", 2, "carry_first_observed_exposure_domain_missing");
+  requireCount("coreMultiLeg", "exposure_boundary_provenance: null", 2, "carry_first_exposure_provenance_domain_missing");
+  requireText("coreMultiLeg", 'const AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE = "authoritative_exchange_fill_time"', "carry_authoritative_exposure_provenance_missing");
+  requireText("coreMultiLeg", 'const CONSERVATIVE_EXPOSURE_BOUNDARY_PROVENANCE = "worker_observed_positive_fill_conservative"', "carry_conservative_exposure_provenance_missing");
+  const firstExposureCapture = sourceSection("coreMultiLeg", "function applyEntryFill(saga,", "function sagaLeg(saga,");
+  requireSectionText(firstExposureCapture, "const previousLegFill = leg.filled_micro_usdc", "carry_first_exposure_transition_guard_missing");
+  requireSectionText(firstExposureCapture, "previousLegFill === 0 && leg.filled_micro_usdc > 0", "carry_first_positive_fill_gate_missing");
+  requireSectionText(firstExposureCapture, "const boundary = exposureBoundaryFromEvent(saga, event, nowMs)", "carry_first_exposure_event_boundary_missing");
+  requireSectionText(firstExposureCapture, "leg.first_exposure_observed_at_ms = boundary.observed_at_ms", "carry_first_observed_exposure_capture_missing");
+  requireSectionText(firstExposureCapture, "leg.exposure_boundary_provenance = boundary.provenance", "carry_first_exposure_provenance_capture_missing");
+  requireSectionText(firstExposureCapture, "refreshExposureBoundary(saga)", "carry_first_exposure_refresh_missing");
+  const exposureBoundaryFromEvent = sourceSection("coreMultiLeg", "function exposureBoundaryFromEvent(", "function refreshExposureBoundary(");
+  requireSectionText(exposureBoundaryFromEvent, "provenance === undefined && observedAtMs === undefined", "carry_missing_fill_time_conservative_pair_gate_missing");
+  requireSectionText(exposureBoundaryFromEvent, 'positiveInteger(saga.created_at_ms, "first_exposure_observed_at_ms")', "carry_missing_fill_time_conservative_boundary_missing");
+  requireSectionText(exposureBoundaryFromEvent, "provenance: CONSERVATIVE_EXPOSURE_BOUNDARY_PROVENANCE", "carry_missing_fill_time_conservative_provenance_missing");
+  requireSectionText(exposureBoundaryFromEvent, "provenance !== AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE", "carry_fill_time_provenance_validation_missing");
+  requireSectionText(exposureBoundaryFromEvent, 'positiveInteger(observedAtMs, "first_exposure_observed_at_ms")', "carry_authoritative_fill_time_validation_missing");
+  requireSectionText(exposureBoundaryFromEvent, "authoritativeAtMs < saga.created_at_ms || authoritativeAtMs > nowMs", "carry_authoritative_fill_time_bounds_missing");
+  const refreshExposureBoundary = sourceSection("coreMultiLeg", "function refreshExposureBoundary(", "function sagaLeg(");
+  requireSectionText(refreshExposureBoundary, "saga.legs.filter((leg) => leg.filled_micro_usdc > 0)", "carry_exposed_leg_boundary_selection_missing");
+  requireSectionText(refreshExposureBoundary, "exposed.every((leg) =>", "carry_all_exposed_legs_authoritative_gate_missing");
+  requireSectionText(refreshExposureBoundary, "leg.exposure_boundary_provenance === AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE", "carry_exposed_leg_authoritative_provenance_missing");
+  requireSectionText(refreshExposureBoundary, "Number.isSafeInteger(leg.first_exposure_observed_at_ms)", "carry_exposed_leg_authoritative_time_validation_missing");
+  requireSectionText(refreshExposureBoundary, "saga.first_exposure_observed_at_ms = saga.created_at_ms", "carry_incomplete_fill_time_conservative_boundary_missing");
+  requireSectionText(refreshExposureBoundary, "saga.exposure_boundary_provenance = CONSERVATIVE_EXPOSURE_BOUNDARY_PROVENANCE", "carry_incomplete_fill_time_conservative_provenance_missing");
+  requireSectionText(refreshExposureBoundary, "Math.min(...exposed.map((leg) => leg.first_exposure_observed_at_ms))", "carry_complete_fill_time_minimum_missing");
+  requireSectionText(refreshExposureBoundary, "saga.exposure_boundary_provenance = AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE", "carry_complete_fill_time_authoritative_provenance_missing");
+  requireCount("coreMultiLeg", "applyEntryFill(saga,", 4, "carry_first_exposure_event_coverage_missing");
+  const conservativeExposureBoundaryTest = sourceSection(
+    "coreMultiLegTest",
+    'test("missing exchange fill time uses an immutable conservative pre-submit boundary"',
+    'test("authoritative per-leg fill boundaries use exchange time despite reversed processing"',
+  );
+  requireSectionText(conservativeExposureBoundaryTest, "filled.saga.first_exposure_observed_at_ms, NOW", "carry_conservative_exposure_boundary_test_missing");
+  requireSectionText(conservativeExposureBoundaryTest, 'filled.saga.exposure_boundary_provenance, "worker_observed_positive_fill_conservative"', "carry_conservative_exposure_provenance_test_missing");
+  requireSectionText(conservativeExposureBoundaryTest, "replay.saga.first_exposure_observed_at_ms, NOW", "carry_conservative_exposure_replay_test_missing");
+  const authoritativeExposureBoundaryTest = sourceSection(
+    "coreMultiLegTest",
+    'test("authoritative per-leg fill boundaries use exchange time despite reversed processing"',
+    'test("zero-fill terminal paths never claim exposure"',
+  );
+  requireSectionText(authoritativeExposureBoundaryTest, "saga.first_exposure_observed_at_ms, NOW + 4_000", "carry_authoritative_exposure_minimum_test_missing");
+  requireSectionText(authoritativeExposureBoundaryTest, 'saga.exposure_boundary_provenance, "authoritative_exchange_fill_time"', "carry_authoritative_exposure_provenance_test_missing");
+  requireSectionText(authoritativeExposureBoundaryTest, "saga.legs[0].first_exposure_observed_at_ms, NOW + 8_000", "carry_authoritative_exposure_leg_one_test_missing");
+  requireSectionText(authoritativeExposureBoundaryTest, "saga.legs[1].first_exposure_observed_at_ms, NOW + 4_000", "carry_authoritative_exposure_leg_two_test_missing");
+  requireText("coreMultiLegTest", "zero-fill terminal paths never claim exposure", "carry_zero_fill_exposure_test_missing");
+  requireText("executor", 'hyperliquid: "hyperliquid_user_fills_time_v1"', "carry_hyperliquid_fill_time_source_missing");
+  requireText("executor", 'lighter: "lighter_authenticated_order_trades_timestamp_v1"', "carry_lighter_fill_time_source_missing");
+  requireText("executor", 'aster: "aster_fapi_v3_user_trades_time_v1"', "carry_aster_fill_time_source_missing");
+  const exposureBoundaryEvent = sourceSection(
+    "executor",
+    "function exposureBoundaryEvent(",
+    "function authoritativeReceiptExposureBoundary(",
+  );
+  requireSectionText(exposureBoundaryEvent, "boundary?.authoritative === true", "carry_authoritative_boundary_event_gate_missing");
+  requireSectionText(exposureBoundaryEvent, "first_exposure_observed_at_ms: boundary.first_fill_at_ms", "carry_authoritative_boundary_event_time_missing");
+  requireSectionText(exposureBoundaryEvent, "exposure_boundary_provenance: AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE", "carry_authoritative_boundary_event_provenance_missing");
+  requireSectionText(exposureBoundaryEvent, ": {}", "carry_unproven_boundary_event_conservative_fallback_missing");
+  const authoritativeReceiptExposureBoundary = sourceSection(
+    "executor",
+    "function authoritativeReceiptExposureBoundary(",
+    "function commitmentValue(",
+  );
+  requireSectionText(authoritativeReceiptExposureBoundary, "AUTHORITATIVE_FILL_TIME_PROVENANCE_BY_VENUE[venueId]", "carry_receipt_fill_time_venue_source_missing");
+  requireSectionText(authoritativeReceiptExposureBoundary, "proof?.target_fill_set_complete !== true", "carry_receipt_target_fill_set_complete_missing");
+  requireSectionText(authoritativeReceiptExposureBoundary, "proof?.fill_times_authoritative !== true", "carry_receipt_authoritative_fill_time_marker_missing");
+  requireSectionText(authoritativeReceiptExposureBoundary, "proof?.fill_time_provenance !== expectedProvenance", "carry_receipt_authoritative_fill_time_source_missing");
+  requireSectionText(authoritativeReceiptExposureBoundary, "lastFillAtMs < firstFillAtMs", "carry_receipt_authoritative_fill_time_bounds_missing");
+  requireSectionText(authoritativeReceiptExposureBoundary, "positiveFills.length === 0", "carry_receipt_authoritative_positive_fill_missing");
+  requireSectionText(authoritativeReceiptExposureBoundary, "Number(fill?.executed_at_ms)", "carry_receipt_fill_row_timestamp_missing");
+  requireSectionText(authoritativeReceiptExposureBoundary, "Math.min(...fillTimes) !== firstFillAtMs", "carry_receipt_first_fill_minimum_missing");
+  requireCount("executor", "...exposureBoundaryEvent(exposureBoundary)", 4, "carry_receipt_boundary_event_binding_missing");
+  requireText("executor", "first_exposure_observed_at_ms: material.exposure_boundary.observed_at_ms", "carry_first_observed_exposure_binding_missing");
+  requireText("executor", "exposure_boundary_provenance: material.exposure_boundary.provenance", "carry_first_exposure_provenance_binding_missing");
+  requireText("executor", "first_exposure_observed_at_ms_by_venue: material.exposure_boundary.observed_at_ms_by_venue", "carry_first_observed_exposure_by_venue_binding_missing");
+  requireText("executor", "exposure_boundary_provenance_by_venue: material.exposure_boundary.provenance_by_venue", "carry_first_exposure_provenance_by_venue_binding_missing");
+  const reconciledEntryMaterial = sourceSection(
+    "executor",
+    "async function reconciledCarryEntryMaterial({",
+    "function entryParentCanComplete(",
+  );
+  requireSectionText(reconciledEntryMaterial, "const exposureBoundary = resolveSagaExposureBoundary(saga);", "carry_reconciled_exposure_boundary_resolution_missing");
+  requireSectionText(reconciledEntryMaterial, "!exposureBoundary.ok || exposureBoundary.observed_at_ms > saga.updated_at_ms", "carry_reconciled_exposure_boundary_gate_missing");
+  requireSectionText(reconciledEntryMaterial, "exposure_boundary: exposureBoundary", "carry_reconciled_exposure_boundary_return_missing");
+  const sagaExposureBoundary = sourceSection(
+    "executor",
+    "function resolveSagaExposureBoundary(",
+    "function resolvePositionExposureBoundary(",
+  );
+  requireSectionText(sagaExposureBoundary, "filled_micro_usdc) > 0", "carry_saga_exposure_detection_missing");
+  requireSectionText(sagaExposureBoundary, "saga?.first_exposure_observed_at_ms", "carry_saga_observed_boundary_missing");
+  requireSectionText(sagaExposureBoundary, "saga?.first_exposure_at_ms", "carry_saga_legacy_boundary_alias_missing");
+  requireSectionText(sagaExposureBoundary, 'provenance = "legacy_worker_observed_alias"', "carry_saga_legacy_alias_provenance_missing");
+  requireSectionText(sagaExposureBoundary, "observedAtMs = createdAtMs", "carry_saga_legacy_conservative_boundary_missing");
+  requireSectionText(sagaExposureBoundary, 'provenance = "legacy_conservative_saga_creation"', "carry_saga_legacy_conservative_provenance_missing");
+  requireSectionText(sagaExposureBoundary, "updatedAtMs >= observedAtMs", "carry_saga_observed_boundary_validation_missing");
+  const positionExposureBoundary = sourceSection(
+    "executor",
+    "function resolvePositionExposureBoundary(",
+    "function rebaseAbortedFundingBoundary(",
+  );
+  requireSectionText(positionExposureBoundary, "position?.active_observed_at_ms", "carry_position_observed_boundary_missing");
+  requireSectionText(positionExposureBoundary, "position?.active_at_ms", "carry_position_legacy_boundary_alias_missing");
+  requireSectionText(positionExposureBoundary, 'provenance = "legacy_worker_observed_alias"', "carry_position_legacy_alias_provenance_missing");
+  requireSectionText(positionExposureBoundary, "observedAtMs = createdAtMs", "carry_position_legacy_conservative_boundary_missing");
+  requireSectionText(positionExposureBoundary, 'provenance = "legacy_conservative_position_creation"', "carry_position_legacy_conservative_provenance_missing");
+  const storedEntryReconciliation = sourceSection(
+    "positions",
+    'if (event.type === "entry_reconciled") {',
+    "return storeUpdate(state, next",
+  );
+  requireSectionText(storedEntryReconciliation, "rebaseFundingToObservedExposure({", "carry_funding_observed_rebase_missing");
+  requireSectionText(storedEntryReconciliation, "observedAtMs: advanced.position.active_observed_at_ms", "carry_funding_observed_boundary_binding_missing");
+  requireSectionText(storedEntryReconciliation, "provenance: advanced.position.active_boundary_provenance", "carry_funding_provenance_binding_missing");
+  const fundingExposureRebase = sourceSection(
+    "positions",
+    "function rebaseFundingToObservedExposure(",
+    "async function readVenueFundingSettlements(",
+  );
+  requireSectionText(fundingExposureRebase, "carry_funding_exposure_boundary_invalid", "carry_funding_observed_boundary_validation_missing");
+  requireSectionText(fundingExposureRebase, "observedAtMsByVenue", "carry_funding_per_venue_observed_boundary_missing");
+  requireSectionText(fundingExposureRebase, "provenanceByVenue", "carry_funding_per_venue_provenance_missing");
+  requireSectionText(fundingExposureRebase, "Object.keys(boundaryByVenue).length !== venueIds.length", "carry_funding_per_venue_boundary_completeness_missing");
+  requireSectionText(fundingExposureRebase, "Number.isSafeInteger(boundaryByVenue[venueId])", "carry_funding_per_venue_boundary_validation_missing");
+  requireSectionText(fundingExposureRebase, "Math.min(...venueIds.map((venueId) => boundaryByVenue[venueId])) !== observedAtMs", "carry_funding_per_venue_minimum_binding_missing");
+  requireSectionText(fundingExposureRebase, 'if (priorBoundary !== observedAtMs) return denied("carry_funding_exposure_boundary_conflict")', "carry_funding_observed_boundary_conflict_missing");
+  requireSectionText(fundingExposureRebase, "priorByVenue[venueId] !== boundaryByVenue[venueId]", "carry_funding_per_venue_boundary_conflict_missing");
+  requireSectionText(fundingExposureRebase, "cursor_ms_by_venue: Object.fromEntries(venueIds.map((venueId) => [venueId, boundaryByVenue[venueId]]))", "carry_funding_observed_cursor_rebase_missing");
+  requireSectionText(fundingExposureRebase, "exposure_boundary_observed_at_ms: observedAtMs", "carry_funding_observed_boundary_persistence_missing");
+  requireSectionText(fundingExposureRebase, "exposure_boundary_provenance: provenance", "carry_funding_observed_provenance_persistence_missing");
+  requireSectionText(fundingExposureRebase, "exposure_boundary_observed_at_ms_by_venue: boundaryByVenue", "carry_funding_per_venue_boundary_persistence_missing");
+  requireSectionText(fundingExposureRebase, "exposure_boundary_provenance_by_venue: boundaryProvenanceByVenue", "carry_funding_per_venue_provenance_persistence_missing");
+  requireText("positionsTest", "funding begins at first observed exposure, excluding pre-fill settlements", "carry_funding_exposure_boundary_test_missing");
+  const abortedFundingRebase = sourceSection(
+    "executor",
+    "function rebaseAbortedFundingBoundary(",
+    "function provablyPreSubmitCarrySaga(",
+  );
+  requireSectionText(abortedFundingRebase, "priorBoundary !== target", "carry_aborted_funding_boundary_conflict_missing");
+  requireSectionText(abortedFundingRebase, "const alreadyRebased =", "carry_aborted_funding_rebase_idempotence_missing");
+  requireSectionText(abortedFundingRebase, "observedAtMsByVenue?.[venueId] ?? noExposureAtMs", "carry_aborted_funding_per_venue_target_missing");
+  requireSectionText(abortedFundingRebase, "provenanceByVenue?.[venueId]", "carry_aborted_funding_per_venue_provenance_missing");
+  requireSectionText(abortedFundingRebase, "cursor_ms_by_venue: targetsByVenue", "carry_aborted_funding_cursor_rebase_missing");
+  requireSectionText(abortedFundingRebase, "exposure_boundary_observed_at_ms: target", "carry_aborted_observed_boundary_persistence_missing");
+  requireSectionText(abortedFundingRebase, "exposure_boundary_provenance: current.exposure_boundary_provenance || provenance", "carry_aborted_boundary_provenance_missing");
+  requireSectionText(abortedFundingRebase, "exposure_boundary_observed_at_ms_by_venue: current.exposure_boundary_observed_at_ms_by_venue || targetsByVenue", "carry_aborted_per_venue_boundary_persistence_missing");
+  requireSectionText(abortedFundingRebase, "exposure_boundary_provenance_by_venue: current.exposure_boundary_provenance_by_venue || targetProvenanceByVenue", "carry_aborted_per_venue_provenance_persistence_missing");
+  requireText("executor", "const exposureBoundary = resolveSagaExposureBoundary(saga, { allowNoExposure: true });", "carry_aborted_exposure_boundary_resolution_missing");
+  requireText("executor", "const exposureObservedAtMs = hasExposure ? exposureBoundary.observed_at_ms : null;", "carry_aborted_observed_boundary_missing");
+  requireText("executor", "const fundingBoundary = rebaseAbortedFundingBoundary({", "carry_aborted_funding_rebase_call_missing");
+  requireText("executor", "const elapsedMs = hasExposure ? exitAtMs - exposureObservedAtMs : 0;", "carry_aborted_capital_boundary_missing");
+  const legacySagaRestartTest = sourceSection(
+    "lifecycleTest",
+    'test("legacy reconciled saga without an exposure boundary restarts with conservative provenance"',
+    'test("reconciled entry recovery retries after accounting without duplicating value"',
+  );
+  requireSectionText(legacySagaRestartTest, "delete legacySaga.first_exposure_observed_at_ms", "carry_legacy_saga_restart_fixture_missing");
+  requireSectionText(legacySagaRestartTest, "delete legacySaga.first_exposure_at_ms", "carry_legacy_saga_alias_removal_missing");
+  requireSectionText(legacySagaRestartTest, "active.position.active_observed_at_ms, legacySaga.created_at_ms", "carry_legacy_saga_conservative_boundary_assertion_missing");
+  requireSectionText(legacySagaRestartTest, 'active.position.active_boundary_provenance, "legacy_conservative_saga_creation"', "carry_legacy_saga_conservative_provenance_assertion_missing");
+  const legacyPositionFinalizationTest = sourceSection(
+    "lifecycleTest",
+    'test("legacy active position without an exposure boundary finalizes only with conservative provenance"',
+    'test("converts each venue PnL independently before final settlement"',
+  );
+  requireSectionText(legacyPositionFinalizationTest, "delete legacyPosition.active_observed_at_ms", "carry_legacy_position_restart_fixture_missing");
+  requireSectionText(legacyPositionFinalizationTest, "delete legacyPosition.active_at_ms", "carry_legacy_position_alias_removal_missing");
+  requireSectionText(legacyPositionFinalizationTest, "legacyPosition.created_at_ms", "carry_legacy_position_conservative_boundary_assertion_missing");
+  requireSectionText(legacyPositionFinalizationTest, '"legacy_conservative_position_creation"', "carry_legacy_position_conservative_provenance_assertion_missing");
+  requireText("executor", "carry_account_asset_exposure_overlap", "carry_account_asset_overlap_guard_missing");
+  requireText("workerState", "worker_carry_exposure_reservations", "carry_exposure_reservation_store_missing");
+  requireCount("workerState", "async claimCarryExposureReservations", 2, "carry_exposure_reservation_adapter_parity_missing");
+  requireCount("workerState", "async releaseCarryExposureReservations", 2, "carry_exposure_release_adapter_parity_missing");
+  requireCount("workerState", "async releaseCarryExposureReservationsBeforeSubmit", 2, "carry_exposure_pre_submit_release_adapter_parity_missing");
+  requireText("workerState", "exactFlatReservationRecord", "carry_exposure_exact_flat_release_missing");
+  requireText("workerState", 'evidence.transaction_broadcast !== false || evidence.gross_exposure_micro_usdc !== 0', "carry_exposure_zero_broadcast_gate_missing");
+  requireText("workerState", "evidence.open_order_count !== 0", "carry_exposure_zero_order_gate_missing");
+  requireText("workerState", "evidence.owner_commitment !== expected?.owner_commitment", "carry_exposure_owner_release_binding_missing");
+  requireText("workerState", "evidence.carry_position_id !== expected?.position_id", "carry_exposure_position_release_binding_missing");
+  requireText("workerState", "item.account_commitment === expected.account_commitments?.[venueId]", "carry_exposure_account_release_binding_missing");
+  requireText("workerState", "item.flat_zero_orders === true", "carry_exposure_venue_flat_release_missing");
+  const postgresReservationClaim = sourceOccurrenceSection(
+    "workerState",
+    "async claimCarryExposureReservations(",
+    "async releaseCarryExposureReservations(",
+    0,
+  );
+  requireSectionText(postgresReservationClaim, 'await client.query("BEGIN")', "carry_exposure_claim_transaction_missing");
+  requireSectionText(postgresReservationClaim, '"carry:exposure:claim:v2"', "carry_exposure_claim_global_lock_missing");
+  requireSectionText(postgresReservationClaim, 'for (const item of ordered) await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [item.reservation_key])', "carry_exposure_claim_atomic_lock_missing");
+  requireSectionText(postgresReservationClaim, "SELECT position_id, record_json FROM worker_carry_positions FOR UPDATE", "carry_exposure_claim_position_snapshot_lock_missing");
+  requireSectionText(postgresReservationClaim, "SELECT saga_id, saga_json FROM worker_multi_leg_sagas FOR UPDATE", "carry_exposure_claim_saga_snapshot_lock_missing");
+  requireSectionText(postgresReservationClaim, "const persisted = assessCarryExposureClaim({", "carry_exposure_claim_persisted_overlap_assessment_missing");
+  requireSectionText(postgresReservationClaim, "if (!persisted.ok)", "carry_exposure_claim_persisted_overlap_denial_missing");
+  requireSectionText(postgresReservationClaim, "pg_advisory_xact_lock(hashtextextended", "carry_exposure_claim_atomic_lock_missing");
+  requireSectionText(postgresReservationClaim, "FOR UPDATE", "carry_exposure_claim_row_lock_missing");
+  requireSectionText(postgresReservationClaim, 'await client.query("ROLLBACK")', "carry_exposure_claim_rollback_missing");
+  requireSectionText(postgresReservationClaim, 'await client.query("COMMIT")', "carry_exposure_claim_commit_missing");
+  requireOrdered(postgresReservationClaim, '"carry:exposure:claim:v2"', "assessCarryExposureClaim({", "carry_exposure_claim_global_lock_before_assessment_missing");
+  requireOrdered(postgresReservationClaim, "assessCarryExposureClaim({", "SELECT position_id, bindings_commitment, active FROM worker_carry_exposure_reservations", "carry_exposure_claim_legacy_assessment_before_reservation_rows_missing");
+  const postgresReservationRelease = sourceOccurrenceSection(
+    "workerState",
+    "async releaseCarryExposureReservations(",
+    "async releaseCarryExposureReservationsBeforeSubmit(",
+    0,
+  );
+  requireSectionText(postgresReservationRelease, 'await client.query("BEGIN")', "carry_exposure_release_transaction_missing");
+  requireSectionText(postgresReservationRelease, "pg_advisory_xact_lock(hashtextextended", "carry_exposure_release_atomic_lock_missing");
+  requireSectionText(postgresReservationRelease, "FOR UPDATE", "carry_exposure_release_row_lock_missing");
+  requireSectionText(postgresReservationRelease, "exactFlatReservationRecord(", "carry_exposure_release_flat_state_missing");
+  requireOrdered(postgresReservationRelease, "exactFlatReservationRecord(", "SET active=FALSE", "carry_exposure_release_before_flat_proof");
+  const fileReservationClaim = sourceOccurrenceSection(
+    "workerState",
+    "async claimCarryExposureReservations(",
+    "async releaseCarryExposureReservations(",
+    1,
+  );
+  requireSectionText(fileReservationClaim, "return updateState((state) =>", "carry_exposure_file_claim_atomic_update_missing");
+  requireSectionText(fileReservationClaim, "const persisted = assessCarryExposureClaim({", "carry_exposure_file_claim_persisted_overlap_assessment_missing");
+  requireSectionText(fileReservationClaim, "if (!persisted.ok) return persisted", "carry_exposure_file_claim_persisted_overlap_denial_missing");
+  requireSectionText(fileReservationClaim, "existing?.active", "carry_exposure_file_claim_conflict_gate_missing");
+  requireOrdered(fileReservationClaim, "assessCarryExposureClaim({", "existing?.active", "carry_exposure_file_claim_legacy_assessment_before_reservation_rows_missing");
+  const fileReservationRelease = sourceOccurrenceSection(
+    "workerState",
+    "async releaseCarryExposureReservations(",
+    "async releaseCarryExposureReservationsBeforeSubmit(",
+    1,
+  );
+  requireSectionText(fileReservationRelease, "return updateState((state) =>", "carry_exposure_file_release_atomic_update_missing");
+  requireSectionText(fileReservationRelease, "exactFlatReservationRecord(", "carry_exposure_file_release_flat_state_missing");
+  requireOrdered(fileReservationRelease, "exactFlatReservationRecord(", ".active = false", "carry_exposure_file_release_before_flat_proof");
+  const exactNoSubmitReservation = sourceSection(
+    "workerState",
+    "function exactNoSubmitReservationRecord(",
+    "function normalizeState(",
+  );
+  requireSectionText(exactNoSubmitReservation, 'record.position.status === "reconciled"', "carry_exposure_pre_submit_reconciled_gate_missing");
+  requireSectionText(exactNoSubmitReservation, 'record.position.terminal_reason === "entry_failed_no_fill"', "carry_exposure_pre_submit_no_fill_gate_missing");
+  requireSectionText(exactNoSubmitReservation, "record.entry_saga_id === sagaId", "carry_exposure_pre_submit_saga_binding_missing");
+  requireSectionText(exactNoSubmitReservation, "saga.terminal === true", "carry_exposure_pre_submit_terminal_gate_missing");
+  requireSectionText(exactNoSubmitReservation, 'saga.status === "failed_no_submit"', "carry_exposure_pre_submit_status_gate_missing");
+  requireSectionText(exactNoSubmitReservation, 'saga.terminal_reason === "cancelled_before_submit"', "carry_exposure_pre_submit_reason_gate_missing");
+  requireSectionText(exactNoSubmitReservation, 'leg.submission_status === "pending"', "carry_exposure_pre_submit_pending_leg_gate_missing");
+  requireSectionText(exactNoSubmitReservation, "leg.provider_ref_commitment === null", "carry_exposure_pre_submit_provider_ref_gate_missing");
+  requireSectionText(exactNoSubmitReservation, "leg.filled_micro_usdc === 0", "carry_exposure_pre_submit_zero_fill_gate_missing");
+  requireSectionText(exactNoSubmitReservation, "exactFlatReservationRecord(record, {", "carry_exposure_pre_submit_exact_flat_gate_missing");
+  const postgresPreSubmitRelease = sourceOccurrenceSection(
+    "workerState",
+    "async releaseCarryExposureReservationsBeforeSubmit(",
+    "async putExecutionAttempt(",
+    0,
+  );
+  requireSectionText(postgresPreSubmitRelease, 'await client.query("BEGIN")', "carry_exposure_pre_submit_transaction_missing");
+  requireSectionText(postgresPreSubmitRelease, "pg_advisory_xact_lock(hashtextextended", "carry_exposure_pre_submit_atomic_lock_missing");
+  requireSectionText(postgresPreSubmitRelease, "SELECT record_json FROM worker_carry_positions WHERE position_id=$1 FOR UPDATE", "carry_exposure_pre_submit_position_lock_missing");
+  requireSectionText(postgresPreSubmitRelease, "SELECT saga_json FROM worker_multi_leg_sagas WHERE saga_id=$1 FOR UPDATE", "carry_exposure_pre_submit_saga_lock_missing");
+  requireSectionText(postgresPreSubmitRelease, "exactNoSubmitReservationRecord(", "carry_exposure_pre_submit_durable_proof_missing");
+  requireSectionText(postgresPreSubmitRelease, 'reason: "durable_no_submit_proof_required"', "carry_exposure_pre_submit_proof_denial_missing");
+  requireSectionText(postgresPreSubmitRelease, 'await client.query("ROLLBACK")', "carry_exposure_pre_submit_rollback_missing");
+  requireSectionText(postgresPreSubmitRelease, 'await client.query("COMMIT")', "carry_exposure_pre_submit_commit_missing");
+  requireOrdered(postgresPreSubmitRelease, "exactNoSubmitReservationRecord(", "SET active=FALSE", "carry_exposure_pre_submit_release_before_proof");
+  const filePreSubmitRelease = sourceOccurrenceSection(
+    "workerState",
+    "async releaseCarryExposureReservationsBeforeSubmit(",
+    "async putExecutionAttempt(",
+    1,
+  );
+  requireSectionText(filePreSubmitRelease, "return updateState((state) =>", "carry_exposure_file_pre_submit_atomic_update_missing");
+  requireSectionText(filePreSubmitRelease, "exactNoSubmitReservationRecord(", "carry_exposure_file_pre_submit_durable_proof_missing");
+  requireSectionText(filePreSubmitRelease, "existing?.active", "carry_exposure_file_pre_submit_conflict_gate_missing");
+  requireSectionText(filePreSubmitRelease, 'reason: "reservation_set_incomplete"', "carry_exposure_file_pre_submit_complete_set_gate_missing");
+  requireOrdered(filePreSubmitRelease, "exactNoSubmitReservationRecord(", ".active = false", "carry_exposure_file_pre_submit_release_before_proof");
+  const carryExposureClaimAssessment = sourceSection(
+    "workerState",
+    "function assessCarryExposureClaim({",
+    "function durableCarryExposureBinding(",
+  );
+  requireSectionText(carryExposureClaimAssessment, "durableCarryExposureBinding(targetRecord, positionId)", "carry_exposure_target_durable_binding_missing");
+  requireSectionText(carryExposureClaimAssessment, 'targetBinding.status !== "opening"', "carry_exposure_target_opening_gate_missing");
+  requireSectionText(carryExposureClaimAssessment, "provablyPreSubmitCarryOpening(targetRecord, targetSaga, { readyOnly: true })", "carry_exposure_target_pre_submit_gate_missing");
+  requireSectionText(carryExposureClaimAssessment, "exactCarryExposureClaimBinding(targetBinding, targetSaga, bindingsCommitment, reservations)", "carry_exposure_target_exact_binding_missing");
+  requireSectionText(carryExposureClaimAssessment, "for (const [persistedId, record] of Object.entries(positions || {}))", "carry_exposure_legacy_full_position_scan_missing");
+  requireSectionText(carryExposureClaimAssessment, 'if (status === "draft" || status === "reconciled") continue;', "carry_exposure_legacy_terminal_skip_scope_missing");
+  requireSectionText(carryExposureClaimAssessment, "provablyPreSubmitCarryOpening(record, saga)", "carry_exposure_legacy_safe_opening_proof_missing");
+  requireSectionText(carryExposureClaimAssessment, "CARRY_EXPOSURE_BEARING_STATUSES.has(status)", "carry_exposure_legacy_bearing_status_gate_missing");
+  requireSectionText(carryExposureClaimAssessment, "carryExposureBindingsOverlap(targetBinding, persistedBinding)", "carry_exposure_legacy_overlap_check_missing");
+  requireSectionText(carryExposureClaimAssessment, 'reason: "carry_legacy_exposure_overlap"', "carry_exposure_legacy_overlap_denial_missing");
+  requireSectionText(carryExposureClaimAssessment, 'reason: "carry_legacy_exposure_binding_unverifiable"', "carry_exposure_legacy_malformed_denial_missing");
+  const durableCarryExposureBinding = sourceSection(
+    "workerState",
+    "function durableCarryExposureBinding(",
+    "function provablyPreSubmitCarryOpening(",
+  );
+  requireSectionText(durableCarryExposureBinding, "record?.owner_commitment", "carry_exposure_legacy_owner_binding_missing");
+  requireSectionText(durableCarryExposureBinding, "position?.asset", "carry_exposure_legacy_asset_binding_missing");
+  requireSectionText(durableCarryExposureBinding, "position?.long_venue_id", "carry_exposure_legacy_long_venue_binding_missing");
+  requireSectionText(durableCarryExposureBinding, "position?.short_venue_id", "carry_exposure_legacy_short_venue_binding_missing");
+  requireSectionText(durableCarryExposureBinding, "monitoring_context?.venue_access?.[venueId]?.account_commitment", "carry_exposure_legacy_account_binding_missing");
+  const provablyPreSubmitOpening = sourceSection(
+    "workerState",
+    "function provablyPreSubmitCarryOpening(",
+    "function exactCarryExposureClaimBinding(",
+  );
+  requireSectionText(provablyPreSubmitOpening, 'saga?.status === "ready" && saga?.terminal === false', "carry_exposure_target_ready_saga_gate_missing");
+  requireSectionText(provablyPreSubmitOpening, 'saga?.status === "failed_no_submit" && saga?.terminal === true', "carry_exposure_legacy_failed_no_submit_gate_missing");
+  requireSectionText(provablyPreSubmitOpening, "saga.first_exposure_observed_at_ms === null", "carry_exposure_legacy_zero_boundary_gate_missing");
+  requireSectionText(provablyPreSubmitOpening, "Object.values(exposureByAsset).every((value) => value === 0)", "carry_exposure_legacy_zero_asset_exposure_gate_missing");
+  requireSectionText(provablyPreSubmitOpening, 'leg?.submission_status === "pending"', "carry_exposure_legacy_pending_leg_gate_missing");
+  requireSectionText(provablyPreSubmitOpening, "leg.provider_ref_commitment === null", "carry_exposure_legacy_provider_ref_gate_missing");
+  requireSectionText(provablyPreSubmitOpening, "leg.filled_micro_usdc === 0", "carry_exposure_legacy_zero_fill_gate_missing");
+  requireSectionText(provablyPreSubmitOpening, "leg.unwind_filled_micro_usdc === 0", "carry_exposure_legacy_zero_unwind_gate_missing");
+  const exactCarryExposureClaimBinding = sourceSection(
+    "workerState",
+    "function exactCarryExposureClaimBinding(",
+    "function carryExposureBindingsOverlap(",
+  );
+  requireSectionText(exactCarryExposureClaimBinding, "saga.execution_context.legs", "carry_exposure_claim_context_leg_binding_missing");
+  requireSectionText(exactCarryExposureClaimBinding, "const expectedBindingsCommitment =", "carry_exposure_claim_commitment_recalculation_missing");
+  requireSectionText(exactCarryExposureClaimBinding, "bindingsCommitment !== expectedBindingsCommitment", "carry_exposure_claim_commitment_comparison_missing");
+  requireSectionText(exactCarryExposureClaimBinding, "carry:exposure:owner:", "carry_exposure_claim_owner_key_recalculation_missing");
+  requireSectionText(exactCarryExposureClaimBinding, "carry:exposure:account:", "carry_exposure_claim_account_key_recalculation_missing");
+  requireSectionText(exactCarryExposureClaimBinding, "new Set(reservations.map((item) => item?.reservation_key)).size !== reservations.length", "carry_exposure_claim_unique_key_gate_missing");
+  const carryExposureOverlap = sourceSection(
+    "workerState",
+    "function carryExposureBindingsOverlap(",
+    "function stateDigest(",
+  );
+  requireSectionText(carryExposureOverlap, "if (left.asset !== right.asset) return false", "carry_exposure_legacy_asset_overlap_scope_missing");
+  requireSectionText(carryExposureOverlap, "if (left.owner_commitment === right.owner_commitment) return true", "carry_exposure_legacy_owner_overlap_missing");
+  requireSectionText(carryExposureOverlap, "left.account_commitments.some((account) => rightAccounts.has(account))", "carry_exposure_legacy_account_overlap_missing");
+  const carryEntrySection = sourceSection("executor", "export async function executeStoredCarryEntry({", "export async function executeStoredCarryExit({");
+  requireSectionText(carryEntrySection, "proof = await preflight({", "carry_exposure_entry_preflight_missing");
+  requireSectionText(carryEntrySection, "proof?.no_submit_ready !== true || proof?.transaction_broadcast !== false", "carry_exposure_entry_no_submit_gate_missing");
+  requireSectionText(carryEntrySection, "const legs = buildLegs(record, proof, startedAt);", "carry_exposure_entry_leg_binding_missing");
+  requireSectionText(carryEntrySection, "const reservationRecord = await state.getCarryPositionRecord(positionId);", "carry_exposure_durable_record_binding_missing");
+  requireSectionText(carryEntrySection, "const exposureReservation = carryExposureReservation(reservationRecord, legs.legs);", "carry_exposure_actual_leg_reservation_missing");
+  requireSectionText(carryEntrySection, "state.claimCarryExposureReservations(", "carry_exposure_entry_claim_missing");
+  requireOrdered(carryEntrySection, "proof = await preflight({", "const legs = buildLegs(record, proof, startedAt);", "carry_exposure_preflight_before_leg_binding_missing");
+  requireOrdered(carryEntrySection, "const legs = buildLegs(record, proof, startedAt);", "const exposureReservation = carryExposureReservation(reservationRecord, legs.legs);", "carry_exposure_bound_legs_before_claim_missing");
+  requireOrdered(carryEntrySection, "state.claimCarryExposureReservations(", 'sagaEvent(state, sagaId, "submission_started"', "carry_exposure_claim_before_submission_missing");
+  requireOrdered(carryEntrySection, "state.claimCarryExposureReservations(", "executeOrder(orderArgs({", "carry_exposure_claim_before_execute_missing");
+  const carryReservationBinding = sourceSection("executor", "function carryExposureReservation(record, boundLegs = null) {", "async function releaseCarryExposureReservation({");
+  requireSectionText(carryReservationBinding, "owner_commitment: record.owner_commitment", "carry_exposure_owner_claim_binding_missing");
+  requireSectionText(carryReservationBinding, "asset: record.position.asset", "carry_exposure_asset_claim_binding_missing");
+  requireSectionText(carryReservationBinding, "accounts_by_venue: accountsByVenue", "carry_exposure_account_claim_binding_missing");
+  requireSectionText(carryReservationBinding, "[...new Set(Object.values(accountsByVenue).filter(Boolean))].sort()", "carry_exposure_shared_account_deduplication_missing");
+  requireSectionText(carryReservationBinding, "legs,", "carry_exposure_leg_claim_binding_missing");
+  requireSectionText(carryReservationBinding, "carry:exposure:owner:", "carry_exposure_owner_key_missing");
+  requireSectionText(carryReservationBinding, "carry:exposure:account:", "carry_exposure_account_key_missing");
+  const carryReservationRelease = sourceSection("executor", "async function releaseCarryExposureReservation({", "async function reconciledCarryEntryMaterial({");
+  requireSectionText(carryReservationRelease, "hasExactCarryFlatReconciliation(", "carry_exposure_release_binding_missing");
+  requireSectionText(carryReservationRelease, "state.releaseCarryExposureReservations(", "carry_exposure_release_call_missing");
+  requireOrdered(carryReservationRelease, "hasExactCarryFlatReconciliation(", "state.releaseCarryExposureReservations(", "carry_exposure_flat_before_release_missing");
+  const carryPreSubmitReservationRelease = sourceSection(
+    "executor",
+    "async function releaseCarryExposureReservationBeforeSubmit({",
+    "async function reconciledCarryEntryMaterial({",
+  );
+  requireSectionText(carryPreSubmitReservationRelease, "await state.getCarryPositionRecord(record.position.position_id)", "carry_exposure_pre_submit_durable_refetch_missing");
+  requireSectionText(carryPreSubmitReservationRelease, "state.releaseCarryExposureReservationsBeforeSubmit(", "carry_exposure_pre_submit_release_call_missing");
+  requireSectionText(carryPreSubmitReservationRelease, "saga.saga_id", "carry_exposure_pre_submit_release_saga_binding_missing");
+  const restartAudit = sourceSection(
+    "executor",
+    "export async function auditCarryPositionsAfterRestart({",
+    "async function completeReconciledCarryEntry({",
+  );
+  requireSectionText(restartAudit, "provablyPreSubmitCarrySaga(saga, record, phase)", "carry_exposure_restart_pre_submit_proof_missing");
+  requireSectionText(restartAudit, "!accountState.ok || !accountState.known_flat", "carry_exposure_restart_flat_gate_missing");
+  requireSectionText(restartAudit, 'carryEvent(record.position, "entry_failed_no_fill"', "carry_exposure_restart_no_fill_reconciliation_missing");
+  requireSectionText(restartAudit, "releaseCarryExposureReservationBeforeSubmit({", "carry_exposure_restart_pre_submit_release_missing");
+  requireOrdered(restartAudit, 'carryEvent(record.position, "entry_failed_no_fill"', "releaseCarryExposureReservationBeforeSubmit({", "carry_exposure_restart_release_before_reconciliation");
+  requireText("privateStatePolicyClaimTest", "Carry exposure reservations are atomic, durable, replay-safe", "carry_exposure_reservation_test_missing");
+  requireText("privateStatePolicyClaimTest", "const simultaneous = await Promise.all([", "carry_exposure_concurrent_claim_test_missing");
+  requireText("privateStatePolicyClaimTest", "const restarted = createWorkerState(dir);", "carry_exposure_restart_test_missing");
+  requireText("privateStatePolicyClaimTest", '{ owner_commitment: "wrong" }', "carry_exposure_exact_flat_rejection_test_missing");
+  requireText("privateStatePolicyClaimTest", "generation, 2", "carry_exposure_post_release_retry_test_missing");
+  requireText("lifecycleTest", "denies a second Carry entry sharing an owner venue account and asset", "carry_exposure_executor_overlap_test_missing");
+  const restartReservationReleaseTest = sourceSection(
+    "lifecycleTest",
+    'test("restart proves flat and releases exposure reserved before submission after a crash"',
+    'test("restart completes an exactly reconciled entry orphan without resubmission"',
+  );
+  requireSectionText(restartReservationReleaseTest, "simulated crash after exposure reservation claim", "carry_exposure_restart_crash_fixture_missing");
+  requireSectionText(restartReservationReleaseTest, "assert.equal(submissions, 0)", "carry_exposure_restart_no_submit_assertion_missing");
+  requireSectionText(restartReservationReleaseTest, "createWorkerState(fixture.state_dir)", "carry_exposure_restart_durable_state_test_missing");
+  requireSectionText(restartReservationReleaseTest, 'reconciled.position.terminal_reason, "entry_failed_no_fill"', "carry_exposure_restart_no_fill_assertion_missing");
+  requireSectionText(restartReservationReleaseTest, "reconciled.final_reconciliation_evidence.open_order_count, 0", "carry_exposure_restart_zero_order_assertion_missing");
+  requireSectionText(restartReservationReleaseTest, "await restarted.listActiveCarryExposureReservationPositionIds(), []", "carry_exposure_restart_release_assertion_missing");
+  const legacyReservationlessOverlapTest = sourceSection(
+    "lifecycleTest",
+    'test("legacy active position without reservation rows blocks overlapping entry after restart"',
+    'test("malformed legacy exposure fails closed instead of silently bypassing overlap"',
+  );
+  requireSectionText(legacyReservationlessOverlapTest, "persisted.carry_exposure_reservations = {}", "carry_exposure_legacy_reservationless_fixture_missing");
+  requireSectionText(legacyReservationlessOverlapTest, "createWorkerState(fixture.state_dir)", "carry_exposure_legacy_restart_fixture_missing");
+  requireSectionText(legacyReservationlessOverlapTest, 'deniedEntry.error, "carry_account_asset_exposure_overlap"', "carry_exposure_legacy_overlap_assertion_missing");
+  requireSectionText(legacyReservationlessOverlapTest, "assert.equal(submitCalls, 0)", "carry_exposure_legacy_no_submit_assertion_missing");
+  requireSectionText(legacyReservationlessOverlapTest, "listActiveCarryExposureReservationPositionIds()).length, 0", "carry_exposure_legacy_no_row_assertion_missing");
+  const malformedLegacyExposureTest = sourceSection(
+    "lifecycleTest",
+    'test("malformed legacy exposure fails closed instead of silently bypassing overlap"',
+    'test("restart audit freezes an in-flight opening without resubmission"',
+  );
+  requireSectionText(malformedLegacyExposureTest, "delete persisted.carry_positions[fixture.position_id].monitoring_context.venue_access.aster.account_commitment", "carry_exposure_legacy_malformed_fixture_missing");
+  requireSectionText(malformedLegacyExposureTest, 'claimResult?.reason, "carry_legacy_exposure_binding_unverifiable"', "carry_exposure_legacy_malformed_reason_assertion_missing");
+  requireSectionText(malformedLegacyExposureTest, "claimResult?.conflicting_position_id, fixture.position_id", "carry_exposure_legacy_malformed_conflict_assertion_missing");
+  requireSectionText(malformedLegacyExposureTest, "assert.equal(submitCalls, 0)", "carry_exposure_legacy_malformed_no_submit_assertion_missing");
+  const sharedAccountReservationTest = sourceSection(
+    "lifecycleTest",
+    'test("executes and claims safely when both venues reuse one account commitment"',
+    'test("refuses entry when durable opportunity evidence was altered after owner approval"',
+  );
+  requireSectionText(sharedAccountReservationTest, 'sharedAccountCommitment: "account:shared:carry:0001"', "carry_exposure_shared_account_fixture_missing");
+  requireSectionText(sharedAccountReservationTest, "result.record.position.status, \"active\"", "carry_exposure_shared_account_execution_assertion_missing");
+  requireSectionText(sharedAccountReservationTest, "carry_exposure_reservations).filter((item) => item.active).length, 2", "carry_exposure_shared_account_deduplication_assertion_missing");
+  requireText("executor", "const activeBoundary = resolvePositionExposureBoundary(record);", "carry_capital_observed_boundary_resolution_missing");
+  requireText("executor", "activeBoundary.observed_at_ms > Number(record.final_reconciliation_evidence.checked_at_ms)", "carry_capital_observed_boundary_validation_missing");
+  requireText("executor", "Number(record.final_reconciliation_evidence.checked_at_ms) - activeBoundary.observed_at_ms", "carry_capital_observed_elapsed_missing");
+  requireText("executor", "active_observed_at_ms: activeBoundary.observed_at_ms", "carry_capital_observed_evidence_missing");
+  requireText("executor", "exposure_boundary_provenance: activeBoundary.provenance", "carry_capital_observed_provenance_missing");
+  const carryPositionLedgerMetric = sourceSection(
+    "webCarryPositionRail",
+    "function positionLedgerMetric(record:",
+    "function RailMetric({",
+  );
+  requireSectionText(carryPositionLedgerMetric, 'positionStatus === "reconciled" && ledgerStatus === "finalized"', "carry_position_rail_finalized_predicate_missing");
+  const finalizedLedgerMetric = sourceSection(
+    "webCarryPositionRail",
+    'if (positionStatus === "reconciled" && ledgerStatus === "finalized")',
+    'if (positionStatus === "reconciled" && ledgerStatus === "open")',
+  );
+  requireSectionText(finalizedLedgerMetric, 'record.position.active_boundary_provenance === "authoritative_exchange_fill_time"', "carry_position_rail_authoritative_provenance_missing");
+  requireSectionText(finalizedLedgerMetric, "record.value_boundary_authoritative === true", "carry_position_rail_authoritative_value_gate_missing");
+  requireSectionText(finalizedLedgerMetric, "Number.isFinite(realized)", "carry_position_rail_finite_realized_gate_missing");
+  requireSectionText(finalizedLedgerMetric, 'return { label: "REAL NET", value: microUsd(realized)', "carry_position_rail_realized_value_missing");
+  requireSectionText(finalizedLedgerMetric, 'return { label: "VALUE", value: "UNVERIFIED", tone: "warn" }', "carry_position_rail_finalized_unverified_fallback_missing");
+  requireOrdered(finalizedLedgerMetric, "Number.isFinite(realized)", 'return { label: "VALUE", value: "UNVERIFIED"', "carry_position_rail_finalized_fallback_order_missing");
+  requireSectionText(carryPositionLedgerMetric, 'positionStatus === "reconciled" && ledgerStatus === "open"', "carry_position_rail_finalizing_predicate_missing");
+  requireText("webCarryPositionRail", 'return { label: "VALUE", value: "FINALIZING"', "carry_position_rail_finalizing_state_missing");
+  requireText("webCarryPositionRail", '["active", "rebalancing"].includes(positionStatus) && ledgerStatus === "open"', "carry_position_rail_accruing_predicate_missing");
+  requireText("webCarryPositionRail", 'return { label: "VALUE", value: "ACCRUING"', "carry_position_rail_accruing_state_missing");
+  requireText("webCarryPositionRailTest", "labels realized value only after the ledger is finalized", "carry_position_rail_finalized_test_missing");
+  requireText("webCarryPositionRailTest", "never labels a conservative finalized ledger real net", "carry_position_rail_conservative_provenance_test_missing");
+  requireText("webCarryPositionRailTest", "never labels a non-finite finalized ledger real net", "carry_position_rail_nonfinite_finalized_test_missing");
+  requireText("webCarryPositionRailTest", 'active_boundary_provenance: "authoritative_exchange_fill_time"', "carry_position_rail_authoritative_fixture_missing");
+  requireText("webCarryPositionRailTest", "realized_net_micro_usdc: Number.NaN", "carry_position_rail_nonfinite_fixture_missing");
+  requireText("webCarryPositionRailTest", "keeps a reconciled position finalizing while its ledger remains open", "carry_position_rail_finalizing_test_missing");
+  requireText("webCarryPositionRailTest", "keeps an open rebalancing ledger accruing", "carry_position_rail_accruing_test_missing");
+  requireText("webCarryPositionRailTest", "never calls an impossible active finalized ledger real net", "carry_position_rail_impossible_state_test_missing");
   requireText("webTradeWorkspace", 'label="Funding / 1h"', "hyperliquid_funding_interval_label_incorrect");
   requireText("webCarryChart", "createCarryLiveMarketStream", "carry_live_stream_missing");
   requireText("webCarryChart", "createCarryPatchPublisher", "carry_ui_publication_coalescer_missing");
