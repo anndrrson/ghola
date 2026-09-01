@@ -128,6 +128,30 @@ test("rejects restart recovery without explicit original-order broadcast proof",
   );
 });
 
+test("rejects Hyperliquid reconciliation that claims its read-only query broadcast the order", () => {
+  const cases = [
+    [
+      "original_order_broadcast_proven: exactOriginalOrderObserved",
+      "original_order_broadcast_proven: false",
+      /hyperliquid_original_broadcast_proof_missing/,
+    ],
+    [
+      "target_client_order_matched: targetMatched,\n      query_broadcast: false,\n      broadcast_performed: false,\n      original_order_target_matched: exactOriginalOrderObserved,\n      original_order_broadcast_proven: exactOriginalOrderObserved",
+      "target_client_order_matched: targetMatched,\n      query_broadcast: true,\n      broadcast_performed: true,\n      original_order_target_matched: exactOriginalOrderObserved,\n      original_order_broadcast_proven: exactOriginalOrderObserved",
+      /hyperliquid_reconciliation_query_broadcast_boundary_missing/,
+    ],
+  ];
+  for (const [before, after, failure] of cases) {
+    const mutated = mutateSection(
+      sources.hyperliquid,
+      "async function reconcileHyperliquidExecution({",
+      "function unresolvedHyperliquidReconciliation(",
+      (section) => section.replace(before, after),
+    );
+    assert.throws(() => checkCarryExecutionContract({ ...sources, hyperliquid: mutated }), failure);
+  }
+});
+
 test("rejects Lighter recovery that coerces a missing venue order id into proof", () => {
   assert.throws(
     () => checkCarryExecutionContract({

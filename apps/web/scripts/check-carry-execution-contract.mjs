@@ -2215,6 +2215,12 @@ export function checkCarryExecutionContract(sources) {
   requireText("webConnectorReconciliationTest", "rejects a cross-venue proof for an exact Lighter reconciliation", "web_reconcile_cross_venue_negative_test_missing");
   requireText("aster", "original_order_broadcast_proven: exactOriginalOrderObserved", "aster_original_broadcast_proof_missing");
   requireText("lighter", "original_order_broadcast_proven: exactOriginalOrderObserved", "lighter_original_broadcast_proof_missing");
+  requireText("hyperliquid", "original_order_broadcast_proven: exactOriginalOrderObserved", "hyperliquid_original_broadcast_proof_missing");
+  requireSectionText(
+    hyperliquidReconciliation,
+    "target_client_order_matched: targetMatched,\n      query_broadcast: false,\n      broadcast_performed: false,\n      original_order_target_matched: exactOriginalOrderObserved,\n      original_order_broadcast_proven: exactOriginalOrderObserved",
+    "hyperliquid_reconciliation_query_broadcast_boundary_missing",
+  );
   requireText("lighter", "unsignedDecimalIntegerText(order?.order_index) !== null", "lighter_original_order_id_proof_missing");
   requireText("lighterTest", "assert.equal(zeroWithoutOrderIndex.final_proof.original_order_target_matched, false)", "lighter_missing_order_id_negative_test_missing");
   requireText("orderBroadcastProof", "proof.original_order_broadcast_proven === true", "carry_recovery_original_broadcast_gate_missing");

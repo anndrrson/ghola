@@ -116,6 +116,10 @@ print("checked")
     assert.equal(result.status, "outcome_unknown");
     assert.equal(result.final_proof.final_venue_execution_proven, false);
     assert.equal(result.final_proof.target_client_order_matched, false);
+    assert.equal(result.final_proof.query_broadcast, false);
+    assert.equal(result.final_proof.broadcast_performed, false);
+    assert.equal(result.final_proof.original_order_target_matched, false);
+    assert.equal(result.final_proof.original_order_broadcast_proven, false);
     assert.equal(result.final_proof.final_fill_proven, false);
   });
 
@@ -156,6 +160,7 @@ print("checked")
 
     assert.equal(submissions, 1);
     assert.equal(result.status, "reconciled");
+    assert.equal(result.final_proof.broadcast_performed, true);
     assert.equal(result.final_proof.final_fill_proven, true);
     assert.equal(result.final_proof.target_fill_set_complete, true);
     assert.equal(result.final_proof.fill_times_authoritative, true);
@@ -179,6 +184,10 @@ print("checked")
     assert.equal(result.status, "reconciled");
     assert.equal(result.final_proof.final_venue_execution_proven, true);
     assert.equal(result.final_proof.target_client_order_matched, true);
+    assert.equal(result.final_proof.query_broadcast, false);
+    assert.equal(result.final_proof.broadcast_performed, false);
+    assert.equal(result.final_proof.original_order_target_matched, true);
+    assert.equal(result.final_proof.original_order_broadcast_proven, true);
     assert.equal(result.final_proof.final_fill_proven, true);
     assert.equal(result.final_proof.target_fill_set_complete, true);
     assert.equal(result.final_proof.cumulative_filled_micro_usdc, 11_000_000);
@@ -501,7 +510,10 @@ print("checked")
 
     assert.equal(result.status, "outcome_unknown");
     assert.equal(result.final_proof.target_client_order_matched, true);
-    assert.equal(result.final_proof.broadcast_performed, true);
+    assert.equal(result.final_proof.query_broadcast, false);
+    assert.equal(result.final_proof.broadcast_performed, false);
+    assert.equal(result.final_proof.original_order_target_matched, true);
+    assert.equal(result.final_proof.original_order_broadcast_proven, true);
     assert.equal(result.final_proof.final_venue_execution_proven, false);
   });
 });

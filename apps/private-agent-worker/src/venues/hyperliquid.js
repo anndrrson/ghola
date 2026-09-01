@@ -384,7 +384,10 @@ async function reconcileHyperliquidExecution({ credential, instruction, fetchImp
         status: "outcome_unknown",
         venue_id: "hyperliquid",
         target_client_order_matched: false,
+        query_broadcast: false,
         broadcast_performed: false,
+        original_order_target_matched: false,
+        original_order_broadcast_proven: false,
         final_venue_execution_proven: false,
         final_fill_proven: false,
         target_fill_set_complete: false,
@@ -433,6 +436,7 @@ async function reconcileHyperliquidExecution({ credential, instruction, fetchImp
     return unresolvedHyperliquidReconciliation({ targetCloid, targetOid, reason: "targetMarketMismatch" });
   }
   const marketBound = Boolean(venueMarket);
+  const exactOriginalOrderObserved = targetMatched && marketBound && Boolean(venueOid);
   let rows = [];
   let fillHistoryComplete = false;
   try {
@@ -514,7 +518,10 @@ async function reconcileHyperliquidExecution({ credential, instruction, fetchImp
       status: terminalExposureProven ? finalFillProven ? "filled" : venueOrderStatus : "outcome_unknown",
       venue_id: "hyperliquid",
       target_client_order_matched: targetMatched,
-      broadcast_performed: true,
+      query_broadcast: false,
+      broadcast_performed: false,
+      original_order_target_matched: exactOriginalOrderObserved,
+      original_order_broadcast_proven: exactOriginalOrderObserved,
       final_venue_execution_proven: terminalExposureProven,
       final_fill_proven: finalFillProven,
       target_fill_set_complete: targetFillSetComplete,
@@ -548,7 +555,10 @@ function unresolvedHyperliquidReconciliation({ targetCloid, targetOid, reason })
       status: "outcome_unknown",
       venue_id: "hyperliquid",
       target_client_order_matched: false,
+      query_broadcast: false,
       broadcast_performed: false,
+      original_order_target_matched: false,
+      original_order_broadcast_proven: false,
       final_venue_execution_proven: false,
       final_fill_proven: false,
       target_fill_set_complete: false,
