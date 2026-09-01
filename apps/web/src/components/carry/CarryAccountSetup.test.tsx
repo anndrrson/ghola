@@ -12,6 +12,7 @@ const state = vi.hoisted(() => ({
   userId: "carry-user",
 }));
 const api = vi.hoisted(() => ({
+  loginPerps: vi.fn(),
   getHyperliquidExecutionVaultStatus: vi.fn(),
   getPrivateAgentPassport: vi.fn(),
   fetchPrivateAgentRuntimeStatus: vi.fn(),
@@ -73,7 +74,7 @@ vi.mock("@/lib/perps-turnkey-provider", () => ({
     hasPasskey: true,
     loading: false,
     ensureWalletPair: vi.fn(),
-    login: vi.fn(),
+    login: api.loginPerps,
     logout: vi.fn(),
     createPasskey: vi.fn(),
     replaceWalletPair: vi.fn(),
@@ -151,6 +152,7 @@ describe("CarryAccountSetup", () => {
       account_commitment: "carry:account:test:0001",
       venues: [],
     });
+    api.loginPerps.mockReset().mockResolvedValue(undefined);
     api.getHyperliquidExecutionVaultStatus.mockReset().mockResolvedValue({});
     api.fetchPrivateAgentRuntimeStatus.mockReset().mockResolvedValue({
       selected_provider: "phala",
@@ -312,6 +314,34 @@ describe("CarryAccountSetup", () => {
     expect(setup.searchParams.get("long_venue")).toBe("hyperliquid");
     expect(setup.searchParams.get("short_venue")).toBe("aster");
     expect(setup.searchParams.get("return_to")).toContain("long_venue=hyperliquid&short_venue=aster");
+  });
+
+  it("reauthenticates a connected pair before preserving its exact no-submit return", async () => {
+    const returnTo = "/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=lighter";
+    api.getPrivateAgentPassport.mockResolvedValue({
+      account_commitment: "carry:account:test:0001",
+      venues: [{ venue_id: "lighter", status: "ready", can_read: true, can_trade: true }],
+    });
+    api.getHyperliquidExecutionVaultStatus.mockResolvedValue({ credentials_sealed: true });
+
+    await renderSetup(returnTo);
+    await flush();
+
+    const authenticate = [...container.querySelectorAll("button")]
+      .find((button) => button.textContent?.trim() === "Authenticate secure wallet");
+    expect(authenticate).toBeTruthy();
+    expect([...container.querySelectorAll("a")].some((link) => link.textContent?.trim() === "Verify routes")).toBe(false);
+    await act(async () => {
+      authenticate?.click();
+      await flush();
+    });
+    expect(api.loginPerps).toHaveBeenCalledTimes(1);
+
+    state.perpsAuthenticated = true;
+    await renderSetup(returnTo);
+    const verify = [...container.querySelectorAll("a")]
+      .find((link) => link.textContent?.trim() === "Verify routes");
+    expect(verify?.getAttribute("href")).toBe(`${returnTo}&carry_check=no-submit`);
   });
 
   it("does not surface stale external activation outside the selected pair", async () => {

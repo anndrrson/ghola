@@ -43,6 +43,9 @@ const api = vi.hoisted(() => ({
 }));
 const perps = vi.hoisted(() => ({
   authenticated: true,
+  configured: true,
+  loading: false,
+  login: vi.fn(),
   ensureWalletPair: vi.fn(),
   signCarryRiskMandate: vi.fn(),
   signCarryCollateralReview: vi.fn(),
@@ -56,6 +59,9 @@ vi.mock("@/lib/private-account-client", () => api);
 vi.mock("@/lib/perps-turnkey-provider", () => ({
   usePerpsTurnkey: () => ({
     authenticated: perps.authenticated,
+    configured: perps.configured,
+    loading: perps.loading,
+    login: perps.login,
     ensureWalletPair: perps.ensureWalletPair,
     signCarryRiskMandate: perps.signCarryRiskMandate,
     signCarryCollateralReview: perps.signCarryCollateralReview,
@@ -90,10 +96,13 @@ describe("CarryTerminalBuilder", () => {
     api.preflightCarryExecutionMatrix.mockReset();
     api.preflightCarryPair.mockReset();
     api.requestCarryPositionExit.mockReset();
+    perps.login.mockReset().mockResolvedValue(undefined);
     perps.ensureWalletPair.mockReset();
     perps.signCarryRiskMandate.mockReset();
     perps.signCarryCollateralReview.mockReset();
     perps.authenticated = true;
+    perps.configured = true;
+    perps.loading = false;
     api.getPrivateAgentPassport.mockResolvedValue({ owner_commitment: "owner:carry:web:test:0001" });
     api.getCarryExecutionReadiness.mockResolvedValue({
       ready: false,
@@ -954,7 +963,7 @@ describe("CarryTerminalBuilder", () => {
     expect(setup.searchParams.get("return_to")).toContain("long_venue=hyperliquid&short_venue=lighter");
   });
 
-  it("routes a fresh owner to unified setup instead of failing position creation", async () => {
+  it("reauthenticates in place without discarding a fresh actionable proof", async () => {
     perps.authenticated = false;
     api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
     api.preflightCarryPair.mockResolvedValue({
@@ -969,13 +978,16 @@ describe("CarryTerminalBuilder", () => {
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
     await click("NO-SUBMIT CHECK");
 
-    const link = [...container.querySelectorAll("a")].find((item) => item.textContent === "FINISH CARRY SETUP");
-    const setup = new URL(link?.getAttribute("href") || "", "https://ghola.local");
-    expect(setup.searchParams.get("setup")).toBe("carry");
-    expect(setup.searchParams.get("long_venue")).toBe("hyperliquid");
-    expect(setup.searchParams.get("short_venue")).toBe("lighter");
+    expect(container.textContent).toContain("AUTHENTICATE TO SIGN");
+    expect(container.textContent).not.toContain("FINISH CARRY SETUP");
+    await click("AUTHENTICATE TO SIGN");
+    expect(perps.login).toHaveBeenCalledTimes(1);
+
+    perps.authenticated = true;
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    expect(container.textContent).toContain("SAVE POSITION");
+    expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledTimes(1);
     expect(api.createCarryPosition).not.toHaveBeenCalled();
-    expect(container.textContent).not.toContain("NOT SAVED");
   });
 
   it("turns wallet provisioning failure into a resumable setup action", async () => {

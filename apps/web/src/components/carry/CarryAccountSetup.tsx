@@ -1018,6 +1018,8 @@ export function CarryAccountSetup({
     connectionProgress,
     scopedActivationNeeded ? [scopedActivationNeeded.venue] : [],
   );
+  const routeVerificationAuthenticationRequired = nextSetupAction.kind === "verify_routes"
+    && !perpsTurnkey.authenticated;
   const venueStates: Readonly<Record<CarryExecutionVenue, VenueState>> = {
     hyperliquid,
     aster,
@@ -1069,6 +1071,24 @@ export function CarryAccountSetup({
     if (nextSetupAction.venueId === "hyperliquid") setShowHyperliquidSetup(true);
     else if (nextSetupAction.venueId === "aster") void beginAsterProgrammatic();
     else if (nextSetupAction.venueId === "lighter") void beginLighterProgrammatic();
+  }
+  async function authenticateForRouteVerification() {
+    if (
+      !accountReadinessReady ||
+      nextSetupAction.kind !== "verify_routes" ||
+      perpsTurnkey.authenticated ||
+      perpsTurnkey.loading ||
+      !perpsTurnkey.configured
+    ) return;
+    setWorking(true);
+    setError(null);
+    try {
+      await perpsTurnkey.login();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Secure wallet authentication failed.");
+    } finally {
+      setWorking(false);
+    }
   }
   return (
     <main className="min-h-screen bg-[#06080c] px-4 pb-20 pt-24 text-[#eef1f8] sm:px-6">
@@ -1144,10 +1164,12 @@ export function CarryAccountSetup({
               <div className="min-w-0">
                 <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#718097]">Execution access</p>
                 <p className="mt-1 text-sm font-semibold text-[#d8eaff]">{nextSetupAction.kind === "verify_routes"
-                  ? "Connections complete"
+                  ? routeVerificationAuthenticationRequired ? "Authenticate secure wallet" : "Connections complete"
                   : `Next: ${venueLabel(nextSetupAction.venueId)}`}</p>
                 <p className="mt-1 text-xs leading-5 text-[#8f9aae]">{nextSetupAction.kind === "verify_routes"
-                  ? routeVerificationEnabled
+                  ? routeVerificationAuthenticationRequired
+                    ? "Your venue connections are complete. Reauthenticate the owner wallet before the no-submit check."
+                    : routeVerificationEnabled
                     ? pairScoped ? "Run one no-submit check across this pair." : "Run one no-submit check across every venue and pair."
                     : workerPlatform?.message || "Checking the platform before route verification."
                   : `${connectionProgress.missingVenueIds.length} connection${connectionProgress.missingVenueIds.length === 1 ? "" : "s"} remain. Ghola resumes the next safe step.`}</p>
@@ -1156,7 +1178,20 @@ export function CarryAccountSetup({
                 <p className={`font-mono text-sm font-semibold ${connectionProgress.ready ? "text-[#72dfb2]" : "text-[#d9bd74]"}`}>
                   {connectionProgress.connectedCount}/{connectionProgress.requiredCount}
                 </p>
-                {nextSetupAction.kind === "verify_routes" && routeVerificationEnabled ? (
+                {nextSetupAction.kind === "verify_routes" && routeVerificationAuthenticationRequired ? (
+                  <button
+                    type="button"
+                    disabled={working || perpsTurnkey.loading || !perpsTurnkey.configured}
+                    onClick={() => void authenticateForRouteVerification()}
+                    className="inline-flex h-10 items-center rounded-md bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] disabled:opacity-50"
+                  >
+                    {!perpsTurnkey.configured
+                      ? "Secure wallet unavailable"
+                      : perpsTurnkey.loading
+                        ? "Restoring secure wallet…"
+                        : working ? "Authenticating…" : "Authenticate secure wallet"}
+                  </button>
+                ) : nextSetupAction.kind === "verify_routes" && routeVerificationEnabled ? (
                   <Link href={noSubmitReturnTo} className="inline-flex h-10 items-center rounded-md bg-[#56d6a0] px-4 text-sm font-semibold text-[#06130e]">
                     {nextSetupLabel}
                   </Link>

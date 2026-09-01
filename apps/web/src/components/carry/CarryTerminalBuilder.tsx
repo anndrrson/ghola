@@ -164,7 +164,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const [portfolioValueReport, setPortfolioValueReport] = useState<Record<string, unknown> | null>(null);
   const [recordsLoaded, setRecordsLoaded] = useState(false);
   const [recordsLoading, setRecordsLoading] = useState(false);
-  const [busy, setBusy] = useState<"check" | "save" | "enter" | "exit" | "approve" | null>(null);
+  const [busy, setBusy] = useState<"check" | "auth" | "save" | "enter" | "exit" | "approve" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [lastCheckReceipt, setLastCheckReceipt] = useState<string | null>(null);
   const [noSubmitAuthRequired, setNoSubmitAuthRequired] = useState(false);
@@ -620,6 +620,19 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     }
   }
 
+  async function authenticateToSign() {
+    if (perpsTurnkey.authenticated || perpsTurnkey.loading || !perpsTurnkey.configured) return;
+    setBusy("auth");
+    setMessage(null);
+    try {
+      await perpsTurnkey.login();
+    } catch {
+      setMessage("AUTHENTICATION NOT COMPLETED · no order submitted");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function enterPosition(record: CarryRecord) {
     setBusy("enter");
     setMessage(null);
@@ -692,7 +705,8 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const useFleetSetup = privateSessionReady && (restoredReadiness || selectedPairReady);
   const connectionHref = useFleetSetup ? fleetSetupHref : pairSetupHref;
   const canSave = routeQualified && actionableProof && creationProofFreshness.fresh;
-  const needsSetupToSave = saveSetupRequired || !perpsTurnkey.authenticated;
+  const needsSetupToSave = saveSetupRequired;
+  const needsAuthenticationToSave = !perpsTurnkey.authenticated;
   const canEnter = routeQualified && current?.position.status === "draft" && supervision.ready;
   const canExit = current ? ["active", "rebalancing", "frozen"].includes(current.position.status) : false;
   const connectionAction = auth.loading
@@ -794,6 +808,12 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
             <Link href={pairSetupHref} className="rounded border border-[#31577a] bg-[#10243a] px-2 py-2 text-center font-mono text-[10px] font-semibold text-[#b7ddff] hover:bg-[#142c46]">
               FINISH CARRY SETUP
             </Link>
+          ) : !current && canSave && needsAuthenticationToSave ? (
+            <button type="button" disabled={busy !== null || perpsTurnkey.loading || !perpsTurnkey.configured} onClick={() => void authenticateToSign()} className="rounded border border-[#31577a] bg-[#10243a] px-2 py-2 font-mono text-[10px] font-semibold text-[#b7ddff] disabled:opacity-40">
+              {!perpsTurnkey.configured
+                ? "SECURE WALLET UNAVAILABLE"
+                : perpsTurnkey.loading ? "RESTORING SECURE WALLET…" : busy === "auth" ? "AUTHENTICATING…" : "AUTHENTICATE TO SIGN"}
+            </button>
           ) : !current && canSave ? (
             <button type="button" disabled={busy !== null} onClick={() => void savePosition()} className="rounded border border-[#31577a] bg-[#10243a] px-2 py-2 font-mono text-[10px] font-semibold text-[#b7ddff] disabled:opacity-40">
               {busy === "save" ? "SAVING…" : migrationSource ? "SIGN MIGRATION" : proof?.qualification_pilot_ready === true ? "ARM CAPPED PROOF" : "SAVE POSITION"}

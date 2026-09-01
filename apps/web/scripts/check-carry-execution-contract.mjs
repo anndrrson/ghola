@@ -3441,6 +3441,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "long_venue=${encodeURIComponent(candidate.long.venue_id)}", "carry_terminal_pair_setup_binding_missing");
   requireText("webCarryBuilder", "&carry=open&long_venue=${encodeURIComponent(candidate.long.venue_id)}&short_venue=${encodeURIComponent(candidate.short.venue_id)}", "carry_terminal_pair_return_binding_missing");
   requireText("webCarryBuilder", "createCarryPosition", "carry_terminal_position_creation_missing");
+  requireText("webCarryBuilder", "AUTHENTICATE TO SIGN", "carry_terminal_in_place_reauthentication_missing");
+  requireText("webCarryBuilderTest", "reauthenticates in place without discarding a fresh actionable proof", "carry_terminal_in_place_reauthentication_test_missing");
   requireText("webCarryBuilder", "executeCarryPositionEntry", "carry_terminal_entry_missing");
   requireText("webCarryBuilder", "requestCarryPositionExit", "carry_terminal_exit_missing");
   requireText("webCarryBuilder", "ARM CAPPED PROOF", "carry_terminal_qualification_path_missing");
@@ -3576,6 +3578,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("webAccountConnectionsTest", "recovers only an exact distinct execution pair from a terminal return", "carry_setup_pair_return_test_missing");
   requireText("webAccountConnections", "export function carryAccountSetupNextAction", "carry_setup_guided_action_missing");
   requireText("webAccountSetup", "carryAccountSetupNextAction", "carry_setup_guided_action_ui_missing");
+  requireText("webAccountSetup", "authenticateForRouteVerification", "carry_setup_route_reauthentication_missing");
+  requireText("webAccountSetupTest", "reauthenticates a connected pair before preserving its exact no-submit return", "carry_setup_route_reauthentication_test_missing");
   requireText("webAccountConnectionsTest", "keeps one guided next action while skipping a venue blocked on external activation", "carry_setup_blocked_venue_resume_test_missing");
   requireText("webAccountConnectionsTest", "turns the same guided action into route verification only after all venues connect", "carry_setup_guided_completion_test_missing");
   requireText("webAccountSetup", "buildAsterExecutionVaultBundle", "aster_account_setup_missing");
