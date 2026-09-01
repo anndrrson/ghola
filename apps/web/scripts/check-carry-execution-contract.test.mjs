@@ -119,9 +119,9 @@ test("rejects restart recovery without explicit original-order broadcast proof",
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
-      multiLegOrchestrator: sources.multiLegOrchestrator.replace(
-        "proof?.original_order_broadcast_proven === true",
-        "proof?.original_order_broadcast_proven !== false",
+      orderBroadcastProof: sources.orderBroadcastProof.replace(
+        "proof.original_order_broadcast_proven === true",
+        "proof.original_order_broadcast_proven !== false",
       ),
     }),
     /carry_recovery_original_broadcast_gate_missing/,
@@ -1002,9 +1002,9 @@ test("rejects recovery that treats no-submit evidence as a live fill", () => {
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
-      multiLegOrchestrator: sources.multiLegOrchestrator.replaceAll(
-        "proof?.broadcast_performed === true",
-        "proof?.broadcast_performed !== null",
+      orderBroadcastProof: sources.orderBroadcastProof.replace(
+        "proof.broadcast_performed === true",
+        "proof.broadcast_performed !== null",
       ),
     }),
     /carry_recovery_live_broadcast_gate_missing/,

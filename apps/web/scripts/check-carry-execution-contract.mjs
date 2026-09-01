@@ -53,6 +53,8 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   recordScan: "apps/private-agent-worker/src/execution/carry-record-scan.js",
   loopSupervisor: "apps/private-agent-worker/src/execution/carry-loop-supervisor.js",
   executor: "apps/private-agent-worker/src/execution/carry-executor.js",
+  orderBroadcastProof: "apps/private-agent-worker/src/execution/order-broadcast-proof.js",
+  orderBroadcastProofTest: "apps/private-agent-worker/test/order-broadcast-proof.test.js",
   arbitrage: "apps/private-agent-worker/src/execution/arbitrage.js",
   multiLegOrchestrator: "apps/private-agent-worker/src/execution/multi-leg-orchestrator.js",
   privateExecution: "apps/private-agent-worker/src/execution/private-execution.js",
@@ -901,7 +903,7 @@ export function checkCarryExecutionContract(sources) {
     'new Set(["hyperliquid", "lighter", "aster"])',
     "carry_recovery_venue_registry_duplicated",
   );
-  requireText("multiLegOrchestrator", "proof?.broadcast_performed === true", "carry_recovery_live_broadcast_gate_missing");
+  requireText("multiLegOrchestrator", "hasProvenLiveOrderBroadcast(proof)", "carry_recovery_live_broadcast_gate_missing");
   requireText("multiLegOrchestratorTest", "target_client_order_matched: childReconcileAttempts > 1", "carry_recovery_exact_target_test_missing");
   requireText("multiLegOrchestratorTest", "reconciles a partial reduce-only completion for every ordered execution pair", "carry_partial_completion_pair_matrix_missing");
   requireCount("multiLegOrchestrator", "await verifyRecoveryOrderNoSubmit({", 2, "carry_recovery_exact_no_submit_gate_missing");
@@ -1812,7 +1814,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("executor", "carry_execution_receipt_venue_mismatch", "carry_live_receipt_venue_binding_missing");
   requireText("executor", "carry_execution_receipt_terminal_proof_unverified", "carry_live_receipt_terminal_proof_missing");
   requireText("executor", "carry_exact_entry_receipt_unverified", "carry_exit_entry_receipt_revalidation_missing");
-  requireText("executor", 'proof.broadcast_performed !== true', "carry_live_receipt_broadcast_proof_missing");
+  requireText("executor", "!hasProvenLiveOrderBroadcast(proof)", "carry_live_receipt_broadcast_proof_missing");
   requireText("lifecycleTest", "live Carry receipts are bound to the exact venue, account, work order, and terminal venue proof", "carry_live_terminal_receipt_test_missing");
   requireText("executor", "item.account_commitment !== expectedAccountCommitment", "carry_exit_account_lineage_gate_missing");
   requireText("reconciliation", "assessCarryFlatReconciliation", "carry_exact_flat_reconciliation_gate_missing");
@@ -2214,7 +2216,13 @@ export function checkCarryExecutionContract(sources) {
   requireText("lighter", "original_order_broadcast_proven: exactOriginalOrderObserved", "lighter_original_broadcast_proof_missing");
   requireText("lighter", "unsignedDecimalIntegerText(order?.order_index) !== null", "lighter_original_order_id_proof_missing");
   requireText("lighterTest", "assert.equal(zeroWithoutOrderIndex.final_proof.original_order_target_matched, false)", "lighter_missing_order_id_negative_test_missing");
-  requireText("multiLegOrchestrator", "proof?.original_order_broadcast_proven === true", "carry_recovery_original_broadcast_gate_missing");
+  requireText("orderBroadcastProof", "proof.original_order_broadcast_proven === true", "carry_recovery_original_broadcast_gate_missing");
+  requireText("orderBroadcastProof", "proof.broadcast_performed === true", "carry_recovery_live_broadcast_gate_missing");
+  requireText("orderBroadcastProof", "proof.broadcast_performed === false", "carry_recovery_reconciled_broadcast_boundary_missing");
+  requireText("orderBroadcastProof", "proof.query_broadcast === false", "carry_recovery_read_only_query_gate_missing");
+  requireText("orderBroadcastProof", "proof.original_order_target_matched === true", "carry_recovery_original_target_gate_missing");
+  requireText("orderBroadcastProofTest", "rejects unbound or mutating reconciliation claims", "carry_recovery_broadcast_predicate_negative_test_missing");
+  requireCount("qualification", "hasProvenLiveOrderBroadcast(", 2, "carry_qualification_broadcast_proof_missing");
   requireText("multiLegOrchestratorTest", "restart rejects a read-only query without explicit original-order broadcast proof", "carry_recovery_query_only_negative_test_missing");
   requireText("aster", "submission_outcome_ambiguous", "aster_ambiguity_freeze_missing");
   requireText("lighter", "submission_ambiguous", "lighter_ambiguity_freeze_missing");
@@ -2616,7 +2624,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterialTest", "legacyLoaded.proof", "carry_lifecycle_proof_three_arg_compatibility_test_missing");
   requireText("releaseMaterialTest", "legacyPositionLoaded.proof", "carry_lifecycle_proof_three_arg_position_compatibility_test_missing");
   requireText("releaseMaterial", "final_flat_zero_orders: true", "carry_lifecycle_proof_flat_gate_missing");
-  requireText("releaseMaterial", "proof?.broadcast_performed !== true", "carry_lifecycle_proof_live_broadcast_gate_missing");
+  requireText("releaseMaterial", "!hasProvenLiveOrderBroadcast(proof)", "carry_lifecycle_proof_live_broadcast_gate_missing");
   requireText("releaseMaterial", "proof.evidence_commitment === lifecycleProofCommitment(proof)", "carry_lifecycle_proof_integrity_gate_missing");
   requireText("releaseMaterial", "safeLifecycleValueAttribution(proof.value_attribution)", "carry_lifecycle_proof_value_attribution_gate_missing");
   requireText("releaseMaterial", "normalizeCarryLifecycleValueAttribution", "carry_lifecycle_proof_shared_value_attribution_missing");
