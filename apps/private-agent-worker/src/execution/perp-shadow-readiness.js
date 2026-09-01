@@ -408,6 +408,14 @@ function verifySnapshot(snapshot, { venueId, asset, nowMs, maxAgeMs, failures })
     && snapshot.depth_bids[0]?.price_e8 >= snapshot.depth_asks[0]?.price_e8) {
     failures.push(`liquidity_depth_crossed:${prefix}`);
   }
+  if (Array.isArray(snapshot.depth_bids) && snapshot.depth_bids.length > 0
+    && snapshot.best_bid_e8 !== snapshot.depth_bids[0]?.price_e8) {
+    failures.push(`liquidity_bbo_depth_mismatch:${prefix}:bid`);
+  }
+  if (Array.isArray(snapshot.depth_asks) && snapshot.depth_asks.length > 0
+    && snapshot.best_ask_e8 !== snapshot.depth_asks[0]?.price_e8) {
+    failures.push(`liquidity_bbo_depth_mismatch:${prefix}:ask`);
+  }
   if (!(snapshot.funding_interval_ms > 0) || snapshot.funding_interval_ms > 24 * 60 * 60 * 1_000) {
     failures.push(`funding_interval_invalid:${prefix}`);
   }

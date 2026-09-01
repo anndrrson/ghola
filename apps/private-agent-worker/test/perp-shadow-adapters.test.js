@@ -457,6 +457,39 @@ test("normalizes Aster V3 exchange, premium, and book schemas", () => {
   assert.ok(snapshot.quality_flags.includes("fees_venue_base_schedule"));
 });
 
+test("binds Aster BBO to the fresh depth source instead of an inconsistent ticker", () => {
+  const symbol = asterSymbol("BTCUSDT", "BTC", "USDT");
+  symbol.requiredMarginPercent = "5.0";
+  symbol.maintMarginPercent = "2.5";
+  symbol.liquidationFee = "0.025";
+  const [snapshot] = parseAsterShadow({
+    exchange_info: { symbols: [symbol] },
+    premium_index: [asterPremium("BTCUSDT", NOW)],
+    book_tickers: [{ symbol: "BTCUSDT", bidPrice: "59000", askPrice: "61000", time: NOW - 60_000 }],
+    funding_info: [{ symbol: "BTCUSDT", fundingIntervalHours: 8 }],
+    depth_books: { BTCUSDT: { E: NOW, bids: [["59999", "1"]], asks: [["60002", "1"]] } },
+    now_ms: NOW,
+  });
+
+  assert.equal(snapshot.best_bid_e8, 5_999_900_000_000);
+  assert.equal(snapshot.best_ask_e8, 6_000_200_000_000);
+  assert.equal(snapshot.status, "ready");
+});
+
+test("quarantines unverified liquidity instead of exposing a ready routing snapshot", () => {
+  const [snapshot] = parseAsterShadow({
+    exchange_info: { symbols: [asterSymbol("BTCUSDT", "BTC", "USDT")] },
+    premium_index: [asterPremium("BTCUSDT", NOW)],
+    book_tickers: [asterBook("BTCUSDT", NOW)],
+    funding_info: [{ symbol: "BTCUSDT", fundingIntervalHours: 8 }],
+    depth_books: { BTCUSDT: { E: NOW, bids: [], asks: [] } },
+    now_ms: NOW,
+  });
+
+  assert.equal(snapshot.status, "quarantined");
+  assert.ok(snapshot.quality_flags.includes("liquidity_unverifiable"));
+});
+
 test("keeps unsupported Aster quote fee schedules degraded", () => {
   const symbol = asterSymbol("BTCUSDC", "BTC", "USDC");
   symbol.quoteAsset = "USDC";
@@ -558,6 +591,8 @@ test("normalizes edgeX funding interval and contract metadata", () => {
         fundingRateIntervalMin: "240",
         bestBidE8: 5_999_900_000_000,
         bestAskE8: 6_000_200_000_000,
+        depthBids: [{ price: "59999", size: "1" }],
+        depthAsks: [{ price: "60002", size: "1" }],
       }],
     },
     contracts: [{
@@ -614,6 +649,8 @@ test("keeps fresh edgeX responses live without trusting a stale funding source",
     fundingRateIntervalMin: "240",
     bestBidE8: 5_999_900_000_000,
     bestAskE8: 6_000_200_000_000,
+    depthBids: [{ price: "59999", size: "1" }],
+    depthAsks: [{ price: "60002", size: "1" }],
   };
   const [fresh] = parseEdgeXShadow({ funding: { data: [row], responseTime: String(NOW) }, contracts: [contract], now_ms: NOW });
   assert.equal(fresh.stale, false);

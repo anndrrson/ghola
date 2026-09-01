@@ -360,6 +360,8 @@ export function parseLighterShadow({ details, funding, market_stats: marketStats
     const fundingRow = fundingByMarket.get(String(row.market_id ?? row.market_index)) || {};
     const stats = statsByMarket.get(String(row.market_id ?? row.market_index)) || {};
     const book = booksByMarket.get(String(row.market_id ?? row.market_index)) || {};
+    const depthBid = bestBookPrice(book.bids, "bid");
+    const depthAsk = bestBookPrice(book.asks, "ask");
     const orderbookObservedAtMs = timestamp(book.timestamp) || null;
     const marketObservedAtMs = statsByMarket.size > 0
       ? marketStatsObservedAtMs
@@ -377,8 +379,8 @@ export function parseLighterShadow({ details, funding, market_stats: marketStats
       fee_settlement_asset: "USDC",
       mark_price_e8: priceE8(stats.mark_price ?? row.mark_price ?? row.last_trade_price ?? row.market_price),
       index_price_e8: priceE8(stats.index_price ?? row.index_price),
-      best_bid_e8: priceE8(stats.best_bid_price ?? row.best_bid ?? row.bid_price ?? book.bids?.[0]?.price),
-      best_ask_e8: priceE8(stats.best_ask_price ?? row.best_ask ?? row.ask_price ?? book.asks?.[0]?.price),
+      best_bid_e8: depthBid ?? priceE8(stats.best_bid_price ?? row.best_bid ?? row.bid_price),
+      best_ask_e8: depthAsk ?? priceE8(stats.best_ask_price ?? row.best_ask ?? row.ask_price),
       depth_bids: normalizedDepthLevels(book.bids, "bid"),
       depth_asks: normalizedDepthLevels(book.asks, "ask"),
       funding_rate_e12_per_interval: rateE12(stats.current_funding_rate ?? fundingRow.rate ?? row.funding_rate),
@@ -426,6 +428,8 @@ export function parseAsterShadow({ exchange_info: exchangeInfo, premium_index: p
     const premium = premiums.get(String(row.symbol)) || {};
     const book = books.get(String(row.symbol)) || {};
     const depth = depthBooks?.[row.symbol] || {};
+    const depthBid = bestBookPrice(depth.bids, "bid");
+    const depthAsk = bestBookPrice(depth.asks, "ask");
     const fundingConfig = fundingConfigs.get(String(row.symbol)) || {};
     const filters = new Map((Array.isArray(row.filters) ? row.filters : []).map((item) => [item.filterType, item]));
     const priceFilter = filters.get("PRICE_FILTER") || {};
@@ -445,8 +449,8 @@ export function parseAsterShadow({ exchange_info: exchangeInfo, premium_index: p
       fee_settlement_asset: assetName(row.marginAsset || row.quoteAsset || "USDT"),
       mark_price_e8: priceE8(premium.markPrice),
       index_price_e8: priceE8(premium.indexPrice),
-      best_bid_e8: priceE8(book.bidPrice),
-      best_ask_e8: priceE8(book.askPrice),
+      best_bid_e8: depthBid ?? priceE8(book.bidPrice),
+      best_ask_e8: depthAsk ?? priceE8(book.askPrice),
       depth_bids: normalizedDepthLevels(depth.bids, "bid"),
       depth_asks: normalizedDepthLevels(depth.asks, "ask"),
       funding_rate_e12_per_interval: rateE12(premium.lastFundingRate),
@@ -689,6 +693,7 @@ function shadowSnapshot(value) {
   ];
   const missingFields = fields.filter((field) => value[field] === null);
   const staleSourceNames = staleSources(value);
+  const liquidityUnverifiable = unverifiedLiquidity(value);
   const aggregateMaxAgeMs = Math.max(
     value.max_age_ms,
     ...Object.values(value.source_max_age_ms || {}).filter(Number.isSafeInteger),
@@ -700,7 +705,9 @@ function shadowSnapshot(value) {
     || staleSourceNames.length > 0;
   const criticalMissing = ["mark_price_e8", "index_price_e8", "funding_rate_e12_per_interval", "funding_interval_ms"]
     .some((field) => value[field] === null);
-  const status = stale || criticalMissing ? "quarantined" : missingFields.length > 0 ? "degraded" : "ready";
+  const status = stale || criticalMissing || liquidityUnverifiable
+    ? "quarantined"
+    : missingFields.length > 0 ? "degraded" : "ready";
   return Object.freeze({
     version: 1,
     venue_id: value.venue_id,
@@ -754,6 +761,7 @@ function shadowSnapshot(value) {
     quality_flags: Object.freeze([...new Set([
       ...(value.quality_flags || []),
       ...((value.depth_bids?.length && value.depth_asks?.length) ? ["public_depth_ladder"] : ["depth_ladder_missing"]),
+      ...(liquidityUnverifiable ? ["liquidity_unverifiable"] : []),
       ...staleSourceNames.map((source) => `source_stale:${source}`),
     ])]),
     executable: false,
@@ -1181,6 +1189,23 @@ function staleSources(value) {
     const maxAgeMs = value.source_max_age_ms?.[source] ?? value.max_age_ms;
     return observationFresh(observedAt, value.now_ms, maxAgeMs) ? [] : [source];
   });
+}
+
+function unverifiedLiquidity(value) {
+  const bids = Array.isArray(value.depth_bids) ? value.depth_bids : [];
+  const asks = Array.isArray(value.depth_asks) ? value.depth_asks : [];
+  const topBid = bids[0]?.price_e8;
+  const topAsk = asks[0]?.price_e8;
+  return !Number.isSafeInteger(value.best_bid_e8)
+    || !Number.isSafeInteger(value.best_ask_e8)
+    || !Number.isSafeInteger(topBid)
+    || !Number.isSafeInteger(topAsk)
+    || value.best_bid_e8 <= 0
+    || value.best_ask_e8 <= value.best_bid_e8
+    || topBid <= 0
+    || topAsk <= topBid
+    || value.best_bid_e8 !== topBid
+    || value.best_ask_e8 !== topAsk;
 }
 
 function observationFresh(observedAt, nowMs, maxAgeMs) {

@@ -147,6 +147,17 @@ test("rejects normalized shadow proof without valid two-sided liquidity depth", 
   assert.ok(result.failures.includes("liquidity_depth_crossed:edgex:BTC"));
 });
 
+test("rejects BBO evidence detached from the committed depth ladder", () => {
+  const rows = fixture();
+  rows[2].snapshots[0].best_bid_e8 -= 1_000;
+  rows[4].snapshots[0].best_ask_e8 += 1_000;
+
+  const result = verifyCarryShadowSet(rows, { now_ms: NOW });
+
+  assert.ok(result.failures.includes("liquidity_bbo_depth_mismatch:aster:BTC:bid"));
+  assert.ok(result.failures.includes("liquidity_bbo_depth_mismatch:dydx:BTC:ask"));
+});
+
 test("rejects stale component feeds hidden behind a fresh aggregate timestamp", () => {
   const rows = fixture();
   rows[0].snapshots[0].source_observed_at_ms.funding = NOW - 30_001;
