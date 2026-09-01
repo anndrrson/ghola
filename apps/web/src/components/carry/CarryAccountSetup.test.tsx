@@ -296,6 +296,24 @@ describe("CarryAccountSetup", () => {
     expect(continueButton?.getAttribute("aria-expanded")).toBe("true");
   });
 
+  it("requires an exact pair before starting fresh setup and keeps Lighter optional", async () => {
+    state.search = "";
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open");
+
+    expect(container.textContent).toContain("Start with two venues—not the whole fleet.");
+    expect(container.textContent).toContain("Lighter stays optional until a selected route needs it.");
+    expect(container.textContent).toContain("Access · choose pair");
+    expect(container.querySelector('[aria-label="Carry execution fleet"]')).toBeNull();
+    expect(container.querySelector('[aria-controls="carry-hyperliquid-setup"]')).toBeNull();
+    const proofLink = [...container.querySelectorAll<HTMLAnchorElement>("a")]
+      .find((anchor) => anchor.textContent?.trim() === "Start capital-free proof");
+    expect(proofLink).toBeTruthy();
+    const setup = new URL(proofLink?.href || "", "https://ghola.local");
+    expect(setup.searchParams.get("long_venue")).toBe("hyperliquid");
+    expect(setup.searchParams.get("short_venue")).toBe("aster");
+    expect(setup.searchParams.get("return_to")).toContain("long_venue=hyperliquid&short_venue=aster");
+  });
+
   it("does not surface stale external activation outside the selected pair", async () => {
     state.recovery = {
       account_commitment: "carry:account:test:0001",

@@ -49,6 +49,7 @@ import {
   carryAccountConnections,
   carryExecutionPairFromReturnTo,
   carryNoSubmitVerificationHref,
+  carryPairSetupHref,
   carryAccountSetupNextAction,
   carryWorkerPlatformGate,
   type CarryWorkerPlatformGate,
@@ -221,6 +222,10 @@ export function CarryAccountSetup({
     : null;
   const hyperliquidMarket = hyperliquidMarketFromTradeReturn(safeReturnTo) || "BTC";
   const noSubmitReturnTo = carryNoSubmitVerificationHref(safeReturnTo);
+  const firstProofSetupHref = carryPairSetupHref(safeReturnTo, {
+    longVenueId: "hyperliquid",
+    shortVenueId: "aster",
+  });
   const asterWalletRepairRequested = asterWalletRepairRequired ||
     (!asterWalletRepairCompleted && searchParams.get("repair") === "aster-wallet");
   const setupReturnTo = `/account?${new URLSearchParams({
@@ -1076,10 +1081,10 @@ export function CarryAccountSetup({
         <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 border-y border-[#172234] py-3 font-mono text-[11px] uppercase tracking-[0.1em] text-[#718097]">
           <span className="text-[#72dfb2]">Markets · explore now</span>
           <span>Access · {accountReadinessReady
-            ? `${connectionProgress.connectedCount}/${connectionProgress.requiredCount}`
+            ? pairScoped ? `${connectionProgress.connectedCount}/${connectionProgress.requiredCount}` : "choose pair"
             : accountReadinessState === "failed" ? "check failed" : "checking"}</span>
           <span>Proof · {accountReadinessReady
-            ? connectionProgress.ready ? "next" : "after access"
+            ? !pairScoped ? "choose pair" : connectionProgress.ready ? "next" : "after access"
             : "blocked"}</span>
           <span className={workerPlatform?.status === "ready" ? "text-[#72dfb2]" : workerPlatform ? "text-[#ee9da8]" : ""}>
             Platform · {workerPlatform?.status === "ready" ? "ready" : workerPlatform ? "repair" : "checking"}
@@ -1117,7 +1122,23 @@ export function CarryAccountSetup({
           </div>
         )}
 
-        {auth.authenticated && accountReadinessReady && (
+        {auth.authenticated && accountReadinessReady && !pairScoped && (
+          <section data-carry-pair-choice className="mt-8 rounded-xl border border-[#315277] bg-[#0b1624] p-5">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8fcaff]">First readiness proof</p>
+            <h2 className="mt-2 text-xl font-semibold text-[#eef1f8]">Start with two venues—not the whole fleet.</h2>
+            <p className="mt-2 text-sm leading-6 text-[#8f9aae]">Connect Hyperliquid and Aster, then run one exact no-submit check. The check moves no funds and sends no order. Lighter stays optional until a selected route needs it.</p>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <Link href={firstProofSetupHref} className="inline-flex h-10 items-center rounded-md bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d]">
+                Start capital-free proof
+              </Link>
+              <Link href={safeReturnTo} className="text-sm font-semibold text-[#8fcaff] hover:text-white">
+                Choose a live route instead
+              </Link>
+            </div>
+          </section>
+        )}
+
+        {auth.authenticated && accountReadinessReady && pairScoped && (
           <div className="mt-8 space-y-3">
             <div className="rounded-xl border border-[#315277] bg-[#0b1624] p-4 sm:flex sm:items-center sm:justify-between sm:gap-5">
               <div className="min-w-0">

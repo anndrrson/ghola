@@ -132,6 +132,26 @@ export function carryNoSubmitVerificationHref(returnTo: string): string {
   return `${url.pathname}?${url.searchParams.toString()}`;
 }
 
+export function carryPairSetupHref(
+  returnTo: string,
+  pair: CarryExecutionPair,
+): string {
+  if (pair.longVenueId === pair.shortVenueId) throw new Error("carry_execution_pair_invalid");
+  const fallback = "/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open";
+  const target = returnTo === "/carry" ? fallback : returnTo.startsWith("/trade?") ? returnTo : fallback;
+  const terminal = new URL(target, "https://ghola.local");
+  terminal.searchParams.set("carry", "open");
+  terminal.searchParams.set("long_venue", pair.longVenueId);
+  terminal.searchParams.set("short_venue", pair.shortVenueId);
+  const terminalReturn = `${terminal.pathname}?${terminal.searchParams.toString()}`;
+  return `/account?${new URLSearchParams({
+    setup: "carry",
+    long_venue: pair.longVenueId,
+    short_venue: pair.shortVenueId,
+    return_to: terminalReturn,
+  }).toString()}`;
+}
+
 export function carryExecutionPairFromReturnTo(returnTo: string): CarryExecutionPair | null {
   if (!returnTo.startsWith("/trade?")) return null;
   try {

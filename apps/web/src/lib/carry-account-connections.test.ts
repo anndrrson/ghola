@@ -5,6 +5,7 @@ import {
   carryAccountConnections,
   carryExecutionPairFromReturnTo,
   carryNoSubmitVerificationHref,
+  carryPairSetupHref,
   carryAccountSetupNextAction,
   carryWorkerPlatformGate,
 } from "./carry-account-connections";
@@ -134,6 +135,23 @@ describe("Carry account connections", () => {
     expect(carryNoSubmitVerificationHref("https://evil.example/trade")).toBe(
       "/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&carry_check=no-submit",
     );
+  });
+
+  it("binds a fresh setup choice to the same exact terminal pair", () => {
+    const href = carryPairSetupHref(
+      "/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open",
+      { longVenueId: "hyperliquid", shortVenueId: "aster" },
+    );
+    const setup = new URL(href, "https://ghola.local");
+    expect(setup.searchParams.get("long_venue")).toBe("hyperliquid");
+    expect(setup.searchParams.get("short_venue")).toBe("aster");
+    expect(setup.searchParams.get("return_to")).toBe(
+      "/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=aster",
+    );
+    expect(carryExecutionPairFromReturnTo(setup.searchParams.get("return_to") || "")).toEqual({
+      longVenueId: "hyperliquid",
+      shortVenueId: "aster",
+    });
   });
 
   it("preserves venue access while distinguishing a worker authorization mismatch", () => {
