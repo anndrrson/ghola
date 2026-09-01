@@ -1393,6 +1393,24 @@ test("refuses to promote a lifecycle without live broadcast proof on every leg",
   assert.equal(result.error, "carry_release_entry_terminal_proof_missing:hyperliquid");
 });
 
+test("accepts exact original-order reconciliation after an ambiguous submit response", async () => {
+  const fixture = await stateFixture();
+  Object.assign(fixture.receipts["work:carry:entry:aster"].receipt.final_proof, {
+    broadcast_performed: false,
+    query_broadcast: false,
+    original_order_target_matched: true,
+    original_order_broadcast_proven: true,
+  });
+  const result = await buildCompletedCarryReleaseMaterial({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.record.position.position_id,
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(result.ok, true);
+});
+
 test("refuses aggregate-only final reconciliation evidence", async () => {
   const fixture = await stateFixture();
   delete fixture.record.final_reconciliation_evidence.venues;

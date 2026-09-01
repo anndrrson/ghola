@@ -22,6 +22,7 @@ import {
 import { readCarryShadowQualification } from "./carry-shadow-qualification.js";
 import { loadCarryTransferRouteEvidence } from "./carry-transfer-routes.js";
 import { verifyCashflowValuationEvidence } from "./carry-stablecoin-conversion.js";
+import { hasProvenLiveOrderBroadcast } from "./order-broadcast-proof.js";
 import { liquidationDistanceSourceForVenue } from "../venues/liquidation-distance.js";
 import { finalizeCarryLifecycleEventRecord } from "../state/private-state.js";
 
@@ -1258,7 +1259,7 @@ async function materialLegs({ state, saga, record, phase }) {
     if (attempt?.submit_count !== 1 || attempt?.ambiguity_retry_count !== 0) {
       return denied(`carry_release_${phase}_submission_count_unproven:${sagaLeg.venue_id}`);
     }
-    if (proof?.broadcast_performed !== true
+    if (!hasProvenLiveOrderBroadcast(proof)
       || proof?.target_client_order_matched !== true
       || proof?.final_venue_execution_proven !== true
       || !fillTiming.ok

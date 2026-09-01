@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { venueAdapterCapability } from "@ghola/execution-core";
 import { hasExactCarryFlatReconciliation } from "./carry-reconciliation.js";
+import { hasProvenLiveOrderBroadcast } from "./order-broadcast-proof.js";
 
 const DEFAULT_MAX_AGE_MS = 90 * 86_400_000;
 
@@ -107,7 +108,7 @@ export async function recordCompletedCarryVenueQualifications({ state, position_
       },
       entry_reconciliation: {
         account_commitment: expectedAccountCommitment,
-        live_order_broadcast: entryProof.broadcast_performed === true,
+        live_order_broadcast: hasProvenLiveOrderBroadcast(entryProof),
         target_client_order_matched: entryProof.target_client_order_matched === true,
         final_venue_execution_proven: entryProof.final_venue_execution_proven === true,
         target_fill_set_complete: entryProof.target_fill_set_complete === true,
@@ -116,7 +117,7 @@ export async function recordCompletedCarryVenueQualifications({ state, position_
       },
       exit_recovery: {
         account_commitment: expectedAccountCommitment,
-        live_order_broadcast: exitProof.broadcast_performed === true,
+        live_order_broadcast: hasProvenLiveOrderBroadcast(exitProof),
         reduce_only: exit.context?.instruction?.order?.reduce_only === true,
         exact_base_quantity: exactBase,
         final_venue_execution_proven: exitProof.final_venue_execution_proven === true,

@@ -29,6 +29,7 @@ import { buildCarryPrivatePrimeReadiness } from "./carry-private-prime-readiness
 import { verifyCashflowValuationEvidence } from "./carry-stablecoin-conversion.js";
 import { loadCarryTransferRouteEvidence } from "./carry-transfer-routes.js";
 import { recordCompletedCarryLifecycleProof } from "./carry-release-evidence.js";
+import { hasProvenLiveOrderBroadcast } from "./order-broadcast-proof.js";
 import {
   applyDurableMultiLegEvent,
   createDurableMultiLegSaga,
@@ -3186,7 +3187,7 @@ export function assessCarryTerminalExecutionReceipt({
   if (!venueBound) reasons.push("carry_execution_receipt_venue_mismatch");
   if (!proof || typeof proof !== "object" || Array.isArray(proof)
     || proof.target_client_order_matched !== true
-    || proof.broadcast_performed !== true
+    || !hasProvenLiveOrderBroadcast(proof)
     || proof.final_venue_execution_proven !== true
     || proof.target_fill_set_complete !== true) {
     reasons.push("carry_execution_receipt_terminal_proof_unverified");

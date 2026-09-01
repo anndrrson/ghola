@@ -79,6 +79,27 @@ test("Hyperliquid protocol binding substitutes for its intentionally omitted ven
   }).verified, true);
 });
 
+test("accepts an exact read-only reconciliation after an ambiguous submit response", () => {
+  const args = {
+    venue_id: "aster",
+    work_order_commitment: "work:carry:receipt:aster:ambiguous:0001",
+    execution: { account_commitment: "account:aster:receipt:ambiguous:0001" },
+  };
+  const receipt = qualificationReceipt(args);
+  Object.assign(receipt.final_proof, {
+    broadcast_performed: false,
+    query_broadcast: false,
+    original_order_target_matched: true,
+    original_order_broadcast_proven: true,
+  });
+  assert.equal(assessCarryTerminalExecutionReceipt({
+    receipt,
+    venue_id: args.venue_id,
+    work_order_commitment: args.work_order_commitment,
+    account_commitment: args.execution.account_commitment,
+  }).verified, true);
+});
+
 test("automatic exit retries a failed restart audit before any execution sweep", async (t) => {
   let storageReady = false;
   let listCalls = 0;
