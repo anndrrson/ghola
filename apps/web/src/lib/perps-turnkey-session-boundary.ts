@@ -1,4 +1,166 @@
 export type PerpsTurnkeyBindings = Record<string, string>;
+export type PerpsTurnkeyAcceptedSessions = Record<
+  string,
+  { organizationId: string; sessionKey: string }
+>;
+
+export interface PerpsTurnkeyPendingBinding {
+  userId: string;
+  attemptId: string;
+  createdAt: number;
+  expiresAt: number;
+}
+
+export interface PerpsTurnkeySessionSnapshot {
+  sessionKey: string;
+  sessionType: "SESSION_TYPE_READ_WRITE";
+  userId: string;
+  organizationId: string;
+  expiry: number;
+  token: string;
+  publicKey: string;
+}
+
+interface PerpsTurnkeySessionReader {
+  getActiveSessionKey: () => Promise<string | undefined>;
+  getSession: (params: { sessionKey: string }) => Promise<{
+    sessionType: string;
+    userId: string;
+    organizationId: string;
+    expiry: number;
+    token: string;
+    publicKey?: string;
+  } | undefined>;
+}
+
+const PENDING_BINDING_TTL_MS = 5 * 60_000;
+export const PERPS_TURNKEY_SESSION_EXPIRY_SKEW_MS = 5_000;
+
+export async function resolveExactActivePerpsTurnkeySession(
+  reader: PerpsTurnkeySessionReader,
+  now = Date.now(),
+): Promise<PerpsTurnkeySessionSnapshot | null> {
+  const sessionKey = await reader.getActiveSessionKey();
+  if (!sessionKey) return null;
+  const session = await reader.getSession({ sessionKey });
+  const confirmedSessionKey = await reader.getActiveSessionKey();
+  if (
+    !session ||
+    confirmedSessionKey !== sessionKey ||
+    session.sessionType !== "SESSION_TYPE_READ_WRITE" ||
+    !session.userId ||
+    !session.organizationId ||
+    !session.token ||
+    !session.publicKey ||
+    !Number.isSafeInteger(session.expiry) ||
+    session.expiry * 1_000 <= now + PERPS_TURNKEY_SESSION_EXPIRY_SKEW_MS
+  ) {
+    return null;
+  }
+  return {
+    sessionKey,
+    sessionType: "SESSION_TYPE_READ_WRITE",
+    userId: session.userId,
+    organizationId: session.organizationId,
+    expiry: session.expiry,
+    token: session.token,
+    publicKey: session.publicKey,
+  };
+}
+
+export function perpsTurnkeyPendingBindingValue(
+  userId: string,
+  attemptId: string,
+  now = Date.now(),
+): string {
+  return JSON.stringify({
+    userId,
+    attemptId,
+    createdAt: now,
+    expiresAt: now + PENDING_BINDING_TTL_MS,
+  });
+}
+
+export function parsePerpsTurnkeyPendingBinding(
+  value: string | null,
+  now = Date.now(),
+): PerpsTurnkeyPendingBinding | null {
+  if (!value) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const { userId, attemptId, createdAt, expiresAt } = parsed as {
+      userId?: unknown;
+      attemptId?: unknown;
+      createdAt?: unknown;
+      expiresAt?: unknown;
+    };
+    if (typeof userId !== "string" || userId.length === 0) return null;
+    if (typeof attemptId !== "string" || !/^ghola-perps-[0-9a-f-]{36}$/.test(attemptId)) {
+      return null;
+    }
+    if (typeof createdAt !== "number" || !Number.isFinite(createdAt)) return null;
+    if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt)) return null;
+    if (createdAt > now || expiresAt - createdAt !== PENDING_BINDING_TTL_MS) return null;
+    return expiresAt > now ? { userId, attemptId, createdAt, expiresAt } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function samePerpsTurnkeyPendingBinding(
+  left: PerpsTurnkeyPendingBinding | null,
+  right: PerpsTurnkeyPendingBinding | null,
+): boolean {
+  return Boolean(
+    left &&
+    right &&
+    left.userId === right.userId &&
+    left.attemptId === right.attemptId &&
+    left.createdAt === right.createdAt &&
+    left.expiresAt === right.expiresAt,
+  );
+}
+
+export function mergePerpsTurnkeyBinding(
+  bindings: PerpsTurnkeyBindings,
+  binding: { userId: string; organizationId: string },
+): PerpsTurnkeyBindings | null {
+  const existingOrganization = bindings[binding.userId];
+  if (existingOrganization && existingOrganization !== binding.organizationId) return null;
+  const existingUser = Object.entries(bindings).find(
+    ([, organizationId]) => organizationId === binding.organizationId,
+  )?.[0];
+  if (existingUser && existingUser !== binding.userId) return null;
+  return { ...bindings, [binding.userId]: binding.organizationId };
+}
+
+export function parsePerpsTurnkeyAcceptedSessions(
+  value: string | null,
+): PerpsTurnkeyAcceptedSessions {
+  if (!value) return {};
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [
+      string,
+      { organizationId: string; sessionKey: string },
+    ] => {
+      const [userId, candidate] = entry;
+      if (!userId || !candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+        return false;
+      }
+      const { organizationId, sessionKey } = candidate as {
+        organizationId?: unknown;
+        sessionKey?: unknown;
+      };
+      return typeof organizationId === "string" && organizationId.length > 0 &&
+        typeof sessionKey === "string" && /^ghola-perps-[0-9a-f-]{36}$/.test(sessionKey);
+    }));
+  } catch {
+    return {};
+  }
+}
 
 export function isPerpsTurnkeyClientLoading(
   clientState: "loading" | "ready" | "error" | undefined,
@@ -40,11 +202,17 @@ export function decidePerpsTurnkeyBoundary(input: {
   thumperUserId: string | null;
   turnkeyAuthenticated: boolean;
   turnkeyOrganizationId: string | null;
+  activeTurnkeySessionKey: string | null;
+  acceptedTurnkeySessionKey: string | null;
   bindings: PerpsTurnkeyBindings;
-  pendingBindingUserId: string | null;
-  freshAuthenticationOrganizationId: string | null;
+  pendingBinding: PerpsTurnkeyPendingBinding | null;
   requireFreshAuthentication: boolean;
 }): PerpsTurnkeyBoundaryDecision {
+  const pendingBindingUserId = input.pendingBinding?.userId || null;
+  const freshAuthenticationMatches = Boolean(
+    input.pendingBinding &&
+    input.activeTurnkeySessionKey === input.pendingBinding.attemptId,
+  );
   if (input.thumperLoading) {
     return { kind: "loading", ready: false, clearPending: false };
   }
@@ -61,7 +229,7 @@ export function decidePerpsTurnkeyBoundary(input: {
     return {
       kind: "require_turnkey_auth",
       ready: false,
-      clearPending: input.pendingBindingUserId !== null,
+      clearPending: pendingBindingUserId !== null,
     };
   }
 
@@ -70,8 +238,8 @@ export function decidePerpsTurnkeyBoundary(input: {
       kind: "require_turnkey_auth",
       ready: false,
       clearPending:
-        input.pendingBindingUserId !== null &&
-        input.pendingBindingUserId !== input.thumperUserId,
+        pendingBindingUserId !== null &&
+        pendingBindingUserId !== input.thumperUserId,
     };
   }
 
@@ -86,6 +254,14 @@ export function decidePerpsTurnkeyBoundary(input: {
 
   const expectedOrganizationId = input.bindings[input.thumperUserId];
   if (expectedOrganizationId) {
+    if (pendingBindingUserId && pendingBindingUserId !== input.thumperUserId) {
+      return {
+        kind: "logout",
+        ready: false,
+        clearPending: true,
+        reason: "thumper_identity_mismatch",
+      };
+    }
     if (expectedOrganizationId !== input.turnkeyOrganizationId) {
       return {
         kind: "logout",
@@ -94,8 +270,17 @@ export function decidePerpsTurnkeyBoundary(input: {
         reason: "turnkey_organization_mismatch",
       };
     }
-    if (input.requireFreshAuthentication) {
-      if (input.pendingBindingUserId !== input.thumperUserId) {
+    const sharedFreshAuthenticationPending =
+      pendingBindingUserId === input.thumperUserId;
+    const acceptedSessionMatches = Boolean(
+      input.acceptedTurnkeySessionKey &&
+      input.activeTurnkeySessionKey === input.acceptedTurnkeySessionKey,
+    );
+    if (input.requireFreshAuthentication || sharedFreshAuthenticationPending) {
+      if (!sharedFreshAuthenticationPending && acceptedSessionMatches) {
+        return { kind: "ready", ready: true, clearPending: false };
+      }
+      if (!sharedFreshAuthenticationPending) {
         return {
           kind: "logout",
           ready: false,
@@ -103,18 +288,34 @@ export function decidePerpsTurnkeyBoundary(input: {
           reason: "turnkey_session_invalid",
         };
       }
-      if (input.freshAuthenticationOrganizationId !== input.turnkeyOrganizationId) {
+      if (!freshAuthenticationMatches) {
         return {
           kind: "await_fresh_turnkey_auth",
           ready: false,
           clearPending: false,
         };
       }
+      return {
+        kind: "bind",
+        ready: false,
+        clearPending: true,
+        binding: {
+          userId: input.thumperUserId,
+          organizationId: input.turnkeyOrganizationId,
+        },
+      };
+    } else if (!acceptedSessionMatches) {
+      return {
+        kind: "logout",
+        ready: false,
+        clearPending: true,
+        reason: "turnkey_session_invalid",
+      };
     }
     return {
       kind: "ready",
       ready: true,
-      clearPending: input.pendingBindingUserId !== null,
+      clearPending: false,
     };
   }
 
@@ -130,7 +331,7 @@ export function decidePerpsTurnkeyBoundary(input: {
     };
   }
 
-  if (input.pendingBindingUserId !== input.thumperUserId) {
+  if (pendingBindingUserId !== input.thumperUserId) {
     return {
       kind: "logout",
       ready: false,
@@ -139,7 +340,7 @@ export function decidePerpsTurnkeyBoundary(input: {
     };
   }
 
-  if (input.freshAuthenticationOrganizationId !== input.turnkeyOrganizationId) {
+  if (!freshAuthenticationMatches) {
     return {
       kind: "await_fresh_turnkey_auth",
       ready: false,

@@ -176,9 +176,11 @@ describe("private account trading UI derivation", () => {
     expect(perpsTurnkeySource).toContain("withPlatformKey: true");
     expect(perpsTurnkeySource).toContain("emailOtpAuthEnabled: true");
     expect(perpsTurnkeySource).toContain("googleOauthEnabled: false");
-    expect(perpsTurnkeySource).toContain(
-      'await turnkey.handleLogin({ title: "Secure Ghola trading access" });',
-    );
+    expect(perpsTurnkeySource).toContain('title: "Secure Ghola trading access"');
+    expect(perpsTurnkeySource).toContain("sessionKey: attempt.attemptId");
+    expect(perpsTurnkeySource).toContain("resolveExactActivePerpsTurnkeySession");
+    expect(perpsTurnkeySource).toContain('withPerpsTurnkeyStorageLock("pending"');
+    expect(perpsTurnkeySource).toContain('withPerpsTurnkeyStorageLock("identity"');
     expect(perpsTurnkeySource).toContain("TURNKEY_PENDING_BINDING_STORAGE_KEY");
     expect(perpsTurnkeySource).not.toContain("await turnkey.handleGoogleOauth(");
     expect(perpsTurnkeySource).toContain("await turnkey.handleAddPasskey({");

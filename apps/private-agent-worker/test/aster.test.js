@@ -59,6 +59,31 @@ test("signs Aster V3 parameters in ASCII order without exposing the private key"
   assert.equal(observed.url.includes(PRIVATE_KEY.slice(2)), false);
 });
 
+test("classifies Aster's official deposit gate without submitting", async () => {
+  let calls = 0;
+  await assert.rejects(() => signedRequest({
+    credential: credential(),
+    method: "GET",
+    path: "/fapi/v3/account",
+    params: {},
+    now: () => 1_800_000_000_000,
+    fetchImpl: async () => {
+      calls += 1;
+      return jsonResponse({ code: -5050, msg: "This function can only be used after deposit" }, 400);
+    },
+  }), (error) => {
+    assert.equal(error instanceof AsterExecutionError, true);
+    assert.equal(error.status, 409);
+    assert.equal(error.code, "aster_deposit_required");
+    assert.deepEqual(error.details, {
+      venue_code: -5050,
+      venue_message: "This function can only be used after deposit",
+    });
+    return true;
+  });
+  assert.equal(calls, 1);
+});
+
 test("performs authenticated account and order-shape checks without submitting", async () => {
   const calls = [];
   const result = await verifyAsterNoSubmit({

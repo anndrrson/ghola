@@ -83,8 +83,8 @@ export async function verifyTurnkeyOtpInstall(root = process.cwd()) {
 
   const kitRoot = await realpath(path.join(root, "node_modules/@turnkey/react-wallet-kit"));
   const kitPackage = JSON.parse(await readFile(path.join(kitRoot, "package.json"), "utf8"));
-  if (kitPackage.version !== "2.4.2" || kitPackage.dependencies?.["@turnkey/core"] !== "2.8.0") {
-    throw new Error("Turnkey OTP runtime is not pinned to wallet-kit 2.4.2 / core 2.8.0");
+  if (kitPackage.version !== "2.4.3" || kitPackage.dependencies?.["@turnkey/core"] !== "2.8.1") {
+    throw new Error("Turnkey OTP runtime is not pinned to wallet-kit 2.4.3 / core 2.8.1");
   }
   for (const extension of ["js", "mjs"]) {
     const coreSource = await readFile(

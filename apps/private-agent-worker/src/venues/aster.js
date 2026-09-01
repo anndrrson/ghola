@@ -731,6 +731,12 @@ export async function signedRequest({
   }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload?.code < 0) {
+    if (Number(payload?.code) === -5050) {
+      throw new AsterExecutionError("aster_deposit_required", 409, "aster_deposit_required", {
+        venue_code: -5050,
+        venue_message: String(payload?.msg || "").slice(0, 200),
+      });
+    }
     if (ambiguousOnTransportFailure && (response.status === 408 || response.status >= 500)) {
       throw new AsterExecutionError("aster submission outcome is ambiguous", 503, "submission_outcome_ambiguous");
     }

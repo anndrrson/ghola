@@ -1275,8 +1275,8 @@ test("isolates failed pairs without discarding successful no-submit evidence or 
     verifyOrder: async ({ venue_id, work_order_commitment }) => {
       calls.push(work_order_commitment);
       if (venue_id === "aster") {
-        throw Object.assign(new Error("carry_account_not_ready:aster"), {
-          code: "carry_account_not_ready:aster",
+        throw Object.assign(new Error("aster_deposit_required"), {
+          code: "aster_deposit_required",
         });
       }
       return {
@@ -1308,12 +1308,12 @@ test("isolates failed pairs without discarding successful no-submit evidence or 
   assert.equal(result.pairs.length, 3);
   assert.equal(result.pairs.filter((pair) => pair.no_submit_ready).length, 1);
   assert.equal(result.pairs.find((pair) => pair.no_submit_ready).leg_evidence.length, 2);
-  assert.equal(result.pairs.filter((pair) => pair.error_code === "carry_account_not_ready:aster").length, 2);
+  assert.equal(result.pairs.filter((pair) => pair.error_code === "carry_deposit_required:aster").length, 2);
   const failedPairIndexes = result.pairs.flatMap((pair, index) =>
-    pair.error_code === "carry_account_not_ready:aster" ? [index + 1] : []);
+    pair.error_code === "carry_deposit_required:aster" ? [index + 1] : []);
   assert.deepEqual(
     result.failures.filter((failure) => failure.startsWith("pair_check_failed:")),
-    failedPairIndexes.map((index) => `pair_check_failed:${index}:carry_account_not_ready:aster`),
+    failedPairIndexes.map((index) => `pair_check_failed:${index}:carry_deposit_required:aster`),
   );
   assert.equal(calls.length, 6);
   assert.equal(new Set(calls).size, 6);

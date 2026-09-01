@@ -31,7 +31,7 @@ test("installed Turnkey OTP runtime contains the safety patch", async () => {
   const workspaceConfig = await readFile(new URL("../pnpm-workspace.yaml", import.meta.url), "utf8");
   assert.match(vercelConfig, /"installCommand":\s*"ONNXRUNTIME_NODE_INSTALL=skip corepack pnpm@10\.34\.5 install --frozen-lockfile"/);
   assert.match(packageJson, /check-turnkey-otp-install\.mjs/);
-  assert.match(workspaceConfig, /'@turnkey\/react-wallet-kit@2\.4\.2':\s*patches\/@turnkey__react-wallet-kit@2\.4\.2\.patch/);
+  assert.match(workspaceConfig, /'@turnkey\/react-wallet-kit@2\.4\.3':\s*patches\/@turnkey__react-wallet-kit@2\.4\.2\.patch/);
 });
 
 test("release installs preserve the pinned Turnkey patches", async () => {

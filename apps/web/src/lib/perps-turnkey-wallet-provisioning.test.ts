@@ -10,7 +10,7 @@ import {
 
 describe("Turnkey perps wallet provisioning", () => {
   it("keeps wallet creation out of authentication", () => {
-    expect(PERPS_TURNKEY_AUTH_CONFIG).toEqual({ autoRefreshSession: true });
+    expect(PERPS_TURNKEY_AUTH_CONFIG).toEqual({ autoRefreshSession: false });
     expect(PERPS_TURNKEY_AUTH_CONFIG).not.toHaveProperty("createSuborgParams");
   });
 

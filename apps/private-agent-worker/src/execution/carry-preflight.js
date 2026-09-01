@@ -448,6 +448,7 @@ function carryPairFailureCode(reason) {
     : typeof reason?.message === "string"
       ? reason.message
       : "";
+  if (candidate === "aster_deposit_required") return "carry_deposit_required:aster";
   return /^[a-z][a-z0-9:_-]{2,180}$/.test(candidate)
     ? candidate
     : "carry_pair_check_failed";

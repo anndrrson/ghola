@@ -1476,14 +1476,17 @@ export function carryCheckFailure(error: unknown, fallback: string) {
   const code = typeof candidate.message === "string" ? candidate.message : "carry_check_failed";
   const reference = shortReference(typeof candidate.correlationId === "string" ? candidate.correlationId : fallback);
   const venue = CARRY_EXECUTION_VENUES.find((venueId) => code === `${venueId}_account_not_ready`);
+  const asterDepositRequired = code === "aster_deposit_required" || code === "carry_deposit_required:aster";
   return {
-    label: venue
-      ? `${venueName(venue)} NOT READY`
-      : code === "carry_worker_authorization_misconfigured"
-        ? "AUTH MISMATCH"
-        : code === "carry_worker_unavailable"
-          ? "WORKER UNAVAILABLE"
-          : "CHECK FAILED",
+    label: asterDepositRequired
+      ? "ASTER DEPOSIT REQUIRED"
+      : venue
+        ? `${venueName(venue)} NOT READY`
+        : code === "carry_worker_authorization_misconfigured"
+          ? "AUTH MISMATCH"
+          : code === "carry_worker_unavailable"
+            ? "WORKER UNAVAILABLE"
+            : "CHECK FAILED",
     reference,
   };
 }

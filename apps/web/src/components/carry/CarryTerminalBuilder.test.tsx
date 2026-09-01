@@ -171,6 +171,20 @@ describe("CarryTerminalBuilder", () => {
     });
   });
 
+  it("labels Aster's deposit gate distinctly", () => {
+    expect(carryCheckFailure(
+      new Error("carry_deposit_required:aster"),
+      "ghola-aster-deposit-test",
+    )).toMatchObject({
+      label: "ASTER DEPOSIT REQUIRED",
+      reference: "ASTER-DEPOSI",
+    });
+    expect(carryCheckFailure(
+      new Error("aster_deposit_required"),
+      "ghola-aster-direct-test",
+    ).label).toBe("ASTER DEPOSIT REQUIRED");
+  });
+
   it("uses full-fleet remediation only after the selected pair is already proven", () => {
     const matrix = {
       pairs: [
@@ -677,6 +691,18 @@ describe("CarryTerminalBuilder", () => {
     expect(container.textContent).toContain("NO-SUBMIT RECEIPT");
     expect(container.textContent).toContain("LIGHTER NOT READY");
     expect(container.textContent).toContain("REF LIGHTER-REF-");
+  });
+
+  it("surfaces Aster's deposit gate instead of a generic check failure", async () => {
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
+    api.preflightCarryPair.mockRejectedValue(Object.assign(
+      new Error("aster_deposit_required"),
+      { correlationId: "ghola-aster-deposit-1234" },
+    ));
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    await click("NO-SUBMIT CHECK");
+    expect(container.textContent).toContain("ASTER DEPOSIT REQUIRED");
+    expect(container.textContent).toContain("REF ASTER-DEPOSI");
   });
 
   it("scopes first-time setup to the selected pair and returns to the same terminal route", async () => {

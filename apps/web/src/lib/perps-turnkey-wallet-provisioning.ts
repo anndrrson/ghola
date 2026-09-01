@@ -3,7 +3,9 @@ import type { TurnkeyProviderConfig } from "@turnkey/react-wallet-kit";
 // Authentication creates only the user's Turnkey sub-organization. The wallet is
 // provisioned afterward so a wallet error cannot invalidate a successful login.
 export const PERPS_TURNKEY_AUTH_CONFIG = {
-  autoRefreshSession: true,
+  // A failed refresh is ambiguous and WalletKit logs the session out. Ghola
+  // therefore lets the short owner session expire and asks for fresh proof.
+  autoRefreshSession: false,
 } satisfies NonNullable<TurnkeyProviderConfig["auth"]>;
 
 // Email OTP is the portable authentication path across embedded and external

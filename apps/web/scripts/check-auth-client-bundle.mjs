@@ -32,7 +32,7 @@ const requiredGoogleRedirectSources = [
   {
     file: "pnpm-workspace.yaml",
     patterns: [
-      { label: "Turnkey OTP patched dependency declaration", pattern: /'@turnkey\/react-wallet-kit@2\.4\.2':\s*patches\/@turnkey__react-wallet-kit@2\.4\.2\.patch/ },
+      { label: "Turnkey OTP patched dependency declaration", pattern: /'@turnkey\/react-wallet-kit@2\.4\.3':\s*patches\/@turnkey__react-wallet-kit@2\.4\.2\.patch/ },
     ],
   },
   {
@@ -45,6 +45,10 @@ const requiredGoogleRedirectSources = [
     file: "src/lib/perps-turnkey-provider.tsx",
     patterns: [
       { label: "platform-only Ghola passkey configuration", pattern: /withPlatformKey:\s*true/ },
+      { label: "attempt-bound Turnkey session key", pattern: /sessionKey:\s*attempt\.attemptId/ },
+      { label: "exact active Turnkey session resolution", pattern: /resolveExactActivePerpsTurnkeySession/ },
+      { label: "atomic pending-to-identity commit", pattern: /withPerpsTurnkeyStorageLock\(["']pending["'][\s\S]*?withPerpsTurnkeyStorageLock\(["']identity["']/ },
+      { label: "targeted Turnkey logout", pattern: /turnkey\.logout\(\{\s*sessionKey/ },
     ],
   },
   {
