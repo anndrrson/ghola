@@ -102,49 +102,53 @@ export async function preflightCarryPair({
   ];
 
   const evidence = await Promise.all(legs.map(async (leg) => {
-    const access = venueAccess(body, leg.venue_id);
-    const instruction = orderInstruction(leg, notionalUsd, {
-      phase,
-      exact_base_size: body.exit_base_size_by_venue?.[leg.venue_id],
-    });
-    const workOrderCommitment = `${body.work_order_commitment}_${leg.venue_id}`;
-    const execution = executionFromAccess(access);
-    const receipt = await verifyOrder({
-      venue_id: leg.venue_id,
-      operation_class: "limit_order",
-      work_order_commitment: workOrderCommitment,
-      policy_commitment: access.policy_commitment,
-      session_policy: {
-        market_allowlist: [instruction.order.market],
-        max_notional_bucket: notionalBucket(notionalUsd),
-        max_order_count: 1,
-        kill_switch: false,
-      },
-      instruction,
-      execution,
-      recipient,
-      state,
-    });
-    if (phase === "exit") assertExactExitOrderShape({ receipt, instruction, venueId: leg.venue_id });
-    if (receipt?.account_commitment !== access.account_commitment) {
-      throw carryError(`carry_account_verification_mismatch:${leg.venue_id}`, 403);
+    try {
+      const access = venueAccess(body, leg.venue_id);
+      const instruction = orderInstruction(leg, notionalUsd, {
+        phase,
+        exact_base_size: body.exit_base_size_by_venue?.[leg.venue_id],
+      });
+      const workOrderCommitment = `${body.work_order_commitment}_${leg.venue_id}`;
+      const execution = executionFromAccess(access);
+      const receipt = await verifyOrder({
+        venue_id: leg.venue_id,
+        operation_class: "limit_order",
+        work_order_commitment: workOrderCommitment,
+        policy_commitment: access.policy_commitment,
+        session_policy: {
+          market_allowlist: [instruction.order.market],
+          max_notional_bucket: notionalBucket(notionalUsd),
+          max_order_count: 1,
+          kill_switch: false,
+        },
+        instruction,
+        execution,
+        recipient,
+        state,
+      });
+      if (phase === "exit") assertExactExitOrderShape({ receipt, instruction, venueId: leg.venue_id });
+      if (receipt?.account_commitment !== access.account_commitment) {
+        throw carryError(`carry_account_verification_mismatch:${leg.venue_id}`, 403);
+      }
+      let account = receipt.account || null;
+      let accountSnapshot = null;
+      if (leg.venue_id === "hyperliquid") {
+        [accountSnapshot, account] = await Promise.all([
+          readHyperliquidSnapshot({ body: execution, recipient, state }),
+          readHyperliquidCarryMetrics({ body: execution, recipient, state }),
+        ]);
+      }
+      return {
+        ...leg,
+        receipt,
+        account,
+        account_snapshot: accountSnapshot,
+        account_checked_at_ms: observedAt,
+        account_commitment: access.account_commitment,
+      };
+    } catch (error) {
+      throw bindCarryFailureVenue(error, leg.venue_id);
     }
-    let account = receipt.account || null;
-    let accountSnapshot = null;
-    if (leg.venue_id === "hyperliquid") {
-      [accountSnapshot, account] = await Promise.all([
-        readHyperliquidSnapshot({ body: execution, recipient, state }),
-        readHyperliquidCarryMetrics({ body: execution, recipient, state }),
-      ]);
-    }
-    return {
-      ...leg,
-      receipt,
-      account,
-      account_snapshot: accountSnapshot,
-      account_checked_at_ms: observedAt,
-      account_commitment: access.account_commitment,
-    };
   }));
 
   const fundingPersistence = await observeCarryFundingPersistence({
@@ -449,9 +453,22 @@ function carryPairFailureCode(reason) {
       ? reason.message
       : "";
   if (candidate === "aster_deposit_required") return "carry_deposit_required:aster";
-  return /^[a-z][a-z0-9:_-]{2,180}$/.test(candidate)
+  const code = /^[a-z][a-z0-9:_-]{2,180}$/.test(candidate)
     ? candidate
     : "carry_pair_check_failed";
+  const venueId = String(reason?.carry_venue_id || "");
+  if (!isCarryExecutionVenue(venueId)
+    || code.split(":").includes(venueId)
+    || code.startsWith(`${venueId}_`)) return code;
+  return `${code}:${venueId}`;
+}
+
+function bindCarryFailureVenue(reason, venueId) {
+  const wrapped = new Error(typeof reason?.message === "string" ? reason.message : "carry_pair_check_failed");
+  wrapped.code = typeof reason?.code === "string" ? reason.code : "carry_pair_check_failed";
+  wrapped.status = Number.isSafeInteger(reason?.status) ? reason.status : 409;
+  wrapped.carry_venue_id = venueId;
+  return wrapped;
 }
 
 function carryPairUnreadyCode(result) {

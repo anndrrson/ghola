@@ -87,6 +87,35 @@ test("never replaces prior evidence when verification fails", async () => {
   assert.equal(await readFile(outputPath, "utf8"), "existing\n");
 });
 
+test("never persists a matrix response containing credential material", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ghola-no-submit-secret-"));
+  const requestPath = join(directory, "request.json");
+  const responsePath = join(directory, "response.json");
+  const outputPath = join(directory, "proof.json");
+  await Promise.all([
+    writeFile(requestPath, JSON.stringify(request())),
+    writeFile(responsePath, JSON.stringify({
+      ...response(),
+      debug: { encrypted_execution_vault: { ciphertext: "must-never-be-durable" } },
+    })),
+    writeFile(outputPath, "existing\n"),
+  ]);
+  let verifyCalls = 0;
+  await assert.rejects(() => assembleCarryNoSubmitEvidenceFile({
+    requestPath,
+    responsePath,
+    previewUrl: "https://preview.vercel.app",
+    webCommitSha: "a".repeat(40),
+    workerImageDigest: `sha256:${"b".repeat(64)}`,
+    outputPath,
+  }, {
+    attestSourceTree: () => SOURCE_TREE,
+    verify: () => { verifyCalls += 1; return { ok: true }; },
+  }), /carry_no_submit_assembly_response_contains_credential_material/);
+  assert.equal(verifyCalls, 0);
+  assert.equal(await readFile(outputPath, "utf8"), "existing\n");
+});
+
 test("parses only the exact deterministic assembly inputs", () => {
   assert.deepEqual(parseCarryNoSubmitAssemblyArgs([
     "--request", "request.json",

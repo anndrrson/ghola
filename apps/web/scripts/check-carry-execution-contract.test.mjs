@@ -697,6 +697,29 @@ test("rejects a no-submit assembler that can persist sealed venue access", () =>
   );
 });
 
+test("rejects no-submit proof paths that can persist credential-bearing responses", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      noSubmitEvidenceVerifier: sources.noSubmitEvidenceVerifier.replace(
+        "!containsCarryNoSubmitCredentialMaterial(response)",
+        "true",
+      ),
+    }),
+    /carry_no_submit_independent_secret_gate_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      noSubmitEvidenceAssembler: sources.noSubmitEvidenceAssembler.replace(
+        "containsCarryNoSubmitCredentialMaterial(response)",
+        "false",
+      ),
+    }),
+    /carry_no_submit_assembler_response_secret_gate_missing/,
+  );
+});
+
 test("rejects a Lighter runner that calls an API absent from the pinned SDK", () => {
   assert.throws(
     () => checkCarryExecutionContract({

@@ -92,6 +92,7 @@ export function verifyCarryNoSubmitEvidence(evidence, {
   fail(response.no_submit_ready === true, "no_submit_matrix_unready");
   fail(response.transaction_broadcast === false, "no_submit_matrix_broadcast_detected");
   fail(array(response.failures).length === 0, "no_submit_matrix_failures_present");
+  fail(!containsCarryNoSubmitCredentialMaterial(response), "no_submit_credential_material_present");
 
   const readinessMaxAgeMs = checkedAtMs !== null && expiresAtMs !== null
     ? expiresAtMs - checkedAtMs
@@ -240,6 +241,31 @@ function integer(value) {
 
 function nonemptyString(value) {
   return typeof value === "string" && value.length > 0;
+}
+
+export function containsCarryNoSubmitCredentialMaterial(value) {
+  const forbidden = new Set([
+    "access_token",
+    "api_private_key",
+    "api_secret",
+    "api_wallet_private_key",
+    "authorization",
+    "client_secret",
+    "encrypted_execution_vault",
+    "mnemonic",
+    "password",
+    "private_key",
+    "private_key_b64",
+    "refresh_token",
+    "secret_key",
+    "seed_phrase",
+    "session_token",
+    "signing_key",
+  ]);
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some(containsCarryNoSubmitCredentialMaterial);
+  return Object.entries(value)
+    .some(([key, child]) => forbidden.has(key.toLowerCase()) || containsCarryNoSubmitCredentialMaterial(child));
 }
 
 function cliEvidencePath(args) {

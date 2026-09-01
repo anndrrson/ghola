@@ -2544,10 +2544,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("noSubmitEvidenceVerifier", "capturedAtMs >= privatePrimeCheckedAtMs", "carry_no_submit_historical_capture_binding_missing");
   requireText("noSubmitEvidenceVerifierTest", "tampered pair evidence, request context, signer identity, and candidate identity", "carry_no_submit_independent_tamper_test_missing");
   requireText("noSubmitEvidenceVerifierTest", "preserves historical proof after freshness expires", "carry_no_submit_historical_proof_test_missing");
+  requireText("noSubmitEvidenceVerifier", "!containsCarryNoSubmitCredentialMaterial(response)", "carry_no_submit_independent_secret_gate_missing");
+  requireText("noSubmitEvidenceVerifierTest", "no_submit_credential_material_present", "carry_no_submit_independent_secret_test_missing");
   requireText("noSubmitEvidenceAssembler", "sanitizeRequest", "carry_no_submit_assembler_sanitization_missing");
+  requireText("noSubmitEvidenceAssembler", "containsCarryNoSubmitCredentialMaterial(response)", "carry_no_submit_assembler_response_secret_gate_missing");
   requireText("noSubmitEvidenceAssembler", "atomicWriteJson", "carry_no_submit_assembler_atomic_write_missing");
   requireText("noSubmitEvidenceAssembler", "policy_commitment", "carry_no_submit_assembler_policy_binding_missing");
   requireText("noSubmitEvidenceAssemblerTest", "sanitizes sealed access", "carry_no_submit_assembler_secret_redaction_test_missing");
+  requireText("noSubmitEvidenceAssemblerTest", "never persists a matrix response containing credential material", "carry_no_submit_assembler_response_secret_test_missing");
   requireText("serverTest", "matrix.private_prime_authentication.mac_hex", "carry_private_prime_worker_authentication_http_test_missing");
   requireText("serverTest", "matrix.private_prime_authentication.attestation_bound", "carry_private_prime_worker_attested_signature_http_test_missing");
   requireText("transferRoutes", "export async function observePreopenCarryTransferRoutes", "carry_preopen_route_compiler_missing");

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { attestCarryReleaseSourceTree } from "../../../scripts/carry-source-tree-attestation.mjs";
 import { CARRY_RELEASE_FILES } from "./check-carry-execution-contract.mjs";
 import {
+  containsCarryNoSubmitCredentialMaterial,
   DEFAULT_CARRY_NO_SUBMIT_EVIDENCE_PATH,
   verifyCarryNoSubmitEvidence,
 } from "./verify-carry-no-submit-evidence.mjs";
@@ -72,6 +73,9 @@ export async function assembleCarryNoSubmitEvidenceFile({
   });
   const request = sanitizeRequest(await readJson(resolvedRequest, read, "request"));
   const response = await readJson(resolvedResponse, read, "response");
+  if (containsCarryNoSubmitCredentialMaterial(response)) {
+    throw new Error("carry_no_submit_assembly_response_contains_credential_material");
+  }
   const capturedAtMs = response?.private_prime_readiness?.checked_at_ms;
   if (!Number.isSafeInteger(capturedAtMs) || capturedAtMs <= 0) {
     throw new Error("carry_no_submit_assembly_capture_time_missing");

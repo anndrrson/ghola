@@ -87,6 +87,13 @@ test("rejects tampered pair evidence, request context, signer identity, and cand
     () => verifyCarryNoSubmitEvidence(sourceTreeTampered, expectations()),
     /no_submit_source_tree_digest_mismatch/,
   );
+
+  const credentialLeak = structuredClone(await evidence());
+  credentialLeak.response.debug = { api_secret: "must-never-be-durable" };
+  assert.throws(
+    () => verifyCarryNoSubmitEvidence(credentialLeak, expectations()),
+    /no_submit_credential_material_present/,
+  );
 });
 
 test("preserves historical proof after freshness expires without claiming current readiness", async () => {
