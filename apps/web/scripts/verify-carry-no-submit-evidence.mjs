@@ -88,6 +88,8 @@ export function verifyCarryNoSubmitEvidence(evidence, {
   fail(nonemptyString(request.owner_commitment), "no_submit_owner_missing");
   fail(/^[A-Z0-9]{2,16}$/.test(String(request.asset || "")), "no_submit_asset_invalid");
   fail(nonemptyString(request.work_order_commitment), "no_submit_work_order_missing");
+  fail(readinessEvidence.work_order_commitment === request.work_order_commitment,
+    "no_submit_readiness_work_order_mismatch");
   fail(response.mode === "carry_execution_no_submit_matrix", "no_submit_matrix_mode_invalid");
   fail(response.no_submit_ready === true, "no_submit_matrix_unready");
   fail(response.transaction_broadcast === false, "no_submit_matrix_broadcast_detected");

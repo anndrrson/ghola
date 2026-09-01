@@ -260,6 +260,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("proofRunbook", "independently recover the owner signature", "carry_proof_runbook_independent_verification_missing");
   requireText("proofRunbook", "carry_execution_no_submit_matrix", "carry_proof_runbook_three_venue_matrix_missing");
   requireText("proofRunbook", "verify:carry-no-submit-evidence", "carry_proof_runbook_no_submit_verifier_missing");
+  requireText("proofRunbook", "binds the matrix work-order commitment to the exact saved request", "carry_proof_runbook_work_order_binding_missing");
   requireText("proofRunbook", "Capital-free development witness", "carry_shadow_development_witness_runbook_missing");
   requireText("proofRunbook", "never substitutes for image-bound qualification", "carry_shadow_development_witness_boundary_missing");
   requireText("sourceTreeAttestation", "ghola-carry-release-source-tree-v1", "carry_source_tree_attestation_domain_missing");
@@ -2569,6 +2570,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("noSubmitEvidenceVerifier", "attestedSignatureValid", "carry_no_submit_independent_signature_verifier_missing");
   requireText("noSubmitEvidenceVerifier", "expected_signer_public_keys_b64", "carry_no_submit_independent_signer_pin_missing");
   requireText("noSubmitEvidenceVerifier", "capturedAtMs >= privatePrimeCheckedAtMs", "carry_no_submit_historical_capture_binding_missing");
+  requireText("noSubmitEvidenceVerifier", "readinessEvidence.work_order_commitment === request.work_order_commitment", "carry_no_submit_exact_work_order_binding_missing");
   requireText("noSubmitEvidenceVerifierTest", "tampered pair evidence, request context, signer identity, and candidate identity", "carry_no_submit_independent_tamper_test_missing");
   requireText("noSubmitEvidenceVerifierTest", "preserves historical proof after freshness expires", "carry_no_submit_historical_proof_test_missing");
   requireText("noSubmitEvidenceVerifier", "!containsCarryNoSubmitCredentialMaterial(response)", "carry_no_submit_independent_secret_gate_missing");

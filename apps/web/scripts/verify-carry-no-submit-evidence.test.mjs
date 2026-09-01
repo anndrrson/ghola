@@ -96,6 +96,20 @@ test("rejects tampered pair evidence, request context, signer identity, and cand
   );
 });
 
+test("rejects a readiness matrix replayed from another no-submit work order", async () => {
+  const proof = await evidence({
+    readinessWorkOrderCommitment: "carry_matrix_offline_proof_replayed_0001",
+  });
+  assert.notEqual(
+    proof.response.readiness_evidence.work_order_commitment,
+    proof.request.work_order_commitment,
+  );
+  assert.throws(
+    () => verifyCarryNoSubmitEvidence(proof, expectations()),
+    /no_submit_readiness_work_order_mismatch/,
+  );
+});
+
 test("preserves historical proof after freshness expires without claiming current readiness", async () => {
   const verified = verifyCarryNoSubmitEvidence(await evidence(), {
     ...expectations(),
@@ -107,7 +121,7 @@ test("preserves historical proof after freshness expires without claiming curren
   assert.equal(verified.mac_verified, false);
 });
 
-async function evidence() {
+async function evidence({ readinessWorkOrderCommitment = null } = {}) {
   const ownerCommitment = "owner_commitment_matrix_proof_0001";
   const venueAccess = Object.fromEntries(["hyperliquid", "lighter", "aster"].map((venueId) => [
     venueId,
@@ -143,7 +157,10 @@ async function evidence() {
     liquidation_distance_source: null,
   };
   const matrix = await preflightCarryExecutionMatrix({
-    body: request,
+    body: {
+      ...request,
+      work_order_commitment: readinessWorkOrderCommitment || request.work_order_commitment,
+    },
     recipient: {},
     state: {
       putIdempotency: async (key, receipt) => { rows.set(key, { receipt }); return receipt; },

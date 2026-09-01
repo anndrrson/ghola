@@ -38,7 +38,7 @@ GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64=... \
 npm run verify:carry-no-submit-evidence
 ```
 
-The assembler binds the clean release-critical source-tree digest. The verifier independently recomputes it, recomputes the raw readiness result, validates every pair and flat account state at capture time, verifies the pinned attested-worker signature, and reports current freshness separately. The optional worker capability secret adds MAC verification but is never written into the artifact.
+The assembler binds the clean release-critical source-tree digest. The verifier independently recomputes it, binds the matrix work-order commitment to the exact saved request, recomputes the raw readiness result, validates every pair and flat account state at capture time, verifies the pinned attested-worker signature, and reports current freshness separately. The optional worker capability secret adds MAC verification but is never written into the artifact.
 
 ## Lifecycle
 

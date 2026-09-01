@@ -1378,6 +1378,16 @@ test("rejects a no-submit proof detached from raw pair evidence or the pinned wo
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
+      noSubmitEvidenceVerifier: sources.noSubmitEvidenceVerifier.replace(
+        "readinessEvidence.work_order_commitment === request.work_order_commitment",
+        "true",
+      ),
+    }),
+    /carry_no_submit_exact_work_order_binding_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
       noSubmitEvidenceVerifier: sources.noSubmitEvidenceVerifier.replaceAll(
         "expected_signer_public_keys_b64",
         "self_described_signer_keys_b64",
