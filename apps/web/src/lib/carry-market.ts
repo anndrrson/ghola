@@ -587,10 +587,12 @@ export function carryRoutingAdvantageEvidence(
   const route = summary.routes.find((item) => item.asset === selected.candidate.asset);
   const selectedRoute = route?.selected_route;
   const baselineRoute = route?.baseline_route;
+  const queryMatches = Math.round(selected.quote.notionalUsd * 1_000_000) === summary.notional_micro_usdc
+    && Math.round(selected.quote.horizonHours * 3_600_000) === summary.horizon_ms;
+  if (!queryMatches) return indicativeAdvantage(pointInTime);
   const selectedMatches = selectedRoute?.long_venue_id === selected.candidate.long.venue_id
     && selectedRoute?.short_venue_id === selected.candidate.short.venue_id
-    && Math.round(selected.quote.notionalUsd * 1_000_000) === summary.notional_micro_usdc
-    && Math.round(selected.quote.horizonHours * 3_600_000) === summary.horizon_ms;
+    && queryMatches;
   const baselineDistinct = Boolean(baselineRoute
     && selectedRoute
     && CARRY_EXECUTION_VENUES.includes(baselineRoute.long_venue_id as typeof CARRY_EXECUTION_VENUES[number])

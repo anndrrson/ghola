@@ -126,12 +126,20 @@ const CARRY_CREATION_PROOF_FUTURE_TOLERANCE_MS = 5_000;
 export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   candidate,
   routeQualified = true,
+  quoteNotional,
+  quoteHorizonDays,
+  onQuoteNotionalChange,
+  onQuoteHorizonDaysChange,
   autoRunNoSubmit = false,
   onAutoRunNoSubmitStarted,
   onAutoRunNoSubmitResolved,
 }: {
   candidate: CarryCandidate;
   routeQualified?: boolean;
+  quoteNotional?: string;
+  quoteHorizonDays?: string;
+  onQuoteNotionalChange?: (value: string) => void;
+  onQuoteHorizonDaysChange?: (value: string) => void;
   autoRunNoSubmit?: boolean;
   onAutoRunNoSubmitStarted?: () => void;
   onAutoRunNoSubmitResolved?: (outcome: "completed" | "auth_required") => void;
@@ -139,8 +147,12 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const perpsTurnkey = usePerpsTurnkey();
   const auth = useThumperAuth();
   const privateSessionReady = auth.authenticated && !auth.loading;
-  const [notional, setNotional] = useState("11");
-  const [days, setDays] = useState("30");
+  const [localNotional, setLocalNotional] = useState("11");
+  const [localDays, setLocalDays] = useState("30");
+  const notional = quoteNotional ?? localNotional;
+  const days = quoteHorizonDays ?? localDays;
+  const setNotional = onQuoteNotionalChange ?? setLocalNotional;
+  const setDays = onQuoteHorizonDaysChange ?? setLocalDays;
   const [proof, setProof] = useState<Record<string, unknown> | null>(null);
   const [executionMatrix, setExecutionMatrix] = useState<Record<string, unknown> | null>(null);
   const [readiness, setReadiness] = useState<Record<string, unknown> | null>(null);
@@ -307,7 +319,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
       setNotional(exact);
       setProof(null);
     }
-  }, [migrationNotional, notional]);
+  }, [migrationNotional, notional, setNotional]);
   const latestObservation = current?.latest_observation || null;
   const runway = carryRunwaySummary(latestObservation, candidate);
   const carrySignal = carryFundingFlipSummary(current?.position, latestObservation);

@@ -64,7 +64,8 @@ export function CarryChartStrip({
   const [clock, setClock] = useState(() => Date.now());
   const [livePatches, setLivePatches] = useState<CarryLiveMarketPatch[]>([]);
   const [executionRouteKey, setExecutionRouteKey] = useState("");
-  const [implicitExecutionRouteKey, setImplicitExecutionRouteKey] = useState("");
+  const [quoteNotional, setQuoteNotional] = useState("11");
+  const [quoteHorizonDays, setQuoteHorizonDays] = useState("30");
   const [retainedExecution, setRetainedExecution] = useState<PricedCarryCandidate | null>(null);
   const loadedOnceRef = useRef(false);
 
@@ -151,12 +152,13 @@ export function CarryChartStrip({
     data,
     effectiveVenues,
   ), [data, effectiveVenues]);
+  const quoteParameters = carryRouteQuoteParameters(quoteNotional, quoteHorizonDays);
   const pricedCandidates = useMemo(() => rankCarryCandidatesByNet(
     buildPairCandidates(effectiveVenues),
-    10_000,
-    24,
+    quoteParameters.notionalUsd,
+    quoteParameters.horizonHours,
     clock,
-  ), [clock, effectiveVenues]);
+  ), [clock, effectiveVenues, quoteParameters.horizonHours, quoteParameters.notionalUsd]);
   const freshCandidates = useMemo(() => pricedCandidates.filter(({ candidate }) =>
     carryCandidateAgeMs(candidate, clock) <= CARRY_ROUTE_DISPLAY_MAX_AGE_MS
   ), [clock, pricedCandidates]);
@@ -164,7 +166,6 @@ export function CarryChartStrip({
     isCarryExecutionVenue(candidate.long.venue_id) && isCarryExecutionVenue(candidate.short.venue_id)
   ), [freshCandidates]);
   const observedCandidates = useMemo(() => bestRoutePerAsset(freshCandidates), [freshCandidates]);
-  const selectedObserved = observedCandidates.find(({ candidate }) => candidate.asset === asset) || null;
   const assetExecutionCandidates = executionCandidates.filter(({ candidate }) => candidate.asset === asset);
   const preferredExecutionRouteKey = isCarryExecutionVenue(preferredLongVenue)
     && isCarryExecutionVenue(preferredShortVenue)
@@ -174,13 +175,15 @@ export function CarryChartStrip({
   const firstExecutionRouteKey = assetExecutionCandidates[0]
     ? carryRouteKey(assetExecutionCandidates[0].candidate)
     : "";
-  const implicitRouteKeyForAsset = implicitExecutionRouteKey.startsWith(`${asset}:`)
-    ? implicitExecutionRouteKey
+  const explicitRouteKeyForAsset = executionRouteKey.startsWith(`${asset}:`)
+    ? executionRouteKey
     : "";
-  const desiredExecutionRouteKey = executionRouteKey
+  const desiredExecutionRouteKey = explicitRouteKeyForAsset
     || preferredExecutionRouteKey
-    || implicitRouteKeyForAsset
     || firstExecutionRouteKey;
+  const selectedObserved = explicitRouteKeyForAsset
+    ? freshCandidates.find(({ candidate }) => carryRouteKey(candidate) === explicitRouteKeyForAsset) || null
+    : observedCandidates.find(({ candidate }) => candidate.asset === asset) || null;
   const selectedExecution = assetExecutionCandidates.find(({ candidate }) =>
     carryRouteKey(candidate) === desiredExecutionRouteKey
   ) || null;
@@ -190,12 +193,6 @@ export function CarryChartStrip({
     ? retainedExecution
     : null;
   const terminalExecution = selectedExecution || retainedForDesiredRoute;
-  useEffect(() => {
-    if (executionRouteKey || preferredExecutionRouteKey || !firstExecutionRouteKey) return;
-    setImplicitExecutionRouteKey((current) => current.startsWith(`${asset}:`)
-      ? current
-      : firstExecutionRouteKey);
-  }, [asset, executionRouteKey, firstExecutionRouteKey, preferredExecutionRouteKey]);
   useEffect(() => {
     if (!selectedExecution) return;
     setRetainedExecution(selectedExecution);
@@ -231,6 +228,9 @@ export function CarryChartStrip({
       data-net-evidence={committedSelectedNet ? "committed" : "indicative"}
       data-cost-basis={selected?.quote.exactCosts ? "net" : "gross-only"}
       data-route-age-ms={Number.isFinite(selectedAgeMs) ? Math.round(selectedAgeMs) : undefined}
+      data-ranking-notional-usd={quoteParameters.notionalUsd}
+      data-ranking-horizon-hours={quoteParameters.horizonHours}
+      data-selected-route={selected ? carryRouteKey(selected.candidate) : undefined}
     >
       <div className="flex min-h-10 items-center gap-2 px-2.5 sm:px-3">
         <div className="grid min-w-0 flex-1 grid-cols-[7rem_5.5rem_minmax(12rem,1fr)_8.75rem_10rem_6.25rem_6.5rem] items-center gap-x-2 font-mono text-[10px] tabular-nums max-[1023px]:grid-cols-[7rem_5.5rem_minmax(0,1fr)] max-[639px]:grid-cols-[7rem_minmax(0,1fr)]">
@@ -346,7 +346,11 @@ export function CarryChartStrip({
                 <button
                   key={candidate.asset}
                   type="button"
-                  onClick={() => onAssetSelect(candidate.asset)}
+                  aria-label={`Open ${candidate.asset} route long ${venueName(candidate.long.venue_id)} short ${venueName(candidate.short.venue_id)}`}
+                  onClick={() => {
+                    setExecutionRouteKey(carryRouteKey(candidate));
+                    onAssetSelect(candidate.asset);
+                  }}
                   className={candidate.asset === asset
                     ? "rounded border border-[#35618d] bg-[#102033] px-2.5 py-2 text-left"
                     : "rounded border border-[#202a37] bg-[#080b10] px-2.5 py-2 text-left hover:border-[#35465c]"}
@@ -426,12 +430,42 @@ export function CarryChartStrip({
                 <CarryTerminalBuilder
                   candidate={terminalExecution.candidate}
                   routeQualified={Boolean(selectedExecution)}
+                  quoteNotional={quoteNotional}
+                  quoteHorizonDays={quoteHorizonDays}
+                  onQuoteNotionalChange={setQuoteNotional}
+                  onQuoteHorizonDaysChange={setQuoteHorizonDays}
                   autoRunNoSubmit={autoRunNoSubmit}
                   onAutoRunNoSubmitStarted={onAutoRunNoSubmitStarted}
                   onAutoRunNoSubmitResolved={onAutoRunNoSubmitResolved}
                 />
               </div>
             </>
+          ) : selected && !selectedExecution ? (
+            <div
+              className="mt-2 flex min-h-8 items-center justify-between gap-3 rounded border border-[#4b3840] bg-[#160d11] px-2.5 text-[10px] text-[#d6959f]"
+              aria-label="Carry route is not executable"
+            >
+              <span>
+                L {venueName(selected.candidate.long.venue_id).toUpperCase()} / S {venueName(selected.candidate.short.venue_id).toUpperCase()}
+                {" · READ-ONLY ROUTE · EXECUTION NOT AVAILABLE FOR THIS PAIR"}
+              </span>
+              {assetExecutionCandidates.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setExecutionRouteKey(carryRouteKey(assetExecutionCandidates[0].candidate))}
+                  className="shrink-0 rounded border border-[#684b55] px-2 py-1 font-mono font-semibold text-[#efb0ba] hover:bg-white/5"
+                >
+                  USE BEST EXECUTABLE ROUTE
+                </button>
+              ) : (
+                <Link
+                  href={setupHref}
+                  className="shrink-0 rounded border border-[#684b55] px-2 py-1 font-mono font-semibold text-[#efb0ba] hover:bg-white/5"
+                >
+                  SET UP SUPPORTED VENUES
+                </Link>
+              )}
+            </div>
           ) : preferredExecutionRouteKey && assetExecutionCandidates.length > 0 ? (
             <div className="mt-2 flex min-h-8 items-center justify-between gap-3 rounded border border-[#4b3840] bg-[#160d11] px-2.5 text-[10px] text-[#d6959f]">
               <span>SELECTED ROUTE STALE OR UNAVAILABLE · NO CHECK STARTED</span>
@@ -486,6 +520,13 @@ function bestRoutePerAsset(candidates: PricedCarryCandidate[]) {
     if (!best.has(item.candidate.asset)) best.set(item.candidate.asset, item);
   }
   return [...best.values()];
+}
+
+export function carryRouteQuoteParameters(notional: string, horizonDays: string) {
+  return {
+    notionalUsd: Math.max(0, Number(notional) || 0),
+    horizonHours: Math.max(1, Number(horizonDays) || 1) * 24,
+  };
 }
 
 function carryRouteKey(candidate: CarryCandidate) {

@@ -1,13 +1,41 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CarryChartStrip } from "./CarryChartStrip";
+import { CarryChartStrip, carryRouteQuoteParameters } from "./CarryChartStrip";
 import type { CarryShadowResponse, CarryShadowSnapshot } from "@/lib/carry-market";
 
 vi.mock("next/link", () => ({
   default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) => (
     <a href={href} {...props}>{children}</a>
   ),
+}));
+vi.mock("next/dynamic", () => ({
+  default: () => function MockCarryTerminalBuilder({
+    quoteNotional,
+    quoteHorizonDays,
+    onQuoteNotionalChange,
+    onQuoteHorizonDaysChange,
+  }: {
+    quoteNotional?: string;
+    quoteHorizonDays?: string;
+    onQuoteNotionalChange?: (value: string) => void;
+    onQuoteHorizonDaysChange?: (value: string) => void;
+  }) {
+    return (
+      <div aria-label="Carry position builder">
+        <input
+          aria-label="Carry notional per leg"
+          value={quoteNotional}
+          onChange={(event) => onQuoteNotionalChange?.(event.target.value)}
+        />
+        <input
+          aria-label="Carry horizon in days"
+          value={quoteHorizonDays}
+          onChange={(event) => onQuoteHorizonDaysChange?.(event.target.value)}
+        />
+      </div>
+    );
+  },
 }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -41,6 +69,58 @@ describe("CarryChartStrip", () => {
     expect(decodeURIComponent(link?.getAttribute("href") || "")).toContain(
       "/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open",
     );
+  });
+
+  it("uses the builder's actual notional and horizon for route ranking", async () => {
+    await renderShadow(shadowResponse([
+      snapshot("hyperliquid", 10_000_000),
+      snapshot("lighter", 200_000_000, { taker_fee_bps: 100 }),
+      snapshot("aster", 150_000_000),
+    ]), true);
+
+    const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
+    expect(carryRouteQuoteParameters("11", "30")).toEqual({ notionalUsd: 11, horizonHours: 720 });
+    expect(rail?.getAttribute("data-ranking-notional-usd")).toBe("11");
+    expect(rail?.getAttribute("data-ranking-horizon-hours")).toBe("720");
+    expect(rail?.getAttribute("data-selected-route")).toBe("BTC:hyperliquid:lighter");
+
+    await setInput(
+      container.querySelector<HTMLInputElement>('[aria-label="Carry horizon in days"]'),
+      "1",
+    );
+
+    expect(rail?.getAttribute("data-ranking-horizon-hours")).toBe("24");
+    expect(rail?.getAttribute("data-selected-route")).toBe("BTC:hyperliquid:aster");
+  });
+
+  it("opens the exact clicked pair and gives an actionable read-only state", async () => {
+    await renderShadow(shadowResponse([
+      snapshot("hyperliquid", 10_000_000),
+      snapshot("aster", 100_000_000),
+      snapshot("edgex", 200_000_000),
+    ]), true);
+
+    const route = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Open BTC route long Hyperliquid short edgeX"]',
+    );
+    await act(async () => route?.click());
+
+    const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
+    expect(rail?.getAttribute("data-selected-route")).toBe("BTC:hyperliquid:edgex");
+    expect(rail?.getAttribute("data-route-mode")).toBe("shadow");
+    expect(container.querySelector('[aria-label="Carry position builder"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Carry route is not executable"]')?.textContent)
+      .toContain("L HYPERLIQUID / S EDGEX · READ-ONLY ROUTE · EXECUTION NOT AVAILABLE FOR THIS PAIR");
+
+    const fallback = [...container.querySelectorAll<HTMLButtonElement>("button")].find((item) =>
+      item.textContent?.includes("USE BEST EXECUTABLE ROUTE")
+    );
+    await act(async () => {
+      fallback?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(rail?.getAttribute("data-selected-route")).toBe("BTC:hyperliquid:aster");
+    expect(container.querySelector('[aria-label="Carry position builder"]')).toBeTruthy();
   });
 
   it("separates observed gross spread from unavailable net economics", async () => {
@@ -96,6 +176,11 @@ describe("CarryChartStrip", () => {
     body.routing_advantage = routingAdvantageSummary(Date.parse(body.observed_at));
     await renderShadow(body, true);
 
+    expect(container.querySelector('[aria-label="Cross-venue route intelligence"]')
+      ?.getAttribute("data-routing-evidence")).toBe("indicative");
+    await setInput(container.querySelector<HTMLInputElement>('[aria-label="Carry notional per leg"]'), "10000");
+    await setInput(container.querySelector<HTMLInputElement>('[aria-label="Carry horizon in days"]'), "1");
+
     const edge = [...container.querySelectorAll("span")].find((item) => item.textContent?.includes("EDGE✓"));
     expect(container.querySelector('[aria-label="Cross-venue route intelligence"]')
       ?.getAttribute("data-routing-evidence")).toBe("committed");
@@ -124,6 +209,9 @@ describe("CarryChartStrip", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+
+    await setInput(container.querySelector<HTMLInputElement>('[aria-label="Carry notional per leg"]'), "10000");
+    await setInput(container.querySelector<HTMLInputElement>('[aria-label="Carry horizon in days"]'), "1");
 
     let rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
     expect(rail?.getAttribute("data-routing-evidence")).toBe("committed");
@@ -169,6 +257,9 @@ describe("CarryChartStrip", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+
+    await setInput(container.querySelector<HTMLInputElement>('[aria-label="Carry notional per leg"]'), "10000");
+    await setInput(container.querySelector<HTMLInputElement>('[aria-label="Carry horizon in days"]'), "1");
 
     expect(container.querySelector('[aria-label="Cross-venue route intelligence"]')
       ?.getAttribute("data-routing-evidence")).toBe("committed");
@@ -523,6 +614,17 @@ describe("CarryChartStrip", () => {
     await act(async () => {
       root.render(<CarryChartStrip asset="BTC" defaultOpen={defaultOpen} onAssetSelect={vi.fn()} />);
       await Promise.resolve();
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  async function setInput(input: HTMLInputElement | null, value: string) {
+    expect(input).toBeTruthy();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(input, value);
+      input?.dispatchEvent(new Event("input", { bubbles: true }));
       await Promise.resolve();
     });
   }

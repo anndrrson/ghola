@@ -214,6 +214,34 @@ describe("CarryTerminalBuilder", () => {
     container.remove();
   });
 
+  it("uses the quote inputs owned by the route ranker", async () => {
+    const onNotionalChange = vi.fn();
+    const onHorizonChange = vi.fn();
+    await act(async () => root.render(
+      <CarryTerminalBuilder
+        candidate={candidate()}
+        quoteNotional="250"
+        quoteHorizonDays="7"
+        onQuoteNotionalChange={onNotionalChange}
+        onQuoteHorizonDaysChange={onHorizonChange}
+      />,
+    ));
+
+    const notional = container.querySelector<HTMLInputElement>('[aria-label="Carry notional per leg"]');
+    const horizon = container.querySelector<HTMLInputElement>('[aria-label="Carry horizon in days"]');
+    expect(notional?.value).toBe("250");
+    expect(horizon?.value).toBe("7");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(notional, "500");
+      notional?.dispatchEvent(new Event("input", { bubbles: true }));
+      setter?.call(horizon, "14");
+      horizon?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(onNotionalChange).toHaveBeenCalledWith("500");
+    expect(onHorizonChange).toHaveBeenCalledWith("14");
+  });
+
   it("never replaces incomplete worker proof with browser estimates", () => {
     const model = builderModel(candidate(), "11", "30");
     const publicEconomics = carryTerminalEconomics(model, null);
