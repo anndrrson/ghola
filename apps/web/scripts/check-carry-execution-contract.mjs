@@ -2815,7 +2815,8 @@ export function checkCarryExecutionContract(sources) {
     "carry_terminal_stale_route_check_gate_missing",
   );
   requireText("webCarryBuilderTest", "hides retained route economics when the route is stale", "carry_terminal_stale_route_economics_test_missing");
-  requireText("webCarryBuilder", "const canEnter = routeQualified && current?.position.status === \"draft\"", "carry_terminal_stale_route_entry_gate_missing");
+  requireText("webCarryBuilder", "const canEnter = routeQualified", "carry_terminal_stale_route_entry_gate_missing");
+  requireText("webCarryBuilder", '&& current?.position.status === "draft"', "carry_terminal_draft_entry_gate_missing");
   requireText("webCarryChart", "const terminalExecution = selectedExecution || retainedForDesiredRoute;", "carry_terminal_transient_route_retention_missing");
   requireText("webCarryChart", "key={carryRouteKey(terminalExecution.candidate)}", "carry_terminal_route_state_scope_missing");
   requireText("webCarryChartTest", "keeps the selected terminal mounted through a transient live-route gap", "carry_terminal_transient_route_retention_test_missing");
@@ -3447,7 +3448,35 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "requestCarryPositionExit", "carry_terminal_exit_missing");
   requireText("webCarryBuilder", "ARM CAPPED PROOF", "carry_terminal_qualification_path_missing");
   requireText("webCarryBuilder", "CONFIRM LIVE PAIRED ENTRY", "carry_terminal_separate_confirmation_missing");
+  const liveConfirmationSummary = sourceSection(
+    "webCarryBuilder",
+    "export function carryLiveConfirmationSummary(record:",
+    "export function carryCreationProofFreshness(",
+  );
+  requireSectionText(liveConfirmationSummary, "const position = record.position;", "carry_terminal_live_confirmation_position_binding_missing");
+  requireSectionText(liveConfirmationSummary, "position.mandate_authorization?.signed_mandate", "carry_terminal_live_confirmation_signed_mandate_missing");
+  requireSectionText(liveConfirmationSummary, "position.target_notional_micro_usdc", "carry_terminal_live_confirmation_notional_binding_missing");
+  requireSectionText(liveConfirmationSummary, "const opportunity = record.opportunity;", "carry_terminal_live_confirmation_capital_binding_missing");
+  requireText("webCarryBuilder", 'aria-label="Live paired entry confirmation"', "carry_terminal_live_confirmation_surface_missing");
+  requireText("webCarryBuilder", "liveConfirmation?.ready === true", "carry_terminal_live_confirmation_entry_gate_missing");
+  requireText("webCarryBuilder", "liveConfirmation?.notionalInput ?? notional", "carry_terminal_saved_notional_display_missing");
+  requireText("webCarryBuilder", "readOnly={Boolean(current || migrationSource)}", "carry_terminal_saved_notional_lock_missing");
+  requireText("webCarryBuilderTest", "binds live confirmation to the persisted signed position instead of edited quote state", "carry_terminal_live_confirmation_binding_test_missing");
+  requireText("webCarryBuilderTest", "locks live entry when persisted signed confirmation truth does not match", "carry_terminal_live_confirmation_mismatch_test_missing");
   requireText("webCarryBuilder", "FLAT · 0 ORDERS", "carry_terminal_flat_state_missing");
+  requireText("webCarryBuilder", "!current && lastFlat", "carry_terminal_flat_state_precedence_missing");
+  requireText("webCarryBuilder", "record.final_reconciliation_evidence?.carry_position_id === record.position.position_id", "carry_terminal_flat_position_binding_missing");
+  requireText("webCarryBuilderTest", "lets exact flat state override a stale exit-request message immediately", "carry_terminal_flat_state_precedence_test_missing");
+  requireText("webCarryBuilderTest", "does not claim flat from reconciliation bound to another position", "carry_terminal_flat_position_binding_test_missing");
+  requireText("webCarryPositionRail", "exiting: 2", "carry_position_rail_reducing_priority_missing");
+  requireText("webCarryPositionRail", "REDUCING · RECONCILING", "carry_position_rail_reducing_state_missing");
+  requireText("webCarryPositionRail", "hasExactCarryFlatReconciliation(", "carry_position_rail_exact_flat_gate_missing");
+  requireText("webCarryPositionRail", "carry_position_id === selected.position.position_id", "carry_position_rail_flat_position_binding_missing");
+  requireText("webCarryPositionRail", 'value={exactFlat ? "FLAT · 0 ORDERS"', "carry_position_rail_flat_state_missing");
+  requireText("webCarryPositionRailTest", "never hides a reducing position behind active, draft, or flat records", "carry_position_rail_reducing_priority_test_missing");
+  requireText("webCarryPositionRailTest", "shows flat with zero orders only from exact per-venue reconciliation", "carry_position_rail_exact_flat_test_missing");
+  requireText("webCarryPositionRailTest", "never calls aggregate-only reconciliation flat", "carry_position_rail_aggregate_flat_rejection_test_missing");
+  requireText("webCarryPositionRailTest", "never calls reconciliation from another position flat", "carry_position_rail_flat_position_binding_test_missing");
   requireText("webCarryBuilder", "RETRY POSITION SYNC", "carry_terminal_position_sync_gate_missing");
   requireText("webCarryBuilder", "LEG RUNWAY", "carry_terminal_runway_display_missing");
   requireText("webCarryBuilderTest", "HYP 2.0H · LTR 1.0H · WARNING", "carry_terminal_each_leg_runway_test_missing");

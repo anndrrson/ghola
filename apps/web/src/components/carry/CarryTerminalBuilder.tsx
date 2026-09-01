@@ -38,6 +38,20 @@ import {
 import { usePerpsTurnkey } from "@/lib/perps-turnkey-provider";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 
+type CarryRiskMandateView = {
+  min_expected_net_benefit_bps?: number;
+  exit_net_value_bps?: number;
+  exit_after_consecutive_observations?: number;
+  min_margin_runway_ms?: number;
+  max_hedge_error_micro_usdc?: number;
+  max_data_age_ms?: number;
+  max_contract_data_skew_ms?: number;
+  max_index_price_divergence_bps?: number;
+  max_mark_price_divergence_bps?: number;
+  owner_only_operations?: readonly string[];
+  [key: string]: unknown;
+};
+
 type CarryRecord = {
   qualification_pilot?: { enabled?: boolean; candidate_venue_id?: string };
   value_boundary_authoritative?: boolean;
@@ -52,9 +66,17 @@ type CarryRecord = {
     last_event_sequence: number;
     active_boundary_provenance?: string | null;
     consecutive_exit_observations?: number;
-    risk_mandate?: {
-      exit_net_value_bps?: number;
-      exit_after_consecutive_observations?: number;
+    risk_mandate?: CarryRiskMandateView;
+    mandate_authorization?: {
+      signed_mandate?: {
+        asset?: string;
+        long_venue_id?: string;
+        short_venue_id?: string;
+        target_notional_micro_usdc?: number;
+        risk_mandate?: CarryRiskMandateView;
+        issued_at_ms?: number;
+        expires_at_ms?: number;
+      };
     };
     migration_parent_position_id?: string;
     migration_candidate_id?: string;
@@ -67,7 +89,19 @@ type CarryRecord = {
       };
     };
   };
+  opportunity?: {
+    eligible?: boolean;
+    reasons?: unknown[];
+    asset?: string;
+    long_venue_id?: string;
+    short_venue_id?: string;
+    notional_micro_usdc?: number;
+    capital_committed_micro_usdc?: number;
+    all_venues_ready?: boolean;
+    live_creation_ready?: boolean;
+  };
   final_reconciliation_evidence?: {
+    carry_position_id?: string;
     gross_exposure_micro_usdc?: number;
     open_order_count?: number;
     account_state_checked?: boolean;
@@ -298,7 +332,8 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     && hasExactCarryFlatReconciliation(record.final_reconciliation_evidence, [
       record.position.long_venue_id,
       record.position.short_venue_id,
-    ]));
+    ])
+    && record.final_reconciliation_evidence?.carry_position_id === record.position.position_id);
   const migrationSource = records.find((record) => {
     const selected = record.position.pending_migration?.selected_candidate;
     return record.position.status === "reconciled"
@@ -321,6 +356,9 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
     }
   }, [migrationNotional, notional, setNotional]);
   const latestObservation = current?.latest_observation || null;
+  const liveConfirmation = current?.position.status === "draft"
+    ? carryLiveConfirmationSummary(current)
+    : null;
   const runway = carryRunwaySummary(latestObservation, candidate);
   const carrySignal = carryFundingFlipSummary(current?.position, latestObservation);
   const capital = carryCapitalSummary(latestObservation?.capital_action_plan);
@@ -363,7 +401,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const portfolioValue = carryPortfolioValueSummary(portfolioValueReport);
   const capitalEfficiency = carryCapitalEfficiencySummary(portfolioValueReport);
   const displayedCapital = routeQualified
-    ? latestObservation?.capital_action_plan ? capital : openingCapital
+    ? liveConfirmation ? liveConfirmation.capital : latestObservation?.capital_action_plan ? capital : openingCapital
     : staleRouteMetric;
   const restoredReadiness = readyStoredReadiness(readiness, candidate.asset, notional, days);
   const fleetGuard = carryFleetGuardSummary(executionMatrix, restoredReadiness);
@@ -376,7 +414,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const supervision = carrySupervisionSummary(asRecord(
     readiness?.carry_supervision || executionMatrix?.carry_supervision,
   ));
-  const mandate = carryRiskMandateSummary(defaultCarryRiskMandate());
+  const mandate = liveConfirmation?.mandate ?? carryRiskMandateSummary(defaultCarryRiskMandate());
 
   useEffect(() => {
     if (!proof || !actionableProof) return;
@@ -707,7 +745,10 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   const canSave = routeQualified && actionableProof && creationProofFreshness.fresh;
   const needsSetupToSave = saveSetupRequired;
   const needsAuthenticationToSave = !perpsTurnkey.authenticated;
-  const canEnter = routeQualified && current?.position.status === "draft" && supervision.ready;
+  const canEnter = routeQualified
+    && current?.position.status === "draft"
+    && liveConfirmation?.ready === true
+    && supervision.ready;
   const canExit = current ? ["active", "rebalancing", "frozen"].includes(current.position.status) : false;
   const connectionAction = auth.loading
     ? "CHECKING SIGN-IN…"
@@ -777,14 +818,31 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
       </div>
 
       <div className="grid gap-1.5">
+        {liveConfirmation ? (
+          <section
+            aria-label="Live paired entry confirmation"
+            data-confirmation-ready={liveConfirmation.ready ? "true" : "false"}
+            className={`rounded border px-2 py-1.5 font-mono text-[9px] ${liveConfirmation.ready ? "border-[#594b2b] bg-[#171208]" : "border-[#63333b] bg-[#1d0f12]"}`}
+          >
+            <p className="font-semibold text-[#f0c879]">
+              LIVE ORDER · {liveConfirmation.asset}-PERP · {liveConfirmation.route} · {liveConfirmation.notional}/LEG
+            </p>
+            <p className={liveConfirmation.mandate.tone === "good" ? "text-[#b8c2cf]" : "text-[#ef929e]"}>
+              SIGNED MANDATE · {liveConfirmation.mandate.value} · EXPIRES {liveConfirmation.expiresAt}
+            </p>
+            <p className={liveConfirmation.capital.tone === "good" ? "text-[#72bfa2]" : "text-[#ef929e]"}>
+              CAPITAL · {liveConfirmation.capital.value}
+            </p>
+          </section>
+        ) : null}
         <div className="grid grid-cols-2 gap-1.5">
           <label className="rounded border border-[#202a37] bg-[#070a0f] px-2 py-1 font-mono text-[9px] text-[#687589]">
             NOTIONAL / LEG
-            <span className="mt-0.5 flex items-center text-[11px] text-[#d7dde6]">$<input aria-label="Carry notional per leg" value={notional} readOnly={Boolean(migrationSource)} onChange={(event) => invalidateProof(setNotional)(event.target.value)} inputMode="decimal" className="min-w-0 flex-1 bg-transparent pl-1 outline-none" /></span>
+            <span className="mt-0.5 flex items-center text-[11px] text-[#d7dde6]">$<input aria-label="Carry notional per leg" value={liveConfirmation?.notionalInput ?? notional} readOnly={Boolean(current || migrationSource)} onChange={(event) => invalidateProof(setNotional)(event.target.value)} inputMode="decimal" className="min-w-0 flex-1 bg-transparent pl-1 outline-none" /></span>
           </label>
           <label className="rounded border border-[#202a37] bg-[#070a0f] px-2 py-1 font-mono text-[9px] text-[#687589]">
             HORIZON
-            <span className="mt-0.5 flex items-center text-[11px] text-[#d7dde6]"><input aria-label="Carry horizon in days" value={days} onChange={(event) => invalidateProof(setDays)(event.target.value)} inputMode="numeric" className="min-w-0 flex-1 bg-transparent outline-none" />D</span>
+            <span className="mt-0.5 flex items-center text-[11px] text-[#d7dde6]"><input aria-label="Carry horizon in days" value={liveConfirmation?.horizonDays ?? days} readOnly={Boolean(current)} onChange={(event) => invalidateProof(setDays)(event.target.value)} inputMode="numeric" className="min-w-0 flex-1 bg-transparent outline-none" />D</span>
           </label>
         </div>
 
@@ -822,6 +880,10 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
             <button type="button" disabled className="rounded border border-[#594b2b] bg-[#1e190c] px-2 py-2 font-mono text-[10px] font-semibold text-[#d9bd74] opacity-70">
               ROUTE STALE · ENTRY LOCKED
             </button>
+          ) : current?.position.status === "draft" && liveConfirmation?.ready !== true ? (
+            <button type="button" disabled className="rounded border border-[#63333b] bg-[#231014] px-2 py-2 font-mono text-[10px] font-semibold text-[#ef929e] opacity-70">
+              LIVE CONFIRMATION UNVERIFIED
+            </button>
           ) : current?.position.status === "draft" && !supervision.ready ? (
             <button type="button" disabled className="rounded border border-[#63333b] bg-[#231014] px-2 py-2 font-mono text-[10px] font-semibold text-[#ef929e] opacity-70">
               RISK ENGINE NOT READY
@@ -840,12 +902,12 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
             </button>
           )}
         </div>
-        {message
+        {!current && lastFlat
+          ? <p role="status" className="truncate font-mono text-[9px] text-[#72bfa2]">LAST FLAT · 0 ORDERS</p>
+          : message
           ? <p role="status" className="truncate font-mono text-[9px] text-[#8996a8]">{message}</p>
           : lastCheckReceipt
             ? <p role="status" className="truncate font-mono text-[9px] text-[#8996a8]">NO-SUBMIT RECEIPT · {lastCheckReceipt}</p>
-          : lastFlat
-            ? <p role="status" className="truncate font-mono text-[9px] text-[#72bfa2]">LAST FLAT · 0 ORDERS</p>
             : null}
         {stressCapital
           ? <p className="truncate font-mono text-[9px] text-[#72bfa2]" title={stressCapital}>STRESS CAPITAL · {stressCapital}</p>
@@ -910,11 +972,14 @@ export function carryTerminalEconomics(model: ReturnType<typeof builderModel>, o
   };
 }
 
-export function carryRiskMandateSummary(mandate: ReturnType<typeof defaultCarryRiskMandate>) {
+export function carryRiskMandateSummary(value: unknown) {
+  const mandate = asRecord(value);
   const exitBps = finiteNumber(mandate.exit_net_value_bps);
   const flipCount = finiteNumber(mandate.exit_after_consecutive_observations);
   const runwayMs = finiteNumber(mandate.min_margin_runway_ms);
-  const ownerOnly = mandate.owner_only_operations;
+  const ownerOnly = Array.isArray(mandate.owner_only_operations)
+    ? mandate.owner_only_operations
+    : [];
   if (!Number.isSafeInteger(exitBps)
     || !Number.isSafeInteger(flipCount)
     || Number(flipCount) < 1
@@ -927,6 +992,59 @@ export function carryRiskMandateSummary(mandate: ReturnType<typeof defaultCarryR
   return {
     value: `EXIT ≤${exit}BP · ${flipCount} FLIPS · ≥${formatRunway(Number(runwayMs))} · OWNER MOVES`,
     tone: "good" as const,
+  };
+}
+
+export function carryLiveConfirmationSummary(record: CarryRecord, nowMs = Date.now()) {
+  const position = record.position;
+  const signed = position.mandate_authorization?.signed_mandate;
+  const signedMandate = signed?.risk_mandate;
+  const mandate = carryRiskMandateSummary(signedMandate);
+  const issuedAtMs = finiteNumber(signed?.issued_at_ms);
+  const expiresAtMs = finiteNumber(signed?.expires_at_ms);
+  const signedPositionBound = signed?.asset === position.asset
+    && signed?.long_venue_id === position.long_venue_id
+    && signed?.short_venue_id === position.short_venue_id
+    && signed?.target_notional_micro_usdc === position.target_notional_micro_usdc
+    && JSON.stringify(signedMandate) === JSON.stringify(position.risk_mandate)
+    && Number.isSafeInteger(issuedAtMs)
+    && Number.isSafeInteger(expiresAtMs)
+    && Number(expiresAtMs) > nowMs;
+  const opportunity = record.opportunity;
+  const opportunityBound = opportunity?.asset === position.asset
+    && opportunity?.long_venue_id === position.long_venue_id
+    && opportunity?.short_venue_id === position.short_venue_id
+    && opportunity?.notional_micro_usdc === position.target_notional_micro_usdc;
+  const capitalCommitted = finiteNumber(opportunity?.capital_committed_micro_usdc);
+  const reasons = Array.isArray(opportunity?.reasons) ? opportunity.reasons : null;
+  const entryScopeReady = opportunity?.live_creation_ready === true
+    || record.qualification_pilot?.enabled === true;
+  const capitalReady = opportunityBound
+    && opportunity?.eligible === true
+    && reasons?.length === 0
+    && opportunity?.all_venues_ready === true
+    && entryScopeReady
+    && Number.isSafeInteger(capitalCommitted)
+    && Number(capitalCommitted) >= 0;
+  const horizonMs = Number(expiresAtMs) - Number(issuedAtMs) - 3_600_000;
+  const horizonDays = Number.isSafeInteger(issuedAtMs)
+    && Number.isSafeInteger(expiresAtMs)
+    && horizonMs > 0
+    && horizonMs % 86_400_000 === 0
+    ? String(horizonMs / 86_400_000)
+    : "—";
+  return {
+    ready: signedPositionBound && mandate.tone === "good" && capitalReady,
+    asset: position.asset,
+    route: `L ${venueName(position.long_venue_id)} / S ${venueName(position.short_venue_id)}`,
+    notional: formatMicroUsd(position.target_notional_micro_usdc),
+    notionalInput: String(position.target_notional_micro_usdc / 1_000_000),
+    horizonDays,
+    mandate,
+    expiresAt: Number.isSafeInteger(expiresAtMs) ? formatUtcTimestamp(Number(expiresAtMs)) : "UNVERIFIED",
+    capital: capitalReady
+      ? { value: `READY AT SIGN · ${formatMicroUsd(Number(capitalCommitted))} BOUND · RECHECK ON SUBMIT`, tone: "good" as const }
+      : { value: "UNVERIFIED · ENTRY LOCKED", tone: "bad" as const },
   };
 }
 
@@ -1563,6 +1681,14 @@ function formatSignedMicroUsd(value: number) {
 
 function formatSigned(value: number) {
   return `${value >= 0 ? "+" : "−"}${Math.abs(value).toFixed(Math.abs(value) >= 10 ? 1 : 2)}`;
+}
+
+function formatUtcTimestamp(value: number) {
+  try {
+    return new Date(value).toISOString().replace(".000Z", "Z");
+  } catch {
+    return "UNVERIFIED";
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

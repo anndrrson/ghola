@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { CARRY_VENUE_LABELS } from "@/lib/carry-market";
+import { hasExactCarryFlatReconciliation } from "@/lib/carry-reconciliation";
 import { listCarryPositions } from "@/lib/private-account-client";
 import { useThumperAuth } from "@/lib/thumper-auth-context";
 
@@ -25,6 +26,25 @@ export interface CarryPositionRailRecord {
     modeled?: { net_value_micro_usdc?: number };
     realized?: { net_value_micro_usdc?: number };
   };
+  final_reconciliation_evidence?: {
+    owner_commitment?: string;
+    carry_position_id?: string;
+    gross_exposure_micro_usdc?: number;
+    open_order_count?: number;
+    account_state_checked?: boolean;
+    transaction_broadcast?: boolean;
+    checked_at_ms?: number;
+    reconciliation_commitment?: string;
+    venues?: Array<{
+      venue_id?: string;
+      account_commitment?: string;
+      authorized?: boolean;
+      flat_zero_orders?: boolean;
+      position_count?: number;
+      open_order_count?: number;
+      account_state_checked?: boolean;
+    }>;
+  };
   latest_observation?: {
     expected_net_value_bps?: number;
     margin_runway_ms_by_venue?: Record<string, number | null>;
@@ -36,10 +56,11 @@ export interface CarryPositionRailRecord {
 const POSITION_PRIORITY: Readonly<Record<string, number>> = Object.freeze({
   manual_intervention: 0,
   frozen: 1,
-  rebalancing: 2,
-  active: 3,
-  draft: 4,
-  reconciled: 6,
+  exiting: 2,
+  rebalancing: 3,
+  active: 4,
+  draft: 5,
+  reconciled: 7,
 });
 
 export function CarryPositionRail() {
@@ -118,6 +139,10 @@ export function CarryPositionRail() {
   const ledgerMetric = positionLedgerMetric(selected);
   const runway = positionRunway(selected);
   const nextAction = selected.position.next_actions?.[0];
+  const exactFlat = status === "reconciled" && hasExactCarryFlatReconciliation(
+    selected.final_reconciliation_evidence,
+    [selected.position.long_venue_id, selected.position.short_venue_id],
+  ) && selected.final_reconciliation_evidence?.carry_position_id === selected.position.position_id;
 
   return (
     <section
@@ -145,9 +170,9 @@ export function CarryPositionRail() {
         />
         <RailMetric label="RUNWAY" value={runway.value} tone={runway.tone} />
         <RailMetric
-          label={nextAction ? "NEXT" : "AGE"}
-          value={nextAction ? statusLabel(nextAction) : formatAge(observationAtMs === null ? Number.NaN : clock - observationAtMs)}
-          title={nextAction || undefined}
+          label={exactFlat ? "FINAL" : nextAction ? "NEXT" : "AGE"}
+          value={exactFlat ? "FLAT · 0 ORDERS" : nextAction ? statusLabel(nextAction) : formatAge(observationAtMs === null ? Number.NaN : clock - observationAtMs)}
+          title={exactFlat ? "Both exact venue accounts are flat with zero open orders" : nextAction || undefined}
         />
       </div>
     </section>
@@ -175,6 +200,9 @@ function positionLedgerMetric(record: CarryPositionRailRecord): {
   }
   if (["active", "rebalancing"].includes(positionStatus) && ledgerStatus === "open") {
     return { label: "VALUE", value: "ACCRUING" };
+  }
+  if (positionStatus === "exiting" && ledgerStatus === "open") {
+    return { label: "VALUE", value: "REDUCING · RECONCILING", tone: "warn" };
   }
   return { label: "VALUE", value: "UNVERIFIED", tone: "warn" };
 }
@@ -275,12 +303,14 @@ function venueName(venueId: string) {
 }
 
 function statusLabel(value: string) {
+  if (value === "exiting") return "REDUCING · RECONCILING";
   return value.replaceAll("_", " ").toUpperCase();
 }
 
 function positionStatusTone(status: string) {
   if (status === "active") return "border-[#285040] text-[#72bfa2]";
   if (status === "reconciled") return "border-[#35465c] text-[#aeb9c7]";
+  if (status === "exiting") return "border-[#6b4d25] text-[#d9bd74]";
   if (["frozen", "manual_intervention"].includes(status)) return "border-[#684b55] text-[#ef929e]";
   return "border-[#6b4d25] text-[#d9bd74]";
 }

@@ -150,6 +150,21 @@ describe("CarryPositionRail", () => {
     expect(container.textContent).not.toContain("REAL NET");
   });
 
+  it("shows an exiting position as reducing and reconciling", async () => {
+    vi.mocked(listCarryPositions).mockResolvedValue({
+      ok: true,
+      records: [positionRecord({ status: "exiting", ledger_status: "open" })],
+    });
+    await act(async () => {
+      root.render(<CarryPositionRail />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("REDUCING · RECONCILING");
+    expect(container.textContent).toContain("REDUCE ONLY CLOSE BOTH LEGS");
+    expect(container.textContent).not.toContain("VALUEUNVERIFIED");
+  });
+
   it("never calls an impossible active finalized ledger real net", async () => {
     vi.mocked(listCarryPositions).mockResolvedValue({
       ok: true,
@@ -180,6 +195,75 @@ describe("CarryPositionRail", () => {
     expect(selectCarryPositionRecord([active, flat, manual])?.position.position_id)
       .toBe("carry:position:manual");
   });
+
+  it("never hides a reducing position behind active, draft, or flat records", () => {
+    const exiting = positionRecord({
+      position_id: "carry:position:exiting",
+      status: "exiting",
+      updated_at: "2026-08-30T09:00:00.000Z",
+    });
+    const active = positionRecord({ status: "active", updated_at: "2026-08-30T12:00:00.000Z" });
+    const draft = positionRecord({
+      position_id: "carry:position:draft",
+      status: "draft",
+      updated_at: "2026-08-30T13:00:00.000Z",
+    });
+    const flat = positionRecord({
+      position_id: "carry:position:flat",
+      status: "reconciled",
+      updated_at: "2026-08-30T14:00:00.000Z",
+    });
+    expect(selectCarryPositionRecord([active, draft, flat, exiting])?.position.position_id)
+      .toBe("carry:position:exiting");
+  });
+
+  it("shows flat with zero orders only from exact per-venue reconciliation", async () => {
+    const exact = positionRecord({
+      status: "reconciled",
+      ledger_status: "finalized",
+      value_boundary_authoritative: true,
+      active_boundary_provenance: "authoritative_exchange_fill_time",
+    });
+    exact.final_reconciliation_evidence = flatEvidence(["lighter", "hyperliquid"]);
+    vi.mocked(listCarryPositions).mockResolvedValue({ ok: true, records: [exact] });
+    await act(async () => {
+      root.render(<CarryPositionRail />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("FINALFLAT · 0 ORDERS");
+  });
+
+  it("never calls aggregate-only reconciliation flat", async () => {
+    const aggregateOnly = positionRecord({ status: "reconciled", ledger_status: "finalized" });
+    aggregateOnly.final_reconciliation_evidence = {
+      gross_exposure_micro_usdc: 0,
+      open_order_count: 0,
+      account_state_checked: true,
+    };
+    vi.mocked(listCarryPositions).mockResolvedValue({ ok: true, records: [aggregateOnly] });
+    await act(async () => {
+      root.render(<CarryPositionRail />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).not.toContain("FLAT · 0 ORDERS");
+  });
+
+  it("never calls reconciliation from another position flat", async () => {
+    const mismatched = positionRecord({ status: "reconciled", ledger_status: "finalized" });
+    mismatched.final_reconciliation_evidence = {
+      ...flatEvidence(["lighter", "hyperliquid"]),
+      carry_position_id: "carry:position:someone-else",
+    };
+    vi.mocked(listCarryPositions).mockResolvedValue({ ok: true, records: [mismatched] });
+    await act(async () => {
+      root.render(<CarryPositionRail />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).not.toContain("FLAT · 0 ORDERS");
+  });
 });
 
 function positionRecord(overrides: {
@@ -201,7 +285,7 @@ function positionRecord(overrides: {
       short_venue_id: "hyperliquid",
       target_notional_micro_usdc: 25_000_000,
       status: overrides.status || "active",
-      next_actions: ["monitor"],
+      next_actions: overrides.status === "exiting" ? ["reduce_only_close_both_legs"] : ["monitor"],
       active_boundary_provenance: overrides.active_boundary_provenance ?? null,
     },
     value_ledger: {
@@ -221,5 +305,27 @@ function positionRecord(overrides: {
       },
       recorded_at_ms: Date.now(),
     },
+  };
+}
+
+function flatEvidence(venueIds: string[]) {
+  return {
+    owner_commitment: "owner:carry:rail:0001",
+    carry_position_id: "carry:position:test",
+    gross_exposure_micro_usdc: 0,
+    open_order_count: 0,
+    account_state_checked: true,
+    transaction_broadcast: false,
+    checked_at_ms: 1_800_000_000_000,
+    reconciliation_commitment: "carry:reconciliation:rail:0001",
+    venues: venueIds.map((venueId) => ({
+      venue_id: venueId,
+      account_commitment: `account:carry:rail:${venueId}`,
+      authorized: true,
+      flat_zero_orders: true,
+      position_count: 0,
+      open_order_count: 0,
+      account_state_checked: true,
+    })),
   };
 }

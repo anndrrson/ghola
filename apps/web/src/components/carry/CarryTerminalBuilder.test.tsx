@@ -11,6 +11,7 @@ import {
   carryFundingPersistenceSummary,
   carryLiquidationSummary,
   carryLedgerSummary,
+  carryLiveConfirmationSummary,
   carryMatrixPairReady,
   carryOpeningCapitalSummary,
   carryPortfolioRunwaySummary,
@@ -500,6 +501,51 @@ describe("CarryTerminalBuilder", () => {
     expect(stale?.disabled).toBe(true);
     stale?.click();
     expect(api.preflightCarryExecutionMatrix).toHaveBeenCalledOnce();
+  });
+
+  it("binds live confirmation to the persisted signed position instead of edited quote state", async () => {
+    const record = carryRecord();
+    const signedRisk = {
+      ...defaultCarryRiskMandate(),
+      exit_net_value_bps: -2,
+      exit_after_consecutive_observations: 3,
+    };
+    record.position.risk_mandate = signedRisk;
+    record.position.mandate_authorization!.signed_mandate!.risk_mandate = signedRisk;
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [record] });
+    api.executeCarryPositionEntry.mockResolvedValue({ ok: true });
+
+    await act(async () => root.render(
+      <CarryTerminalBuilder candidate={candidate()} quoteNotional="25" quoteHorizonDays="7" />,
+    ));
+
+    const confirmation = container.querySelector('[aria-label="Live paired entry confirmation"]');
+    expect(confirmation?.getAttribute("data-confirmation-ready")).toBe("true");
+    expect(confirmation?.textContent).toContain("BTC-PERP · L HYPERLIQUID / S LIGHTER · $11/LEG");
+    expect(confirmation?.textContent).toContain("EXIT ≤−2BP · 3 FLIPS · ≥6.0H · OWNER MOVES");
+    expect(confirmation?.textContent).toContain("CAPITAL · READY AT SIGN · $22 BOUND · RECHECK ON SUBMIT");
+    expect(confirmation?.textContent).not.toContain("$25");
+    expect((container.querySelector('[aria-label="Carry notional per leg"]') as HTMLInputElement).value).toBe("11");
+    expect((container.querySelector('[aria-label="Carry notional per leg"]') as HTMLInputElement).readOnly).toBe(true);
+    expect((container.querySelector('[aria-label="Carry horizon in days"]') as HTMLInputElement).value).toBe("30");
+
+    await click("CONFIRM LIVE PAIRED ENTRY");
+    expect(api.executeCarryPositionEntry).toHaveBeenCalledWith("carry:position:test", true);
+  });
+
+  it("locks live entry when persisted signed confirmation truth does not match", async () => {
+    const record = carryRecord();
+    record.position.mandate_authorization!.signed_mandate!.target_notional_micro_usdc = 25_000_000;
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [record] });
+
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+
+    const summary = carryLiveConfirmationSummary(record);
+    expect(summary.ready).toBe(false);
+    expect(summary.notional).toBe("$11");
+    expect(summary.capital.value).toContain("READY AT SIGN");
+    expect(container.textContent).toContain("LIVE CONFIRMATION UNVERIFIED");
+    expect(container.textContent).not.toContain("CONFIRM LIVE PAIRED ENTRY");
   });
 
   it("hides retained route economics when the route is stale", async () => {
@@ -1043,6 +1089,43 @@ describe("CarryTerminalBuilder", () => {
     });
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
     expect(container.textContent).not.toContain("LAST FLAT · 0 ORDERS");
+  });
+
+  it("does not claim flat from reconciliation bound to another position", async () => {
+    api.listCarryPositions.mockResolvedValue({
+      ok: true,
+      records: [{
+        ...carryRecord(),
+        position: { ...carryRecord().position, status: "reconciled" },
+        final_reconciliation_evidence: {
+          ...flatEvidence(["hyperliquid", "lighter"]),
+          carry_position_id: "carry:position:someone-else",
+        },
+      }],
+    });
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    expect(container.textContent).not.toContain("LAST FLAT · 0 ORDERS");
+  });
+
+  it("lets exact flat state override a stale exit-request message immediately", async () => {
+    const active = carryRecord();
+    active.position.status = "active";
+    const flat = {
+      ...carryRecord(),
+      position: { ...carryRecord().position, status: "reconciled" },
+      final_reconciliation_evidence: flatEvidence(["hyperliquid", "lighter"]),
+    };
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [active] });
+    api.requestCarryPositionExit.mockImplementation(async () => {
+      api.listCarryPositions.mockResolvedValue({ ok: true, records: [flat] });
+      return { ok: true };
+    });
+
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+    await click("REDUCE-ONLY EXIT");
+
+    expect(container.textContent).toContain("LAST FLAT · 0 ORDERS");
+    expect(container.textContent).not.toContain("EXIT REQUESTED · reduce-only recovery");
   });
 
   it("binds a replacement signature to the selected flat migration parent", async () => {
@@ -1753,6 +1836,8 @@ function privatePrimeReadiness() {
 }
 
 function carryRecord() {
+  const issuedAtMs = Date.now() - 60_000;
+  const riskMandate = defaultCarryRiskMandate();
   return {
     qualification_pilot: { enabled: true, candidate_venue_id: "lighter" },
     position: {
@@ -1765,10 +1850,29 @@ function carryRecord() {
       next_actions: ["run_preflight"],
       last_event_sequence: 0,
       consecutive_exit_observations: 0,
-      risk_mandate: {
-        exit_net_value_bps: 0,
-        exit_after_consecutive_observations: 2,
+      risk_mandate: riskMandate,
+      mandate_authorization: {
+        signed_mandate: {
+          asset: "BTC",
+          long_venue_id: "hyperliquid",
+          short_venue_id: "lighter",
+          target_notional_micro_usdc: 11_000_000,
+          risk_mandate: riskMandate,
+          issued_at_ms: issuedAtMs,
+          expires_at_ms: issuedAtMs + 30 * 86_400_000 + 3_600_000,
+        },
       },
+    },
+    opportunity: {
+      eligible: true,
+      reasons: [],
+      asset: "BTC",
+      long_venue_id: "hyperliquid",
+      short_venue_id: "lighter",
+      notional_micro_usdc: 11_000_000,
+      capital_committed_micro_usdc: 22_000_000,
+      all_venues_ready: true,
+      live_creation_ready: false,
     },
   };
 }
@@ -1776,7 +1880,7 @@ function carryRecord() {
 function flatEvidence(venueIds: string[]) {
   return {
     owner_commitment: "owner:carry:web-terminal:0001",
-    carry_position_id: "carry:position:web-terminal:0001",
+    carry_position_id: "carry:position:test",
     gross_exposure_micro_usdc: 0,
     open_order_count: 0,
     account_state_checked: true,
