@@ -1,8 +1,12 @@
 import {
   GOOGLE_AUTH_CALLBACK_PATH,
   GOOGLE_REDIRECT_COOKIE_NAME,
+  isGoogleAuthOriginAllowed,
   safeInternalRedirect,
 } from "./google-auth";
+
+const configuredGoogleAuthOrigins =
+  process.env.NEXT_PUBLIC_GOOGLE_AUTH_ALLOWED_ORIGINS;
 
 type GoogleIdentityApi = {
   initialize: (config: {
@@ -26,6 +30,16 @@ export function googleIdentityApi(): GoogleIdentityApi | undefined {
   return (window as typeof window & {
     google?: { accounts?: { id?: GoogleIdentityApi } };
   }).google?.accounts?.id;
+}
+
+export function googleAuthAvailableForCurrentOrigin(
+  clientId: string | undefined,
+): boolean {
+  return Boolean(
+    clientId &&
+    typeof window !== "undefined" &&
+    isGoogleAuthOriginAllowed(window.location.origin, configuredGoogleAuthOrigins),
+  );
 }
 
 export function initializeGoogleRedirect(

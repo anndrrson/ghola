@@ -89,8 +89,21 @@ const requiredGoogleRedirectSources = [
     patterns: [
       { label: "redirect UX mode", pattern: /ux_mode:\s*["']redirect["']/ },
       { label: "fixed same-origin callback", pattern: /GOOGLE_AUTH_CALLBACK_PATH/ },
+      { label: "exact Google origin allowlist", pattern: /NEXT_PUBLIC_GOOGLE_AUTH_ALLOWED_ORIGINS/ },
+      { label: "fail-closed Google origin gate", pattern: /isGoogleAuthOriginAllowed\(window\.location\.origin/ },
     ],
   },
+  ...[
+    "src/components/AuthModal.tsx",
+    "src/app/signin/page.tsx",
+    "src/app/signup/page.tsx",
+  ].map((file) => ({
+    file,
+    patterns: [
+      { label: "Google origin availability gate", pattern: /googleAuthAvailableForCurrentOrigin/ },
+      { label: "Google UI exact-origin gate", pattern: /googleOriginAllowed\s*&&\s*googleAvailable/ },
+    ],
+  })),
   {
     file: "src/app/api/auth/session/google/callback/route.ts",
     patterns: [

@@ -9,6 +9,7 @@ import { useThumperAuth } from "@/lib/thumper-auth-context";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { GholaLogo } from "@/components/GholaLogo";
 import {
+  googleAuthAvailableForCurrentOrigin,
   googleIdentityApi,
   initializeGoogleRedirect,
 } from "@/lib/google-auth-client";
@@ -56,6 +57,7 @@ export function AuthModal({
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [googleAvailable, setGoogleAvailable] = useState(true);
+  const [googleOriginAllowed, setGoogleOriginAllowed] = useState(false);
   const [mounted, setMounted] = useState(open);
   const [visible, setVisible] = useState(false);
   const googleButtonRef = useRef<HTMLDivElement>(null);
@@ -68,6 +70,10 @@ export function AuthModal({
   const nameId = `${fieldId}-name`;
   const emailId = `${fieldId}-email`;
   const passwordId = `${fieldId}-password`;
+
+  useEffect(() => {
+    setGoogleOriginAllowed(googleAuthAvailableForCurrentOrigin(googleClientId));
+  }, [googleClientId]);
 
   useEffect(() => {
     if (open) {
@@ -96,7 +102,7 @@ export function AuthModal({
   }, [mounted, onClose]);
 
   useEffect(() => {
-    if (!mounted || !googleClientId || !googleAvailable) return;
+    if (!mounted || !googleClientId || !googleAvailable || !googleOriginAllowed) return;
 
     let cancelled = false;
     const renderGoogleButton = () => {
@@ -134,7 +140,7 @@ export function AuthModal({
       cancelled = true;
       script.removeEventListener("load", renderGoogleButton);
     };
-  }, [googleAvailable, googleClientId, mounted, redirectTo]);
+  }, [googleAvailable, googleClientId, googleOriginAllowed, mounted, redirectTo]);
 
   if (!mounted) return null;
 
@@ -222,7 +228,7 @@ export function AuthModal({
               : "Sign in to continue to Ghola."}
         </p>
 
-        {googleClientId && googleAvailable && (
+        {googleOriginAllowed && googleAvailable && (
           <>
             <div ref={googleButtonRef} className="mt-6 flex min-h-10 justify-center" />
             <div className="relative my-5">
@@ -236,7 +242,7 @@ export function AuthModal({
           </>
         )}
 
-        <form onSubmit={submit} className={`${googleClientId && googleAvailable ? "" : "mt-6"} space-y-4`}>
+        <form onSubmit={submit} className={`${googleOriginAllowed && googleAvailable ? "" : "mt-6"} space-y-4`}>
           {isSignup && !isHyperliquidSetup && (
             <div>
               <label htmlFor={nameId} className="mb-1.5 block text-sm text-[#8b95a8]">

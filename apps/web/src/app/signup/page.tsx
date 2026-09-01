@@ -8,6 +8,7 @@ import { thumperSignUp } from "@/lib/thumper-api";
 import { useTurnkeyWallet } from "@/lib/turnkey-provider";
 import { GholaLogo } from "@/components/GholaLogo";
 import {
+  googleAuthAvailableForCurrentOrigin,
   googleIdentityApi,
   initializeGoogleRedirect,
 } from "@/lib/google-auth-client";
@@ -79,6 +80,7 @@ function SignUpContent() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [googleAvailable, setGoogleAvailable] = useState(true);
+  const [googleOriginAllowed, setGoogleOriginAllowed] = useState(false);
   const { setAuth } = useThumperAuth();
   const { createWallet, walletAddress } = useTurnkeyWallet();
   const router = useRouter();
@@ -92,7 +94,11 @@ function SignUpContent() {
   const twitterEnabled = process.env.NEXT_PUBLIC_TWITTER_ENABLED === "true";
 
   useEffect(() => {
-    if (!googleClientId) return;
+    setGoogleOriginAllowed(googleAuthAvailableForCurrentOrigin(googleClientId));
+  }, [googleClientId]);
+
+  useEffect(() => {
+    if (!googleClientId || !googleOriginAllowed) return;
     const script = document.createElement("script");
     script.src = "https://accounts.google.com/gsi/client";
     script.async = true;
@@ -121,7 +127,7 @@ function SignUpContent() {
     return () => {
       document.body.removeChild(script);
     };
-  }, [extraParams, googleClientId, redirectTo]);
+  }, [extraParams, googleClientId, googleOriginAllowed, redirectTo]);
 
   useEffect(() => {
     if (searchParams.get("google_error")) {
@@ -174,9 +180,9 @@ function SignUpContent() {
             Confidential AI in seconds — encrypted by default.
           </p>
 
-          {((googleClientId && googleAvailable) || twitterEnabled) && (
+          {((googleOriginAllowed && googleAvailable) || twitterEnabled) && (
             <>
-              {googleClientId && googleAvailable && (
+              {googleOriginAllowed && googleAvailable && (
                 <div id="google-signin-btn" className="flex justify-center" />
               )}
               {twitterEnabled && (
