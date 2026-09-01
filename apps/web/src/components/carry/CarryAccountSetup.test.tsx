@@ -306,7 +306,7 @@ describe("CarryAccountSetup", () => {
     expect(container.querySelector('[aria-label="Carry execution fleet"]')).toBeNull();
     expect(container.querySelector('[aria-controls="carry-hyperliquid-setup"]')).toBeNull();
     const proofLink = [...container.querySelectorAll<HTMLAnchorElement>("a")]
-      .find((anchor) => anchor.textContent?.trim() === "Start capital-free proof");
+      .find((anchor) => anchor.textContent?.trim() === "Start no-submit proof");
     expect(proofLink).toBeTruthy();
     const setup = new URL(proofLink?.href || "", "https://ghola.local");
     expect(setup.searchParams.get("long_venue")).toBe("hyperliquid");

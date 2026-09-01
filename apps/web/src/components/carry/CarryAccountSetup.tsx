@@ -1126,10 +1126,10 @@ export function CarryAccountSetup({
           <section data-carry-pair-choice className="mt-8 rounded-xl border border-[#315277] bg-[#0b1624] p-5">
             <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8fcaff]">First readiness proof</p>
             <h2 className="mt-2 text-xl font-semibold text-[#eef1f8]">Start with two venues—not the whole fleet.</h2>
-            <p className="mt-2 text-sm leading-6 text-[#8f9aae]">Connect Hyperliquid and Aster, then run one exact no-submit check. The check moves no funds and sends no order. Lighter stays optional until a selected route needs it.</p>
+            <p className="mt-2 text-sm leading-6 text-[#8f9aae]">Connect Hyperliquid and Aster, then run one exact no-submit check. The check moves no funds and sends no order; venue account activation may still be required. Lighter stays optional until a selected route needs it.</p>
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <Link href={firstProofSetupHref} className="inline-flex h-10 items-center rounded-md bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d]">
-                Start capital-free proof
+                Start no-submit proof
               </Link>
               <Link href={safeReturnTo} className="text-sm font-semibold text-[#8fcaff] hover:text-white">
                 Choose a live route instead
