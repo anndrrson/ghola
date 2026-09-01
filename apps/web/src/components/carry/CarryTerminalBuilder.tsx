@@ -1006,7 +1006,7 @@ export function carryLiveConfirmationSummary(record: CarryRecord, nowMs = Date.n
     && signed?.long_venue_id === position.long_venue_id
     && signed?.short_venue_id === position.short_venue_id
     && signed?.target_notional_micro_usdc === position.target_notional_micro_usdc
-    && JSON.stringify(signedMandate) === JSON.stringify(position.risk_mandate)
+    && carryRiskMandatesEqual(signedMandate, position.risk_mandate)
     && Number.isSafeInteger(issuedAtMs)
     && Number.isSafeInteger(expiresAtMs)
     && Number(expiresAtMs) > nowMs;
@@ -1046,6 +1046,14 @@ export function carryLiveConfirmationSummary(record: CarryRecord, nowMs = Date.n
       ? { value: `READY AT SIGN · ${formatMicroUsd(Number(capitalCommitted))} BOUND · RECHECK ON SUBMIT`, tone: "good" as const }
       : { value: "UNVERIFIED · ENTRY LOCKED", tone: "bad" as const },
   };
+}
+
+export function carryRiskMandatesEqual(left: unknown, right: unknown) {
+  const leftCanonical = canonicalCarryRiskMandate(left);
+  const rightCanonical = canonicalCarryRiskMandate(right);
+  return leftCanonical !== null
+    && rightCanonical !== null
+    && leftCanonical === rightCanonical;
 }
 
 export function carryCreationProofFreshness(
@@ -1689,6 +1697,32 @@ function formatUtcTimestamp(value: number) {
   } catch {
     return "UNVERIFIED";
   }
+}
+
+function canonicalCarryRiskMandate(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return canonicalCarryRiskMandateValue(value);
+}
+
+function canonicalCarryRiskMandateValue(value: unknown, key = ""): string | null {
+  if (value === null) return "null";
+  if (typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
+  if (typeof value === "number") return Number.isFinite(value) ? JSON.stringify(value) : null;
+  if (Array.isArray(value)) {
+    if (key === "owner_only_operations") {
+      if (value.some((item) => typeof item !== "string")) return null;
+      return `[${[...new Set(value)].sort().map((item) => JSON.stringify(item)).join(",")}]`;
+    }
+    const children = value.map((item) => canonicalCarryRiskMandateValue(item));
+    return children.some((item) => item === null) ? null : `[${children.join(",")}]`;
+  }
+  if (typeof value !== "object" || !value) return null;
+  const object = value as Record<string, unknown>;
+  const children = Object.keys(object).sort().map((childKey) => {
+    const child = canonicalCarryRiskMandateValue(object[childKey], childKey);
+    return child === null ? null : `${JSON.stringify(childKey)}:${child}`;
+  });
+  return children.some((item) => item === null) ? null : `{${children.join(",")}}`;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

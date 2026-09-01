@@ -17,6 +17,7 @@ import {
   carryPortfolioRunwaySummary,
   carryPortfolioValueSummary,
   carryRiskMandateSummary,
+  carryRiskMandatesEqual,
   carrySupervisionSummary,
   carryTerminalEconomics,
   carryTerminalGrossFunding,
@@ -546,6 +547,22 @@ describe("CarryTerminalBuilder", () => {
     expect(summary.capital.value).toContain("READY AT SIGN");
     expect(container.textContent).toContain("LIVE CONFIRMATION UNVERIFIED");
     expect(container.textContent).not.toContain("CONFIRM LIVE PAIRED ENTRY");
+  });
+
+  it("keeps live readiness when persisted mandate keys and owner-only operations are reordered", async () => {
+    const record = carryRecord();
+    const positionMandate = record.position.risk_mandate!;
+    const reorderedMandate = Object.fromEntries(Object.entries(positionMandate).reverse()) as unknown as typeof positionMandate;
+    reorderedMandate.owner_only_operations = [...positionMandate.owner_only_operations].reverse() as unknown as typeof positionMandate.owner_only_operations;
+    record.position.mandate_authorization!.signed_mandate!.risk_mandate = reorderedMandate;
+    api.listCarryPositions.mockResolvedValue({ ok: true, records: [record] });
+
+    expect(JSON.stringify(reorderedMandate)).not.toBe(JSON.stringify(positionMandate));
+    expect(carryRiskMandatesEqual(reorderedMandate, positionMandate)).toBe(true);
+    await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
+
+    expect(container.querySelector('[aria-label="Live paired entry confirmation"]')?.getAttribute("data-confirmation-ready")).toBe("true");
+    expect(container.textContent).toContain("CONFIRM LIVE PAIRED ENTRY");
   });
 
   it("hides retained route economics when the route is stale", async () => {

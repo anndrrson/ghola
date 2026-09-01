@@ -3456,6 +3456,7 @@ export function checkCarryExecutionContract(sources) {
   requireSectionText(liveConfirmationSummary, "const position = record.position;", "carry_terminal_live_confirmation_position_binding_missing");
   requireSectionText(liveConfirmationSummary, "position.mandate_authorization?.signed_mandate", "carry_terminal_live_confirmation_signed_mandate_missing");
   requireSectionText(liveConfirmationSummary, "position.target_notional_micro_usdc", "carry_terminal_live_confirmation_notional_binding_missing");
+  requireSectionText(liveConfirmationSummary, "carryRiskMandatesEqual(signedMandate, position.risk_mandate)", "carry_terminal_live_confirmation_canonical_mandate_binding_missing");
   requireSectionText(liveConfirmationSummary, "const opportunity = record.opportunity;", "carry_terminal_live_confirmation_capital_binding_missing");
   requireText("webCarryBuilder", 'aria-label="Live paired entry confirmation"', "carry_terminal_live_confirmation_surface_missing");
   requireText("webCarryBuilder", "liveConfirmation?.ready === true", "carry_terminal_live_confirmation_entry_gate_missing");
@@ -3463,6 +3464,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilder", "readOnly={Boolean(current || migrationSource)}", "carry_terminal_saved_notional_lock_missing");
   requireText("webCarryBuilderTest", "binds live confirmation to the persisted signed position instead of edited quote state", "carry_terminal_live_confirmation_binding_test_missing");
   requireText("webCarryBuilderTest", "locks live entry when persisted signed confirmation truth does not match", "carry_terminal_live_confirmation_mismatch_test_missing");
+  requireText("webCarryBuilderTest", "keeps live readiness when persisted mandate keys and owner-only operations are reordered", "carry_terminal_live_confirmation_reordered_mandate_test_missing");
   requireText("webCarryBuilder", "FLAT · 0 ORDERS", "carry_terminal_flat_state_missing");
   requireText("webCarryBuilder", "!current && lastFlat", "carry_terminal_flat_state_precedence_missing");
   requireText("webCarryBuilder", "record.final_reconciliation_evidence?.carry_position_id === record.position.position_id", "carry_terminal_flat_position_binding_missing");
