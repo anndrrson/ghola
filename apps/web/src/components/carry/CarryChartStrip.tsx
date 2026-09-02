@@ -36,6 +36,16 @@ const CarryTerminalBuilder = dynamic(
 
 const CARRY_ROUTE_DISPLAY_MAX_AGE_MS = 30_000;
 
+export type CarryRouteSummary = {
+  asset: string;
+  longVenue: string;
+  shortVenue: string;
+  executable: boolean;
+  exactCosts: boolean;
+  dailyNetBps: number | null;
+  evidence: string;
+};
+
 export function CarryChartStrip({
   asset,
   defaultOpen = false,
@@ -46,6 +56,9 @@ export function CarryChartStrip({
   onAutoRunNoSubmitStarted,
   onAutoRunNoSubmitResolved,
   onAssetSelect,
+  expanded,
+  onExpandedChange,
+  onSelectedRouteChange,
 }: {
   asset: string;
   defaultOpen?: boolean;
@@ -56,11 +69,15 @@ export function CarryChartStrip({
   onAutoRunNoSubmitStarted?: () => void;
   onAutoRunNoSubmitResolved?: (outcome: "completed" | "auth_required") => void;
   onAssetSelect: (asset: string) => void;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
+  onSelectedRouteChange?: (route: CarryRouteSummary | null) => void;
 }) {
   const [data, setData] = useState<CarryShadowResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  const [open, setOpen] = useState(defaultOpen);
+  const [localOpen, setLocalOpen] = useState(defaultOpen);
+  const open = expanded ?? localOpen;
   const [clock, setClock] = useState(() => Date.now());
   const [livePatches, setLivePatches] = useState<CarryLiveMarketPatch[]>([]);
   const [executionRouteKey, setExecutionRouteKey] = useState("");
@@ -103,8 +120,8 @@ export function CarryChartStrip({
   }, [load]);
 
   useEffect(() => {
-    if (defaultOpen) setOpen(true);
-  }, [defaultOpen]);
+    if (defaultOpen && expanded === undefined) setLocalOpen(true);
+  }, [defaultOpen, expanded]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 1_000);
@@ -215,6 +232,44 @@ export function CarryChartStrip({
   const marketEvidence = carryMarketQualificationEvidence(committedEvidenceResponse);
   const terminalReturn = `/trade?product=perps&venue=hyperliquid&market=${asset}-PERP&carry=open`;
   const setupHref = `/account?setup=carry&return_to=${encodeURIComponent(terminalReturn)}`;
+  const selectedAsset = selected?.candidate.asset ?? null;
+  const selectedLongVenue = selected ? venueName(selected.candidate.long.venue_id) : null;
+  const selectedShortVenue = selected ? venueName(selected.candidate.short.venue_id) : null;
+  const selectedExactCosts = selected?.quote.exactCosts ?? false;
+  const selectedDailyNetBps = selected?.quote.exactCosts
+    ? selectedDailyBps(selected.candidate, selected.quote)
+    : null;
+  const selectedExecutable = Boolean(selectedExecution);
+
+  useEffect(() => {
+    if (!selectedAsset || !selectedLongVenue || !selectedShortVenue) {
+      onSelectedRouteChange?.(null);
+      return;
+    }
+    onSelectedRouteChange?.({
+      asset: selectedAsset,
+      longVenue: selectedLongVenue,
+      shortVenue: selectedShortVenue,
+      executable: selectedExecutable,
+      exactCosts: selectedExactCosts,
+      dailyNetBps: selectedDailyNetBps,
+      evidence: edgeEvidence.value,
+    });
+  }, [
+    edgeEvidence.value,
+    onSelectedRouteChange,
+    selectedAsset,
+    selectedDailyNetBps,
+    selectedExactCosts,
+    selectedExecutable,
+    selectedLongVenue,
+    selectedShortVenue,
+  ]);
+
+  const setOpen = (next: boolean) => {
+    if (expanded === undefined) setLocalOpen(next);
+    onExpandedChange?.(next);
+  };
 
   return (
     <section
@@ -316,7 +371,7 @@ export function CarryChartStrip({
           <button
             type="button"
             aria-expanded={open}
-            onClick={() => setOpen((value) => !value)}
+            onClick={() => setOpen(!open)}
             className="inline-flex h-7 items-center gap-1 rounded px-1.5 font-mono text-[10px] font-semibold tracking-[0.08em] text-[#8fbae0] hover:bg-[#0d1622]"
           >
             ROUTES

@@ -38,7 +38,7 @@ import {
   WorkspaceProductNav,
 } from "@/components/trade/WorkspaceProductNav";
 import { GholaMarketChart } from "@/components/private-account/GholaMarketChart";
-import { CarryChartStrip } from "@/components/carry/CarryChartStrip";
+import { CarryChartStrip, type CarryRouteSummary } from "@/components/carry/CarryChartStrip";
 import { CarryPositionRail } from "@/components/carry/CarryPositionRail";
 import type { CarryLiveMarketPatch } from "@/lib/carry-market";
 import { carryTerminalChrome } from "@/lib/carry-terminal-chrome";
@@ -882,6 +882,8 @@ function AlternateProductWorkspace({
   } | null>(null);
   const [setupOpen, setSetupOpen] = useState(false);
   const [carryNoSubmitRequested, setCarryNoSubmitRequested] = useState(false);
+  const [carryControlsOpen, setCarryControlsOpen] = useState(false);
+  const [carryRoute, setCarryRoute] = useState<CarryRouteSummary | null>(null);
   const carryNoSubmitUrlConsumedRef = useRef(false);
   const [activityTab, setActivityTab] = useState<"positions" | "orders" | "activity">("positions");
   const [perpMarket, setPerpMarket] = useState(initialPerpMarket);
@@ -1605,10 +1607,8 @@ function AlternateProductWorkspace({
 
         {carryChrome.showProductNavigation ? <WorkspaceProductNav value={product} onChange={onProductChange} /> : null}
 
-        <div className={carryWorkspaceOpen ? "grid gap-2" : "grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]"}>
-          <section className={carryWorkspaceOpen
-            ? "min-w-0 overflow-hidden rounded-xl border border-[#252a32] bg-[#0b0d10] p-3 shadow-[0_24px_70px_rgba(0,0,0,0.34)] sm:p-4"
-            : "min-w-0 overflow-hidden rounded-xl border border-[#252a32] bg-[#0b0d10] p-4 shadow-[0_24px_70px_rgba(0,0,0,0.34)] sm:p-5"}
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <section className="min-w-0 overflow-hidden rounded-xl border border-[#252a32] bg-[#0b0d10] p-4 shadow-[0_24px_70px_rgba(0,0,0,0.34)] sm:p-5"
           >
             <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
               <div>
@@ -1660,7 +1660,10 @@ function AlternateProductWorkspace({
             {active && product === "perps" ? (
               <CarryChartStrip
                 asset={perpMarket}
-                defaultOpen={carryWorkspaceOpen}
+                defaultOpen={false}
+                expanded={carryWorkspaceOpen ? carryControlsOpen || carryNoSubmitRequested : undefined}
+                onExpandedChange={carryWorkspaceOpen ? setCarryControlsOpen : undefined}
+                onSelectedRouteChange={carryWorkspaceOpen ? setCarryRoute : undefined}
                 autoRunNoSubmit={carryNoSubmitRequested}
                 preferredLongVenue={workspaceParams.get("long_venue")}
                 preferredShortVenue={workspaceParams.get("short_venue")}
@@ -1719,11 +1722,17 @@ function AlternateProductWorkspace({
               <div className="mb-4 flex items-center justify-between">
                 <div>
                   <p className="text-sm font-semibold text-white">
-                    {product === "automate" ? "Agent mandate" : product === "swap" ? "Swap SOL" : "Place order"}
+                    {carryWorkspaceOpen ? "Paired position" : product === "automate" ? "Agent mandate" : product === "swap" ? "Swap SOL" : "Place order"}
                   </p>
-                  <p className="mt-1 text-xs text-[#788395]">{selectedVenue?.label}{useHyperliquidMarket ? ` ${hyperliquidNetwork}` : ""} · {marketLabel}</p>
+                  <p className="mt-1 text-xs text-[#788395]">
+                    {carryWorkspaceOpen
+                      ? carryRoute ? `${carryRoute.longVenue} / ${carryRoute.shortVenue} · ${marketLabel}` : `Scanning routes · ${marketLabel}`
+                      : <>{selectedVenue?.label}{useHyperliquidMarket ? ` ${hyperliquidNetwork}` : ""} · {marketLabel}</>}
+                  </p>
                 </div>
-                <select
+                {carryWorkspaceOpen ? (
+                  <span className="rounded border border-[#315478] bg-[#102033] px-2 py-1 font-mono text-[10px] font-semibold tracking-[0.08em] text-[#8fcbff]">TWO LEGS</span>
+                ) : <select
                   aria-label="Execution venue"
                   value={selectedVenue?.id}
                   onChange={(event) => changeVenue(event.target.value as TradeVenueId)}
@@ -1732,10 +1741,17 @@ function AlternateProductWorkspace({
                   {venues.map((item) => (
                     <option key={item.id} value={item.id}>{item.label}</option>
                   ))}
-                </select>
+                </select>}
               </div>
 
-              {product === "perps" && hyperliquidAction.action !== "review" ? (
+              {carryWorkspaceOpen ? (
+                <CarryPairedTicket
+                  route={carryRoute}
+                  controlsOpen={carryControlsOpen}
+                  onControlsOpenChange={setCarryControlsOpen}
+                  setupHref={`/account?setup=carry&return_to=${encodeURIComponent(tradeReturnHref)}`}
+                />
+              ) : product === "perps" && hyperliquidAction.action !== "review" ? (
                 <div className="grid min-h-[270px] place-content-center gap-4 rounded-lg border border-[#263448] bg-[#0b1320] p-6 text-center">
                   <span className="mx-auto grid h-11 w-11 place-items-center rounded-full bg-[#3da8ff]/12 text-[#75c2ff]">
                     {authenticated ? <ShieldCheck className="h-5 w-5" /> : <LogIn className="h-5 w-5" />}
@@ -1912,7 +1928,7 @@ function AlternateProductWorkspace({
                 </div>
               )}
 
-              <button
+              {!carryWorkspaceOpen ? <button
                 type="button"
                 disabled={authenticationLoading || (product === "perps" && hyperliquidAction.disabled) || perpWorking !== null || perpAttempt?.status === "ambiguous" || perpAttempt?.status === "awaiting_reconciliation" || (perpAttempt?.status === "reconciled" && !perpAttempt.order.reduce_only)}
                 onClick={() => {
@@ -1938,8 +1954,8 @@ function AlternateProductWorkspace({
                     : product === "perps" ? hyperliquidAction.label
                       : authenticationLoading ? "Checking sign-in…"
                         : authenticated ? `Set up ${selectedVenue?.label}` : "Sign in to continue"}
-              </button>
-              {perpAttempt?.status === "ambiguous" && (
+              </button> : null}
+              {!carryWorkspaceOpen && perpAttempt?.status === "ambiguous" && (
                 <button
                   type="button"
                   disabled={perpWorking !== null}
@@ -1949,7 +1965,7 @@ function AlternateProductWorkspace({
                   Check this exact order on Hyperliquid
                 </button>
               )}
-              {perpAttempt?.status === "reconciled" && !perpAttempt.order.reduce_only && provenHyperliquidFill(perpAttempt.result) && (
+              {!carryWorkspaceOpen && perpAttempt?.status === "reconciled" && !perpAttempt.order.reduce_only && provenHyperliquidFill(perpAttempt.result) && (
                 <button
                   type="button"
                   disabled={perpWorking !== null}
@@ -1961,11 +1977,11 @@ function AlternateProductWorkspace({
                     : "Prepare exact reduce-only close"}
                 </button>
               )}
-              {product === "perps" && (
+              {product === "perps" && !carryWorkspaceOpen && (
                 <p className={hyperliquidReadiness.ready ? "mt-3 text-center text-[11px] leading-4 text-[#68be98]" : "mt-3 text-center text-[11px] leading-4 text-[#aab4c2]"}>{hyperliquidReadiness.detail}</p>
               )}
-              {perpError && <p role="alert" className="mt-3 rounded-md border border-[#5d3036] bg-[#2a1115] px-3 py-2 text-xs leading-5 text-[#ffb7bd]">{perpError}</p>}
-              {perpNotice && <p role="status" className="mt-3 rounded-md border border-[#285c49] bg-[#0d251c] px-3 py-2 text-xs leading-5 text-[#92e1bd]">{perpNotice}</p>}
+              {!carryWorkspaceOpen && perpError && <p role="alert" className="mt-3 rounded-md border border-[#5d3036] bg-[#2a1115] px-3 py-2 text-xs leading-5 text-[#ffb7bd]">{perpError}</p>}
+              {!carryWorkspaceOpen && perpNotice && <p role="status" className="mt-3 rounded-md border border-[#285c49] bg-[#0d251c] px-3 py-2 text-xs leading-5 text-[#92e1bd]">{perpNotice}</p>}
               </div>
             </aside>
           ) : null}
@@ -2617,6 +2633,60 @@ function ReviewMetric({ label, value }: { label: string; value: string }) {
     <div className="bg-[#080c13] p-4">
       <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-[#71829d]">{label}</div>
       <div className="mt-1 font-mono text-base text-white tabular-nums">{value}</div>
+    </div>
+  );
+}
+
+function CarryPairedTicket({
+  route,
+  controlsOpen,
+  onControlsOpenChange,
+  setupHref,
+}: {
+  route: CarryRouteSummary | null;
+  controlsOpen: boolean;
+  onControlsOpenChange: (open: boolean) => void;
+  setupHref: string;
+}) {
+  const routeLabel = route ? `Long ${route.longVenue} · Short ${route.shortVenue}` : "Finding the best qualified pair";
+  const edgeLabel = route?.dailyNetBps == null
+    ? "Exact costs required"
+    : `${route.dailyNetBps >= 0 ? "+" : ""}${route.dailyNetBps.toFixed(2)} bp/day net`;
+  const statusLabel = route?.executable ? "Ready for no-submit verification" : route ? "Market view only" : "Scanning five venues";
+
+  return (
+    <div className="grid gap-4" aria-label="Paired order ticket">
+      <div className="border-y border-[#252d37] py-3">
+        <div className="flex items-center justify-between gap-3">
+          <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-[#6f7d91]">Route</span>
+          <span className={route?.executable ? "text-xs font-medium text-[#8fe0bf]" : "text-xs text-[#d9bd74]"}>{statusLabel}</span>
+        </div>
+        <p className="mt-2 text-sm font-semibold text-white">{routeLabel}</p>
+        <div className="mt-3 flex items-center justify-between gap-3 font-mono text-[11px]">
+          <span className="text-[#7f8b9d]">$11 / leg · 30D</span>
+          <span className={route?.dailyNetBps != null && route.dailyNetBps > 0 ? "text-[#72dfb2]" : "text-[#aeb8c7]"}>{edgeLabel}</span>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-3 text-xs text-[#788395]">
+        <span>{route ? `Evidence ${route.evidence}` : "Waiting for fresh route data"}</span>
+        <span>{route ? "Fresh quote" : "No quote"}</span>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => onControlsOpenChange(!controlsOpen)}
+        className="inline-flex h-12 w-full items-center justify-center rounded-md bg-[#3da8ff] text-sm font-bold text-[#03101d] transition hover:bg-[#67baff]"
+      >
+        {controlsOpen ? "Hide paired controls" : "Review paired position"}
+      </button>
+      <Link
+        href={setupHref}
+        className="inline-flex h-10 items-center justify-center rounded-md border border-[#2b3e55] bg-[#0b1320] text-xs font-semibold text-[#9ccfff] hover:border-[#3da8ff]"
+      >
+        Connect Aster and Hyperliquid
+      </Link>
+      <p className="text-center text-[11px] leading-4 text-[#657286]">One risk unit · no transfer or order from this ticket</p>
     </div>
   );
 }
