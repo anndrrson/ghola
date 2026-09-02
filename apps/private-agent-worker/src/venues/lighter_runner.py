@@ -741,6 +741,10 @@ async def run(payload):
         if action == "cancel":
             market = await market_for(client, payload.get("market"))
             target = int(payload["client_order_index"])
+            expected_order_index = payload.get("expected_order_index")
+            expected_fingerprint = payload.get("expected_order_fingerprint")
+            if expected_order_index is None or not isinstance(expected_fingerprint, dict):
+                fail("lighter cancel requires exact original order lineage", "venue_rejected")
             order = await exact_account_order(
                 client,
                 credential["account_index"],
@@ -748,16 +752,34 @@ async def run(payload):
                 target,
                 include_inactive=False,
             )
-            if order is None or order.get("order_index") is None:
-                fail("lighter cancel target is unavailable", "venue_rejected")
+            fingerprint_matched = order is not None and submitted_order_fingerprint_matches(
+                order,
+                expected_fingerprint,
+                account_index=credential["account_index"],
+                market_index=market.market_id,
+                market_symbol=market.symbol,
+                expected_order_index=expected_order_index,
+            )
+            if not fingerprint_matched:
+                fail("lighter cancel target lineage changed", "venue_rejected")
+            exact_order_index = exact_integer(order.get("order_index"), "lighter cancel order lineage is invalid")
             tx, response, cancel_err = await client.cancel_order(
                 market_index=int(market.market_id),
-                order_index=int(order["order_index"]),
+                order_index=exact_order_index,
                 api_key_index=int(credential["api_key_index"]),
             )
             if cancel_err is not None or getattr(response, "code", 200) != 200:
                 fail("lighter cancel was rejected", "venue_rejected")
-            return {"accepted": True, "status": "cancelled", "tx_hash": getattr(response, "tx_hash", None)}
+            return {
+                "accepted": True,
+                "status": "cancelled",
+                "tx_hash": getattr(response, "tx_hash", None),
+                "order_index": str(exact_order_index),
+                "cancel_target_revalidated": True,
+                "target_fingerprint_checked": True,
+                "target_fingerprint_matched": True,
+                "target_identifier_collision": False,
+            }
         if action == "reconcile":
             market = await market_for(client, payload.get("market"))
             target = int(payload["client_order_index"])

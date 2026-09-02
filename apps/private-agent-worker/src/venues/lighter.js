@@ -281,20 +281,52 @@ export async function submitLighterExecution({
     const cancel = instruction.cancel || {};
     const market = lighterMarket(cancel.market);
     const targetClientOrderIndex = integer(cancel.client_order_index, "lighter cancel target is invalid");
+    const expectedOrderFingerprint = normalizeSubmittedOrderFingerprint(cancel.expected_order_fingerprint);
+    const expectedOrderIndex = unsignedDecimalIntegerText(cancel.expected_order_index);
+    if (!expectedOrderFingerprint
+      || expectedOrderIndex === null
+      || expectedOrderFingerprint.client_order_index !== targetClientOrderIndex
+      || expectedOrderFingerprint.market !== market) {
+      throw new LighterExecutionError(
+        "lighter cancel requires exact original order lineage",
+        503,
+        "submission_ambiguous",
+      );
+    }
     try {
       const result = await runner({
         action: "cancel",
         credential,
         market,
         client_order_index: targetClientOrderIndex,
+        expected_order_index: expectedOrderIndex,
+        expected_order_fingerprint: expectedOrderFingerprint,
         timeout_ms: timeoutMs(),
       });
-      return normalizedSubmit(
+      if (result?.cancel_target_revalidated !== true
+        || result?.target_fingerprint_checked !== true
+        || result?.target_fingerprint_matched !== true
+        || result?.target_identifier_collision === true
+        || unsignedDecimalIntegerText(result?.order_index) !== expectedOrderIndex) {
+        throw new LighterExecutionError(
+          "lighter cancel target revalidation is unproven",
+          503,
+          "submission_ambiguous",
+        );
+      }
+      const normalized = normalizedSubmit(
         result,
         targetClientOrderIndex,
         "cancelled",
-        normalizeSubmittedOrderFingerprint(instruction.cancel?.expected_order_fingerprint),
+        expectedOrderFingerprint,
       );
+      return {
+        ...normalized,
+        provider_ref_seed: {
+          ...normalized.provider_ref_seed,
+          order_index: expectedOrderIndex,
+        },
+      };
     } catch (error) {
       throw ambiguousLighterWrite(error);
     }

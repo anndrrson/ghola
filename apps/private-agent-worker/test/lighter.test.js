@@ -340,6 +340,78 @@ print("checked")
   assert.equal(result.stdout.trim(), "checked");
 });
 
+test("revalidates Lighter provider lineage immediately before canceling a reused client index", () => {
+  const runnerPath = fileURLToPath(new URL("../src/venues/lighter_runner.py", import.meta.url));
+  const check = String.raw`
+import asyncio, importlib.util, sys, types
+spec = importlib.util.spec_from_file_location("lighter_runner", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+def strict_fail(message, code="connector_submit_failed"):
+    raise RuntimeError(code + ":" + message)
+module.fail = strict_fail
+fingerprint = {
+    "version": 1, "market": "BTC", "client_order_index": 77,
+    "side": "buy", "base_size": "0.001", "limit_price": "100000",
+    "reduce_only": False, "time_in_force": "ioc", "submitted_at_ms": 1800000000000,
+}
+active_order = {
+    "owner_account_index": 123, "market_index": 1, "client_order_index": 77,
+    "order_index": 89, "initial_base_amount": "0.001", "price": "100000",
+    "is_ask": False, "side": "buy", "type": "limit",
+    "time_in_force": "immediate-or-cancel", "reduce_only": False,
+    "created_at": 1800000000100,
+}
+cancelled_order_indexes = []
+class OrderApi:
+    async def order_books(self):
+        return types.SimpleNamespace(order_books=[types.SimpleNamespace(symbol="BTC", market_type="perp", market_id=1)])
+    async def account_active_orders(self, **kwargs):
+        return {"orders": [dict(active_order)]}
+class Client:
+    def __init__(self, **kwargs):
+        self.order_api = OrderApi()
+    def check_client(self):
+        return None
+    def create_auth_token_with_expiry(self, api_key_index):
+        return "signed-read-token", None
+    async def cancel_order(self, **kwargs):
+        cancelled_order_indexes.append(kwargs["order_index"])
+        return None, types.SimpleNamespace(code=200, tx_hash="0xcancel"), None
+    async def close(self):
+        pass
+sys.modules["lighter"] = types.SimpleNamespace(SignerClient=Client)
+payload = {
+    "action": "cancel",
+    "credential": {
+        "api_base_url": "https://mainnet.zklighter.elliot.ai",
+        "account_index": 123, "api_key_index": 4, "api_private_key": "11" * 32,
+    },
+    "market": "BTC", "client_order_index": 77,
+    "expected_order_index": "88", "expected_order_fingerprint": fingerprint,
+}
+async def main():
+    try:
+        await module.run(payload)
+    except RuntimeError as error:
+        assert str(error) == "venue_rejected:lighter cancel target lineage changed"
+    else:
+        raise AssertionError("replacement order was canceled")
+    assert cancelled_order_indexes == []
+    active_order["order_index"] = 88
+    result = await module.run(payload)
+    assert result["cancel_target_revalidated"] is True
+    assert result["target_fingerprint_matched"] is True
+    assert result["order_index"] == "88"
+    assert cancelled_order_indexes == [88]
+asyncio.run(main())
+print("checked")
+`;
+  const result = spawnSync(process.env.PRIVATE_AGENT_PYTHON || "python3", ["-c", check, runnerPath], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.stdout.trim(), "checked");
+});
+
 test("uses the pinned Lighter SDK active and inactive order APIs for exact reconciliation", () => {
   const runnerPath = fileURLToPath(new URL("../src/venues/lighter_runner.py", import.meta.url));
   const check = String.raw`
@@ -949,6 +1021,38 @@ test("never retries an ambiguous Lighter submission", async () => {
   }
 });
 
+test("refuses a Lighter cancel before any venue call when original provider lineage is absent", async () => {
+  const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+  const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+  process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = "full_ticket";
+  let calls = 0;
+  try {
+    await assert.rejects(submitLighterExecution({
+      credential: credential(),
+      instruction: {
+        operation_class: "cancel",
+        cancel: {
+          market: "BTC",
+          client_order_index: 77,
+          expected_order_fingerprint: fingerprint(),
+        },
+      },
+      clientOrderIndex: 900,
+      runner: async () => {
+        calls += 1;
+        return { accepted: true, status: "cancelled" };
+      },
+    }), (error) => error.code === "submission_ambiguous");
+    assert.equal(calls, 0);
+  } finally {
+    if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+    else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
+    if (previousMode === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+    else process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = previousMode;
+  }
+});
+
 test("recovers an ambiguous Lighter cancel against only its original target", async () => {
   const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
   const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
@@ -977,6 +1081,8 @@ test("recovers an ambiguous Lighter cancel against only its original target", as
           cancelCalls += 1;
           assert.equal(payload.client_order_index, 77);
           assert.equal(payload.market, "BTC");
+          assert.equal(payload.expected_order_index, "88");
+          assert.deepEqual(payload.expected_order_fingerprint, fingerprint());
           throw new Error("cancel response lost after write");
         }
         reconcileCalls += 1;
