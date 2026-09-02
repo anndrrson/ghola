@@ -11,7 +11,7 @@ import {
 } from "./carry-account-connections";
 
 describe("Carry account connections", () => {
-  it("recognizes the nested Hyperliquid vault status response", () => {
+  it("does not label a sealed Hyperliquid vault connected before no-submit verification", () => {
     expect(carryAccountConnections({
       passport: { account_commitment: "account_test", venues: [] },
       hyperliquidStatus: {
@@ -19,7 +19,7 @@ describe("Carry account connections", () => {
         ready: false,
         hyperliquid_execution_vault: { status: "sealed" },
       },
-    })).toMatchObject({ accountCommitment: "account_test", venues: { hyperliquid: true } });
+    })).toMatchObject({ accountCommitment: "account_test", venues: { hyperliquid: false } });
   });
 
   it("requires read and trade capability before treating passport venues as connected", () => {
@@ -46,7 +46,33 @@ describe("Carry account connections", () => {
       passport: { account_commitment: "account_test", venues: [] },
       hyperliquidStatus: { credentials_sealed: true, ready: false, connection_proof: null },
     });
+    expect(result.venues.hyperliquid).toBe(false);
+  });
+
+  it("recognizes the current verified Hyperliquid no-submit status", () => {
+    const result = carryAccountConnections({
+      passport: { account_commitment: "account_test", venues: [] },
+      hyperliquidStatus: {
+        no_submit_verification_status: "verified_no_funds",
+        connection: {
+          ready: true,
+          credentials_sealed: true,
+          proof: { status: "verified_no_funds" },
+        },
+      },
+    });
     expect(result.venues.hyperliquid).toBe(true);
+  });
+
+  it("fails closed on inconsistent Hyperliquid readiness flags", () => {
+    const result = carryAccountConnections({
+      passport: { account_commitment: "account_test", venues: [] },
+      hyperliquidStatus: {
+        no_submit_verification_status: "verified_no_funds",
+        connection: { ready: true, proof: null },
+      },
+    });
+    expect(result.venues.hyperliquid).toBe(false);
   });
 
   it("unlocks route verification only when every execution venue is connected", () => {

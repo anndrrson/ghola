@@ -72,13 +72,14 @@ export function carryAccountConnections(input: {
     venue.venue_id === venueId && venue.status === "ready" && venue.can_read === true && venue.can_trade === true
   );
   const hyperliquid = record(input.hyperliquidStatus);
-  const hyperliquidVault = record(hyperliquid.hyperliquid_execution_vault);
-  const managedAllocation = record(hyperliquid.managed_allocation);
+  const hyperliquidConnection = record(hyperliquid.connection);
+  const connectionProof = record(hyperliquidConnection.proof ?? hyperliquid.connection_proof);
+  const verifiedNoSubmit = connectionProof.status === "verified_no_funds" && (
+    hyperliquidConnection.ready === true && hyperliquid.no_submit_verification_status === "verified_no_funds" ||
+    hyperliquid.ready === true
+  );
   const hyperliquidReady =
-      hyperliquid.ready === true ||
-      hyperliquid.credentials_sealed === true ||
-      hyperliquidVault.status === "sealed" ||
-      managedAllocation.status === "allocated" ||
+      verifiedNoSubmit ||
       ready("hyperliquid");
   return {
     accountCommitment: stringValue(passport.account_commitment),

@@ -322,7 +322,14 @@ describe("CarryAccountSetup", () => {
       account_commitment: "carry:account:test:0001",
       venues: [{ venue_id: "lighter", status: "ready", can_read: true, can_trade: true }],
     });
-    api.getHyperliquidExecutionVaultStatus.mockResolvedValue({ credentials_sealed: true });
+    api.getHyperliquidExecutionVaultStatus.mockResolvedValue({
+      no_submit_verification_status: "verified_no_funds",
+      connection: {
+        ready: true,
+        credentials_sealed: true,
+        proof: { status: "verified_no_funds" },
+      },
+    });
 
     await renderSetup(returnTo);
     await flush();
