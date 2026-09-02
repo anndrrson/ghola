@@ -9,6 +9,7 @@ import {
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { finalizeRevenueEvidenceEvent } from "../execution/revenue-evidence.js";
+import { hasExactCarryFlatReconciliation } from "../execution/carry-reconciliation.js";
 
 const STATE_VERSION = 1;
 
@@ -3391,22 +3392,17 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save, atomicU
 }
 
 function exactFlatReservationRecord(record, expected) {
-  const evidence = record?.final_reconciliation_evidence;
-  if (record?.position?.status !== "reconciled" || !evidence || evidence.account_state_checked !== true
-    || evidence.transaction_broadcast !== false || evidence.gross_exposure_micro_usdc !== 0
-    || evidence.open_order_count !== 0 || evidence.owner_commitment !== expected?.owner_commitment
-    || evidence.carry_position_id !== expected?.position_id
-    || !Number.isSafeInteger(evidence.checked_at_ms) || evidence.checked_at_ms <= 0
-    || !/^[A-Za-z0-9:_-]{8,180}$/.test(String(evidence.reconciliation_commitment || ""))) return false;
-  const venues = Array.isArray(evidence.venues) ? evidence.venues : [];
-  return Array.isArray(expected?.venue_ids) && expected.venue_ids.length === 2
-    && new Set(expected.venue_ids).size === 2
-    && venues.length === 2
-    && new Set(venues.map((item) => item?.venue_id)).size === 2
-    && expected.venue_ids.every((venueId) => venues.some((item) => item?.venue_id === venueId
-      && item.account_commitment === expected.account_commitments?.[venueId]
-      && item.authorized === true && item.account_state_checked === true && item.flat_zero_orders === true
-      && item.position_count === 0 && item.open_order_count === 0));
+  return record?.position?.status === "reconciled"
+    && hasExactCarryFlatReconciliation(
+      record.final_reconciliation_evidence,
+      expected?.venue_ids,
+      {
+        owner_commitment: expected?.owner_commitment,
+        carry_position_id: expected?.position_id,
+        account_commitments: expected?.account_commitments,
+        inventory_expectations: expected?.inventory_expectations,
+      },
+    );
 }
 
 function exactNoSubmitReservationRecord(record, saga, positionId, sagaId) {

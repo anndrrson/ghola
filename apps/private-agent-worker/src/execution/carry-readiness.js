@@ -6,6 +6,7 @@ import {
 } from "@ghola/execution-core";
 import { runtimeCarryQualificationImageDigest } from "./carry-qualification.js";
 import { validVenueLiquidationBinding } from "../venues/liquidation-distance.js";
+import { validCarryInventoryEvidence } from "./carry-inventory.js";
 
 const DEFAULT_MAX_AGE_MS = 15 * 60_000;
 const DEFAULT_QUALIFICATION_MAX_AGE_MS = 90 * 86_400_000;
@@ -338,10 +339,18 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
         && account?.flat_zero_orders === leg?.account_state?.flat_zero_orders
         && account?.liquidation_distance_bps === leg?.account_state?.liquidation_distance_bps
         && account?.liquidation_distance_verified === leg?.account_state?.liquidation_distance_verified
-        && account?.liquidation_distance_source === leg?.account_state?.liquidation_distance_source;
+        && account?.liquidation_distance_source === leg?.account_state?.liquidation_distance_source
+        && stableJson(account?.inventory) === stableJson(leg?.account_state?.inventory);
       const valid = typeof account?.authorized === "boolean"
         && typeof account?.flat_zero_orders === "boolean"
         && typeof account?.capital_ready === "boolean"
+        && account?.inventory_verified === true
+        && validCarryInventoryEvidence(account?.inventory, {
+          venue_id: venueId,
+          account_commitment: account?.account_commitment,
+        })
+        && account.inventory.position_inventory_verified === true
+        && account.inventory.open_order_inventory_verified === true
         && account?.execution_leverage === 1
         && account?.owner_only_funding === true
         && available !== null
@@ -358,7 +367,10 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
         && account.account_state_commitment === leg?.account_state?.account_state_commitment
         && venueMinimum <= required
         && shortfall === Math.max(0, required - available)
-        && account.capital_ready === (account.authorized && account.flat_zero_orders && shortfall === 0);
+        && account.capital_ready === (account.authorized
+          && account.inventory_verified
+          && account.flat_zero_orders
+          && shortfall === 0);
       if (!accountStateBound) reasons.push(`carry_readiness_capital_state_binding_invalid:${left}:${right}:${venueId}`);
       if (!valid) reasons.push(`carry_readiness_capital_invalid:${left}:${right}:${venueId}`);
       pairCapitalReady = pairCapitalReady && account?.capital_ready === true;
@@ -371,7 +383,7 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
   for (const venueId of expectedVenues) {
     const records = capitalByVenue.get(venueId) || [];
     if (records.length !== expectedVenues.length - 1
-      || records.some((record) => JSON.stringify(capitalConsistencyRecord(record)) !== JSON.stringify(capitalConsistencyRecord(records[0])))) {
+      || records.some((record) => stableJson(capitalConsistencyRecord(record)) !== stableJson(capitalConsistencyRecord(records[0])))) {
       reasons.push(`carry_readiness_capital_inconsistent:${venueId}`);
     }
   }
@@ -565,26 +577,26 @@ function buildCarryExecutionDiagnostic({ request, matrix, now_ms: nowMs, env }) 
 }
 
 function readinessKey({ owner_commitment: ownerCommitment, image_digest: imageDigest, venue_ids: venueIds, asset, notional_usd: notionalUsd, horizon_days: horizonDays }) {
-  return `carry:readiness:${createHash("sha256").update(JSON.stringify({ ownerCommitment, imageDigest, venueIds, asset, notionalUsd, horizonDays })).digest("hex").slice(0, 40)}`;
+  return `carry:readiness:${createHash("sha256").update(stableJson({ ownerCommitment, imageDigest, venueIds, asset, notionalUsd, horizonDays })).digest("hex").slice(0, 40)}`;
 }
 
 function diagnosticKey({ owner_commitment: ownerCommitment, image_digest: imageDigest, asset, notional_usd: notionalUsd, horizon_days: horizonDays }) {
-  return `carry:diagnostic:${createHash("sha256").update(JSON.stringify({ ownerCommitment, imageDigest, asset, notionalUsd, horizonDays })).digest("hex").slice(0, 40)}`;
+  return `carry:diagnostic:${createHash("sha256").update(stableJson({ ownerCommitment, imageDigest, asset, notionalUsd, horizonDays })).digest("hex").slice(0, 40)}`;
 }
 
 function evidenceCommitment(evidence) {
   const { evidence_commitment: _ignored, ...material } = evidence || {};
-  return `carry:readiness:evidence:${createHash("sha256").update(JSON.stringify(material)).digest("hex").slice(0, 40)}`;
+  return `carry:readiness:evidence:${createHash("sha256").update(stableJson(material)).digest("hex").slice(0, 40)}`;
 }
 
 function diagnosticCommitment(evidence) {
   const { diagnostic_commitment: _ignored, ...material } = evidence || {};
-  return `carry:diagnostic:evidence:${createHash("sha256").update(JSON.stringify(material)).digest("hex").slice(0, 40)}`;
+  return `carry:diagnostic:evidence:${createHash("sha256").update(stableJson(material)).digest("hex").slice(0, 40)}`;
 }
 
 export function carryAccountStateCommitment(value) {
   const { account_state_commitment: _ignored, ...material } = accountStateRecord(value);
-  return `carry:account-state:${createHash("sha256").update(JSON.stringify(material)).digest("hex").slice(0, 40)}`;
+  return `carry:account-state:${createHash("sha256").update(stableJson(material)).digest("hex").slice(0, 40)}`;
 }
 
 function validAccountStateEvidence(value, expected) {
@@ -597,6 +609,12 @@ function validAccountStateEvidence(value, expected) {
     && positionCount !== null
     && openOrderCount !== null
     && value?.flat_zero_orders === (positionCount === 0 && openOrderCount === 0)
+    && validCarryInventoryEvidence(value?.inventory, {
+      venue_id: value?.venue_id,
+      account_commitment: value?.account_commitment,
+    })
+    && value.inventory.position_inventory_verified === true
+    && value.inventory.open_order_inventory_verified === true
     && validVenueLiquidationBinding(value, positionCount)
     && commitment(value?.account_state_commitment)
     && value.account_state_commitment === carryAccountStateCommitment(value);
@@ -614,6 +632,7 @@ function accountStateRecord(value) {
     liquidation_distance_bps: value?.liquidation_distance_bps,
     liquidation_distance_verified: value?.liquidation_distance_verified === true,
     liquidation_distance_source: value?.liquidation_distance_source ?? null,
+    inventory: value?.inventory ? JSON.parse(JSON.stringify(value.inventory)) : null,
     account_state_commitment: String(value?.account_state_commitment || ""),
   };
 }
@@ -688,6 +707,8 @@ function capitalRecord(value) {
     liquidation_distance_bps: value?.liquidation_distance_bps,
     liquidation_distance_verified: value?.liquidation_distance_verified === true,
     liquidation_distance_source: value?.liquidation_distance_source ?? null,
+    inventory: value?.inventory ? JSON.parse(JSON.stringify(value.inventory)) : null,
+    inventory_verified: value?.inventory_verified === true,
     account_state_checked_at_ms: value?.account_state_checked_at_ms,
     account_state_commitment: String(value?.account_state_commitment || ""),
     capital_ready: value?.capital_ready === true,

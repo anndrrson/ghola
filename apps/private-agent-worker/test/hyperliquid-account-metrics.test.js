@@ -1,6 +1,85 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readHyperliquidCarryAccountMetrics, readHyperliquidFundingSettlements } from "../src/venues/hyperliquid.js";
+import {
+  readHyperliquidAccountSnapshot,
+  readHyperliquidCarryAccountMetrics,
+  readHyperliquidFundingSettlements,
+} from "../src/venues/hyperliquid.js";
+
+const CREDENTIAL = {
+  network: "testnet",
+  base_url: "https://api.hyperliquid-testnet.xyz",
+  account_address: "0x1111111111111111111111111111111111111111",
+  api_wallet_private_key: `0x${"31".repeat(32)}`,
+};
+
+test("preserves complete Hyperliquid inventory beyond the former display window", async () => {
+  const positions = Array.from({ length: 13 }, (_, index) => ({
+    position: {
+      coin: `T${index}`,
+      szi: index % 2 === 0 ? "0.1" : "-0.1",
+      entryPx: "100",
+      positionValue: "10",
+      unrealizedPnl: "0",
+      liquidationPx: index % 2 === 0 ? "80" : "120",
+    },
+  }));
+  const openOrders = Array.from({ length: 13 }, (_, index) => ({
+    oid: index + 1,
+    cloid: `order-${index + 1}`,
+    coin: `T${index}`,
+    side: index % 2 === 0 ? "B" : "A",
+    sz: "0.1",
+    limitPx: "100",
+    timestamp: 1_800_000_000_000 + index,
+  }));
+  const snapshot = await readHyperliquidAccountSnapshot({
+    credential: CREDENTIAL,
+    fetchImpl: async (_url, init) => {
+      const { type } = JSON.parse(init.body);
+      const body = type === "clearinghouseState"
+        ? { marginSummary: { accountValue: "100" }, assetPositions: positions }
+        : type === "spotClearinghouseState"
+          ? { balances: [] }
+          : type === "openOrders"
+            ? openOrders
+            : [];
+      return new Response(JSON.stringify(body), { status: 200 });
+    },
+  });
+  assert.equal(snapshot.position_count, 13);
+  assert.equal(snapshot.positions.length, 13);
+  assert.equal(snapshot.position_inventory_source_count, 13);
+  assert.equal(snapshot.position_inventory_verified, true);
+  assert.equal(snapshot.open_order_count, 13);
+  assert.equal(snapshot.open_orders.length, 13);
+  assert.equal(snapshot.open_order_inventory_source_count, 13);
+  assert.equal(snapshot.open_order_inventory_verified, true);
+  assert.equal(snapshot.open_order_inventory_pagination_complete, true);
+  assert.equal(snapshot.open_order_inventory_has_more, false);
+});
+
+test("quarantines non-array Hyperliquid open-order responses", async () => {
+  const snapshot = await readHyperliquidAccountSnapshot({
+    credential: CREDENTIAL,
+    fetchImpl: async (_url, init) => {
+      const { type } = JSON.parse(init.body);
+      const body = type === "clearinghouseState"
+        ? { marginSummary: { accountValue: "100" }, assetPositions: [] }
+        : type === "spotClearinghouseState"
+          ? { balances: [] }
+          : type === "openOrders"
+            ? { status: "ok", orders: [] }
+            : [];
+      return new Response(JSON.stringify(body), { status: 200 });
+    },
+  });
+  assert.equal(snapshot.open_order_count, null);
+  assert.equal(snapshot.open_order_inventory_source_count, null);
+  assert.equal(snapshot.open_order_inventory_verified, false);
+  assert.equal(snapshot.open_order_inventory_pagination_complete, false);
+  assert.equal(snapshot.open_order_inventory_has_more, true);
+});
 
 test("loads exact Hyperliquid margin and account fee inputs for Carry", async () => {
   const seen = [];

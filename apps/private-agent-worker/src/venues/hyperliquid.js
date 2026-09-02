@@ -11,6 +11,10 @@ import {
   turnkeyHyperliquidCredentialFromVault,
   verifyTurnkeyHyperliquidNoSubmit,
 } from "./hyperliquid-turnkey.js";
+import {
+  carryInventoryClientOrderIdentityCommitment,
+  carryInventoryProviderOrderIdentityCommitment,
+} from "../execution/carry-inventory.js";
 import { hyperliquidLiquidationDistance } from "./liquidation-distance.js";
 
 const MAINNET_API_URL = "https://api.hyperliquid.xyz";
@@ -18,8 +22,6 @@ const TESTNET_API_URL = "https://api.hyperliquid-testnet.xyz";
 const MAINNET_WS_URL = "wss://api.hyperliquid.xyz/ws";
 const TESTNET_WS_URL = "wss://api.hyperliquid-testnet.xyz/ws";
 const RECENT_FILL_WINDOW = 12;
-const OPEN_ORDER_WINDOW = 12;
-const POSITION_WINDOW = 12;
 const HYPERLIQUID_FILL_PAGE_LIMIT = 2_000;
 const HYPERLIQUID_FILL_MAX_PAGES = 16;
 const HYPERLIQUID_FUNDING_PAGE_LIMIT = 500;
@@ -1001,6 +1003,12 @@ export async function readHyperliquidAccountSnapshot({
       stream_status: "snapshot",
       positions: [],
       open_orders: [],
+      position_inventory_verified: true,
+      position_inventory_pagination_complete: true,
+      position_inventory_has_more: false,
+      open_order_inventory_verified: true,
+      open_order_inventory_pagination_complete: true,
+      open_order_inventory_has_more: false,
       recent_fills: [],
       visibility_summary: hyperliquidAccountVisibility(accountSource),
       last_checked_at: new Date().toISOString(),
@@ -1038,6 +1046,8 @@ export async function readHyperliquidAccountSnapshot({
     userFills,
     accountSource,
     streamStatus: "snapshot",
+    openOrdersPaginationComplete: true,
+    openOrdersHasMore: false,
   });
 }
 
@@ -1185,6 +1195,8 @@ export async function createHyperliquidAccountStateStream({
   let currentSpotState = null;
   let currentAbstraction = null;
   let currentOpenOrders = [];
+  let currentOpenOrdersPaginationComplete = false;
+  let currentOpenOrdersHasMore = true;
   let currentFills = [];
 
   async function backfill(status = "backfilling") {
@@ -1216,6 +1228,8 @@ export async function createHyperliquidAccountStateStream({
     currentSpotState = spotState;
     currentAbstraction = abstraction;
     currentOpenOrders = Array.isArray(openOrders) ? openOrders : [];
+    currentOpenOrdersPaginationComplete = Array.isArray(openOrders);
+    currentOpenOrdersHasMore = !currentOpenOrdersPaginationComplete;
     currentFills = Array.isArray(userFills) ? userFills : [];
     emitAccountState("backfilling");
   }
@@ -1231,6 +1245,8 @@ export async function createHyperliquidAccountStateStream({
         userFills: currentFills,
         accountSource,
         streamStatus,
+        openOrdersPaginationComplete: currentOpenOrdersPaginationComplete,
+        openOrdersHasMore: currentOpenOrdersHasMore,
       }),
     });
   }
@@ -1304,11 +1320,16 @@ export async function createHyperliquidAccountStateStream({
       return true;
     }
     if (channel === "openOrders") {
-      currentOpenOrders = Array.isArray(data)
+      const rows = Array.isArray(data)
         ? data
         : Array.isArray(data?.openOrders)
           ? data.openOrders
-          : currentOpenOrders;
+          : null;
+      if (rows) {
+        currentOpenOrders = rows;
+        currentOpenOrdersHasMore = data?.has_more === true || data?.hasMore === true;
+        currentOpenOrdersPaginationComplete = !currentOpenOrdersHasMore;
+      }
       return true;
     }
     if (channel === "userFills") {
@@ -1359,6 +1380,8 @@ function hyperliquidAccountStateFromParts({
   userFills,
   accountSource,
   streamStatus = "snapshot",
+  openOrdersPaginationComplete = false,
+  openOrdersHasMore = true,
 }) {
   const perpAccountValue = decimalNumber(
     state?.marginSummary?.accountValue ??
@@ -1370,11 +1393,17 @@ function hyperliquidAccountStateFromParts({
     : 0;
   const accountValue = Math.max(perpAccountValue, unifiedUsdc);
   const liquidation = hyperliquidLiquidationDistance(state);
-  const positions = sanitizePositions(state?.assetPositions);
-  const sanitizedOpenOrders = sanitizeOpenOrders(openOrders);
+  const positionInventory = sanitizePositions(state?.assetPositions);
+  const openOrderInventory = sanitizeOpenOrders(openOrders);
   const recentFills = sanitizeFills(userFills);
   const positionCount = liquidation.position_count;
-  const openOrderCount = sanitizedOpenOrders.length;
+  const openOrderCount = Array.isArray(openOrders) ? openOrders.length : null;
+  const positionInventoryComplete = Array.isArray(state?.assetPositions)
+    && positionInventory.rows.length === positionCount;
+  const openOrderInventoryComplete = Number.isSafeInteger(openOrderCount)
+    && openOrdersPaginationComplete === true
+    && openOrdersHasMore === false
+    && openOrderInventory.rows.length === openOrderCount;
   // Match the ticket and venue launch minimum. Previously a $5 account could
   // appear ready even though every supported order would be rejected.
   const status = accountValue >= 10 ? "ready_to_trade" : "needs_funds";
@@ -1392,10 +1421,20 @@ function hyperliquidAccountStateFromParts({
     liquidation_distance_bps: liquidation.liquidation_distance_bps,
     liquidation_distance_verified: liquidation.liquidation_distance_verified,
     liquidation_distance_source: liquidation.liquidation_distance_source,
-    open_order_count: openOrderCount,
+    open_order_count: Number.isSafeInteger(openOrderCount) ? openOrderCount : null,
     stream_status: streamStatus,
-    positions,
-    open_orders: sanitizedOpenOrders,
+    positions: positionInventory.rows,
+    open_orders: openOrderInventory.rows,
+    position_inventory_verified: positionInventory.verified && positionInventoryComplete,
+    position_inventory_pagination_complete: positionInventoryComplete,
+    position_inventory_has_more: !positionInventoryComplete,
+    position_inventory_source_count: Array.isArray(state?.assetPositions)
+      ? state.assetPositions.filter((item) => decimalNumber((item?.position || item)?.szi ?? "0") !== 0).length
+      : null,
+    open_order_inventory_verified: openOrderInventory.verified && openOrderInventoryComplete,
+    open_order_inventory_pagination_complete: openOrderInventoryComplete,
+    open_order_inventory_has_more: !openOrderInventoryComplete,
+    open_order_inventory_source_count: openOrderCount,
     recent_fills: recentFills,
     visibility_summary: hyperliquidAccountVisibility(accountSource),
     last_checked_at: new Date().toISOString(),
@@ -1414,11 +1453,10 @@ function availableSpotUsdc(spotState) {
 }
 
 function sanitizePositions(assetPositions) {
-  if (!Array.isArray(assetPositions)) return [];
-  return assetPositions
+  if (!Array.isArray(assetPositions)) return { verified: false, rows: [] };
+  const rows = assetPositions
     .map((item) => item?.position || item)
     .filter((position) => decimalNumber(position?.szi ?? "0") !== 0)
-    .slice(0, POSITION_WINDOW)
     .map((position) => {
       const size = decimalNumber(position?.szi ?? "0");
       return {
@@ -1430,16 +1468,23 @@ function sanitizePositions(assetPositions) {
         }),
         market: stringValue(position?.coin) || "UNKNOWN",
         side: size >= 0 ? "long" : "short",
+        base_size: canonicalUnsignedDecimal(position?.szi, { absolute: true }),
         size_bucket: decimalBucket(Math.abs(size)),
         entry_price_bucket: decimalBucket(position?.entryPx),
         unrealized_pnl_bucket: signedDecimalBucket(position?.unrealizedPnl),
       };
     });
+  return {
+    verified: rows.every((row) => row.market !== "UNKNOWN"
+      && ["long", "short"].includes(row.side)
+      && row.base_size !== null),
+    rows,
+  };
 }
 
 function sanitizeOpenOrders(openOrders) {
-  if (!Array.isArray(openOrders)) return [];
-  return openOrders.slice(0, OPEN_ORDER_WINDOW).map((openOrder) => ({
+  if (!Array.isArray(openOrders)) return { verified: false, rows: [] };
+  const rows = openOrders.map((openOrder) => ({
     order_handle_commitment: commitment("hyperliquid_open_order", {
       oid: openOrder?.oid,
       cloid: openOrder?.cloid,
@@ -1447,13 +1492,38 @@ function sanitizeOpenOrders(openOrders) {
       side: openOrder?.side,
       timestamp: openOrder?.timestamp,
     }),
+    client_order_identity_commitment: carryInventoryClientOrderIdentityCommitment({
+      venue_id: "hyperliquid",
+      client_order_id: openOrder?.cloid,
+    }),
+    provider_order_identity_commitment: carryInventoryProviderOrderIdentityCommitment({
+      venue_id: "hyperliquid",
+      provider_order_id: openOrder?.oid,
+    }),
     market: stringValue(openOrder?.coin) || "UNKNOWN",
     side: normalizeSide(openOrder?.side),
+    base_size: canonicalUnsignedDecimal(openOrder?.sz ?? openOrder?.origSz),
     size_bucket: decimalBucket(openOrder?.sz ?? openOrder?.origSz),
     price_bucket: decimalBucket(openOrder?.limitPx ?? openOrder?.px),
     status: stringValue(openOrder?.status) || "open",
     reduce_only: openOrder?.reduceOnly === true,
   }));
+  return {
+    verified: rows.every((row) => row.market !== "UNKNOWN"
+      && ["buy", "sell"].includes(row.side)
+      && row.base_size !== null),
+    rows,
+  };
+}
+
+function canonicalUnsignedDecimal(value, { absolute = false } = {}) {
+  const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(String(value ?? "").trim());
+  if (!match) return null;
+  if (match[1] === "-" && !absolute) return null;
+  const whole = match[2].replace(/^0+(?=\d)/, "");
+  const fraction = String(match[3] || "").replace(/0+$/, "");
+  if (!/[1-9]/.test(`${whole}${fraction}`)) return null;
+  return fraction ? `${whole}.${fraction}` : whole;
 }
 
 function sanitizeFills(fills) {

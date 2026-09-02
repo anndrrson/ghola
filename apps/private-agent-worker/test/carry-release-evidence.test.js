@@ -24,6 +24,11 @@ import { storeCarryTransferRouteEvidence } from "../src/execution/carry-transfer
 import { carryShadowFixture } from "./carry-shadow-fixture.js";
 import { finalizeCarryLifecycleEventRecord } from "../src/state/private-state.js";
 import {
+  carryInventoryExpectation,
+  carryInventoryPositionIdentityCommitment,
+} from "../src/execution/carry-inventory.js";
+import { carryReconciliationCommitment } from "../src/execution/carry-reconciliation.js";
+import {
   CARRY_EXECUTION_VENUES,
   cashflowValuationEvidenceMessage,
   carryRiskMandateMessage,
@@ -647,8 +652,10 @@ test("returns the original immutable proof on a default fresh-timestamp retry wi
     ["hyperliquid", "aster"],
   ));
   const before = structuredClone((await fixture.state.getIdempotency(proofKey)).receipt);
-  fixture.record.final_reconciliation_evidence.reconciliation_commitment =
-    "carry:reconciliation:release:changed:0001";
+  fixture.record.final_reconciliation_evidence.checked_at_ms += 1;
+  fixture.record.final_reconciliation_evidence.reconciliation_commitment = carryReconciliationCommitment(
+    fixture.record.final_reconciliation_evidence,
+  );
   const divergent = await recordCompletedCarryLifecycleProof({ ...input, now_ms: NOW + 2 });
   const after = (await fixture.state.getIdempotency(proofKey)).receipt;
   assert.equal(divergent.error, "carry_lifecycle_proof_conflict");
@@ -1666,6 +1673,26 @@ async function stateFixture() {
         hyperliquid: "authoritative_exchange_fill_time",
         aster: "authoritative_exchange_fill_time",
       },
+      inventory_expectation_by_venue: {
+        hyperliquid: carryInventoryExpectation({
+          venue_id: "hyperliquid",
+          account_commitment: releaseVenueAccess("hyperliquid").account_commitment,
+          market: "HYPE",
+          side: "buy",
+          base_size: "0.11",
+          entry_work_order_commitment: "work:carry:entry:hyperliquid",
+          entry_provider_ref_commitment: "provider:carry:release:0",
+        }),
+        aster: carryInventoryExpectation({
+          venue_id: "aster",
+          account_commitment: releaseVenueAccess("aster").account_commitment,
+          market: "HYPEUSDT",
+          side: "sell",
+          base_size: "0.11",
+          entry_work_order_commitment: "work:carry:entry:aster",
+          entry_provider_ref_commitment: "provider:carry:release:1",
+        }),
+      },
       status: "reconciled",
     },
     opportunity: structuredClone(opportunityMaterial),
@@ -1684,10 +1711,10 @@ async function stateFixture() {
       gross_exposure_micro_usdc: 0,
       open_order_count: 0,
       checked_at_ms: 1_800_000_005_000,
-      reconciliation_commitment: "carry:reconciliation:release:0001",
+      reconciliation_commitment: null,
       venues: [
-        { venue_id: "hyperliquid", account_commitment: "account:hyperliquid:release:0001", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
-        { venue_id: "aster", account_commitment: "account:aster:release:0001", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
+        finalReleaseVenueEvidence("hyperliquid"),
+        finalReleaseVenueEvidence("aster"),
       ],
     },
     value_evidence: {
@@ -1751,6 +1778,9 @@ async function stateFixture() {
       entries: ledgerEntries,
     },
   };
+  record.final_reconciliation_evidence.reconciliation_commitment = carryReconciliationCommitment(
+    record.final_reconciliation_evidence,
+  );
   record.position.mandate_authorization = await signedMandateAuthorization(record.position);
   const receipts = Object.fromEntries([
     ...entrySaga.execution_context.legs,
@@ -1955,6 +1985,7 @@ function monitoringObservation(positionId, checkedAtMs, fundingByte, fundingSour
       liquidation_distance_bps: index === 0 ? 2_400 : 2_100,
       liquidation_distance_verified: true,
       liquidation_distance_source: venueAdapterCapability(venueId, "carry_execution").liquidation_distance_source,
+      inventory: releaseInventory(venueId, true),
     };
     state.account_state_commitment = carryAccountStateCommitment(state);
     return state;
@@ -2032,6 +2063,7 @@ function releaseReadinessMatrix(request, checkedAtMs) {
           liquidation_distance_bps: null,
           liquidation_distance_verified: false,
           liquidation_distance_source: null,
+          inventory: releaseInventory(venueId, false),
         };
         accountState.account_state_commitment = carryAccountStateCommitment(accountState);
         const venue = venues.find((item) => item.venue_id === venueId);
@@ -2067,6 +2099,8 @@ function releaseReadinessMatrix(request, checkedAtMs) {
           liquidation_distance_source: null,
           account_state_checked_at_ms: checkedAtMs,
           account_state_commitment: legEvidence.find((item) => item.venue_id === venueId).account_state.account_state_commitment,
+          inventory: releaseInventory(venueId, false),
+          inventory_verified: true,
           capital_ready: true,
           available_balance_micro_usdc: 11_000_000,
           venue_minimum_margin_micro_usdc: 550_000,
@@ -2079,6 +2113,48 @@ function releaseReadinessMatrix(request, checkedAtMs) {
       };
     });
   return { transaction_broadcast: false, venues, pairs };
+}
+
+function releaseInventory(venueId, positionOpen) {
+  const accountCommitment = releaseVenueAccess(venueId).account_commitment;
+  const market = venueId === "aster" ? "HYPEUSDT" : "HYPE";
+  return {
+    version: 1,
+    target_market: market,
+    position_inventory_verified: true,
+    open_order_inventory_verified: true,
+    target_positions: positionOpen ? [{
+      market,
+      side: venueId === "hyperliquid" ? "long" : "short",
+      base_size: "0.11",
+      position_identity_commitment: carryInventoryPositionIdentityCommitment({
+        venue_id: venueId,
+        account_commitment: accountCommitment,
+        market,
+      }),
+    }] : [],
+    target_open_orders: [],
+  };
+}
+
+function finalReleaseVenueEvidence(venueId) {
+  const accountCommitment = releaseVenueAccess(venueId).account_commitment;
+  const inventory = releaseInventory(venueId, false);
+  return {
+    venue_id: venueId,
+    account_commitment: accountCommitment,
+    authorized: true,
+    flat_zero_orders: true,
+    position_count: 0,
+    open_order_count: 0,
+    account_state_checked: true,
+    position_identity_commitment: carryInventoryPositionIdentityCommitment({
+      venue_id: venueId,
+      account_commitment: accountCommitment,
+      market: inventory.target_market,
+    }),
+    inventory,
+  };
 }
 
 function releaseRecoveryQualification(venueId, checkedAtMs) {

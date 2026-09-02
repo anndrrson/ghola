@@ -28,6 +28,10 @@ import { runtimeCarryQualificationImageDigest } from "./carry-qualification.js";
 import { verifyCarryCreationOpportunityAuthentication } from "./carry-opportunity-authentication.js";
 import { verifyCashflowValuationEvidence } from "./carry-stablecoin-conversion.js";
 import { validVenueLiquidationBinding } from "../venues/liquidation-distance.js";
+import {
+  validCarryInventoryEvidence,
+  validateCarryInventoryBinding,
+} from "./carry-inventory.js";
 
 const OWNER = /^[A-Za-z0-9:_-]{8,180}$/;
 const ACCOUNT_STATE_COMMITMENT = /^carry:account-state:[0-9a-f]{40}$/;
@@ -1226,6 +1230,22 @@ export async function observeStoredCarryPosition({
       nowMs,
     });
   } catch (error) {
+    if (error?.carry_inventory_disposition === "drift") {
+      const reduced = await advanceStoredCarryPosition({
+        state,
+        position_id: positionId,
+        owner_commitment: ownerCommitment,
+        event: {
+          version: 1,
+          event_id: `${eventBase}:inventory-drift`,
+          sequence,
+          type: "inventory_drift",
+          reason: error.carry_inventory_reason,
+        },
+        now_ms: nowMs,
+      });
+      return reduced.ok ? { ...reduced, observation_ok: false, observation: null } : reduced;
+    }
     const frozen = await advanceStoredCarryPosition({
       state,
       position_id: positionId,
@@ -1960,6 +1980,7 @@ function validatedMonitoringAccountStateEvidence({ observation, position, monito
       liquidation_distance_bps: raw?.liquidation_distance_bps ?? null,
       liquidation_distance_verified: raw?.liquidation_distance_verified === true,
       liquidation_distance_source: raw?.liquidation_distance_source ?? null,
+      inventory: raw?.inventory ? JSON.parse(JSON.stringify(raw.inventory)) : null,
       account_state_commitment: String(raw?.account_state_commitment || ""),
     });
     const expectedAccountCommitment = monitoringContext?.venue_access?.[venueId]?.account_commitment;
@@ -1970,11 +1991,15 @@ function validatedMonitoringAccountStateEvidence({ observation, position, monito
       || checkedAtMs <= 0
       || checkedAtMs !== nowMs
       || !Number.isSafeInteger(positionCount)
-      || positionCount <= 0
+      || positionCount < 0
       || !Number.isSafeInteger(openOrderCount)
       || openOrderCount < 0
-      || raw.flat_zero_orders !== false
+      || typeof raw.flat_zero_orders !== "boolean"
       || row.flat_zero_orders !== (positionCount === 0 && openOrderCount === 0)
+      || !validCarryInventoryEvidence(row.inventory, {
+        venue_id: venueId,
+        account_commitment: row.account_commitment,
+      })
       || !validVenueLiquidationBinding(row, positionCount)) {
       failAccountStateEvidence(`invalid:${venueId}`);
     }
@@ -1982,6 +2007,11 @@ function validatedMonitoringAccountStateEvidence({ observation, position, monito
       || row.account_state_commitment !== carryAccountStateCommitment(row)) {
       failAccountStateEvidence(`commitment_invalid:${venueId}`);
     }
+    const binding = validateCarryInventoryBinding({
+      account_state: row,
+      expectation: position.inventory_expectation_by_venue?.[venueId],
+    });
+    if (!binding.ok) failInventoryBinding(binding);
     byVenue.set(venueId, row);
   }
   if (byVenue.size !== venueIds.length
@@ -2012,6 +2042,13 @@ function validatedMonitoringAccountStateEvidence({ observation, position, monito
   return Object.freeze(venueIds.map((venueId) => byVenue.get(venueId)));
 }
 
+function failInventoryBinding(binding) {
+  const error = new Error(`carry_monitor_inventory_${binding.reason}`);
+  error.carry_inventory_disposition = binding.disposition;
+  error.carry_inventory_reason = binding.reason;
+  throw error;
+}
+
 function failAccountStateEvidence(reason) {
   throw new Error(`carry_monitor_account_state_evidence_${reason}`);
 }
@@ -2034,6 +2071,10 @@ function publicReconciliationEvidence(event, nowMs) {
       position_count: item?.position_count,
       open_order_count: item?.open_order_count,
       account_state_checked: item?.account_state_checked === true,
+      position_identity_commitment: String(item?.position_identity_commitment || ""),
+      inventory: item?.inventory && typeof item.inventory === "object" && !Array.isArray(item.inventory)
+        ? structuredClone(item.inventory)
+        : null,
     }))),
   });
 }
@@ -2047,7 +2088,15 @@ function reconciliationBinding(record) {
       venueId,
       record.monitoring_context?.venue_access?.[venueId]?.account_commitment,
     ])),
+    inventory_expectations: reconciliationInventoryExpectations(record),
   };
+}
+
+function reconciliationInventoryExpectations(record) {
+  const venueIds = [record?.position?.long_venue_id, record?.position?.short_venue_id];
+  const expected = record?.position?.inventory_expectation_by_venue;
+  if (expected && venueIds.every((venueId) => expected[venueId])) return expected;
+  return record?.position?.active_observed_at_ms == null ? null : {};
 }
 
 function denied(error) {

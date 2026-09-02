@@ -1,9 +1,17 @@
+import { createHash } from "node:crypto";
+import {
+  carryInventoryPositionIdentityCommitment,
+  validCarryInventoryExpectation,
+  validCarryInventoryEvidence,
+} from "./carry-inventory.js";
+
 export function assessCarryFlatReconciliation({
   evidence,
   venue_ids: venueIds,
   owner_commitment: expectedOwnerCommitment = null,
   carry_position_id: expectedPositionId = null,
   account_commitments: expectedAccountCommitments = null,
+  inventory_expectations: expectedInventoryExpectations = null,
 }) {
   const reasons = [];
   const pair = Array.isArray(venueIds) ? venueIds.map(String) : [];
@@ -46,10 +54,57 @@ export function assessCarryFlatReconciliation({
     if (item.flat_zero_orders !== true) reasons.push(`carry_reconciliation_venue_flat_unproven:${venueId}`);
     if (item.position_count !== 0) reasons.push(`carry_reconciliation_venue_position_nonzero:${venueId}`);
     if (item.open_order_count !== 0) reasons.push(`carry_reconciliation_venue_orders_nonzero:${venueId}`);
+    const inventory = item.inventory;
+    if (!validCarryInventoryEvidence(inventory, {
+      venue_id: venueId,
+      account_commitment: item.account_commitment,
+    })) {
+      reasons.push(`carry_reconciliation_inventory_invalid:${venueId}`);
+      continue;
+    }
+    if (inventory.position_inventory_verified !== true) reasons.push(`carry_reconciliation_positions_unverified:${venueId}`);
+    if (inventory.open_order_inventory_verified !== true) reasons.push(`carry_reconciliation_orders_unverified:${venueId}`);
+    if (inventory.target_positions.length !== 0) reasons.push(`carry_reconciliation_target_position_nonzero:${venueId}`);
+    if (inventory.target_open_orders.length !== 0) reasons.push(`carry_reconciliation_target_orders_nonzero:${venueId}`);
+    const positionIdentity = carryInventoryPositionIdentityCommitment({
+      venue_id: venueId,
+      account_commitment: item.account_commitment,
+      market: inventory.target_market,
+    });
+    if (!commitment(item.position_identity_commitment)
+      || item.position_identity_commitment !== positionIdentity) {
+      reasons.push(`carry_reconciliation_inventory_binding_invalid:${venueId}`);
+    }
+    const expectedInventory = expectedInventoryExpectations?.[venueId];
+    if (expectedInventoryExpectations && !validCarryInventoryExpectation(expectedInventory, {
+      venue_id: venueId,
+      account_commitment: item.account_commitment,
+    })) {
+      reasons.push(`carry_reconciliation_expected_inventory_missing:${venueId}`);
+    } else if (expectedInventory) {
+      if (expectedInventory.venue_id !== venueId
+        || expectedInventory.account_commitment !== item.account_commitment
+        || expectedInventory.market !== inventory.target_market
+        || expectedInventory.position_identity_commitment !== item.position_identity_commitment
+        || expectedInventory.position_identity_commitment !== carryInventoryPositionIdentityCommitment(expectedInventory)) {
+        reasons.push(`carry_reconciliation_inventory_binding_mismatch:${venueId}`);
+      }
+    }
+  }
+  const expectedReconciliationCommitment = carryReconciliationCommitment(evidence);
+  if (evidence.reconciliation_commitment !== expectedReconciliationCommitment) {
+    reasons.push("carry_reconciliation_commitment_mismatch");
   }
   return result(reasons.length === 0, reasons, {
     venues: pair.map((venueId) => values.find((item) => item?.venue_id === venueId)).filter(Boolean),
   });
+}
+
+export function carryReconciliationCommitment(evidence) {
+  return `carry:reconciliation:${createHash("sha256")
+    .update(stableJson(reconciliationMaterial(evidence)))
+    .digest("hex")
+    .slice(0, 40)}`;
 }
 
 export function hasExactCarryFlatReconciliation(evidence, venueIds, expected = {}) {
@@ -70,4 +125,39 @@ function identifier(value) {
 
 function commitment(value) {
   return typeof value === "string" && /^[A-Za-z0-9:_-]{8,180}$/.test(value);
+}
+
+function reconciliationMaterial(evidence) {
+  const values = Array.isArray(evidence?.venues) ? evidence.venues : [];
+  return {
+    version: 1,
+    owner_commitment: evidence?.owner_commitment,
+    carry_position_id: evidence?.carry_position_id,
+    gross_exposure_micro_usdc: evidence?.gross_exposure_micro_usdc,
+    open_order_count: evidence?.open_order_count,
+    account_state_checked: evidence?.account_state_checked,
+    transaction_broadcast: evidence?.transaction_broadcast,
+    checked_at_ms: evidence?.checked_at_ms,
+    venues: values.map((item) => ({
+      venue_id: item?.venue_id,
+      account_commitment: item?.account_commitment,
+      authorized: item?.authorized,
+      flat_zero_orders: item?.flat_zero_orders,
+      position_count: item?.position_count,
+      open_order_count: item?.open_order_count,
+      account_state_checked: item?.account_state_checked,
+      position_identity_commitment: item?.position_identity_commitment,
+      inventory: item?.inventory,
+    })).sort((left, right) => String(left.venue_id).localeCompare(String(right.venue_id))),
+  };
+}
+
+function stableJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  return `{${Object.entries(value)
+    .filter(([, child]) => child !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
+    .join(",")}}`;
 }

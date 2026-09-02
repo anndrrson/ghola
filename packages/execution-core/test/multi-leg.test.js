@@ -74,6 +74,35 @@ test("preflights every leg before exposing a protected submit action", () => {
   assert.equal(new Set(ready.next_actions[0].legs.map((leg) => leg.submit_key)).size, 2);
 });
 
+test("permits a one-leg exposure reduction without weakening paired-entry atomicity", () => {
+  const leg = create().legs[0];
+  const reduction = createMultiLegSaga({
+    version: 1,
+    saga_id: "saga:reduction:0001",
+    idempotency_key: "idempotency:reduction:0001",
+    plan_commitment: "plan:reduction:0001",
+    strategy_id: "exposure_rebalance",
+    recovery_mode: "complete_reduce_only",
+    max_unhedged_ms: 2_000,
+    max_hedge_error_micro_usdc: 10_000,
+    now_ms: NOW,
+    legs: [leg],
+  });
+  assert.equal(reduction.legs.length, 1);
+  let progressed = advance(reduction, 1, "preflight_passed", { leg_id: leg.leg_id });
+  progressed = advance(progressed, 2, "submission_started");
+  progressed = advance(progressed, 3, "leg_fill", {
+    leg_id: leg.leg_id,
+    cumulative_filled_micro_usdc: leg.notional_micro_usdc,
+  });
+  assert.equal(progressed.status, "reconciling");
+  assert.deepEqual(progressed.next_actions, [{ type: "reconcile_leg", leg_id: leg.leg_id }]);
+  progressed = advance(progressed, 4, "leg_reconciled", { leg_id: leg.leg_id });
+  assert.equal(progressed.status, "reconciled");
+  assert.equal(progressed.terminal, true);
+  assert.throws(() => create({ legs: [leg] }), /saga_legs/);
+});
+
 test("reconciles a fully hedged pair and records zero hedge error", () => {
   let saga = readySaga();
   saga = advance(saga, 3, "submission_started");

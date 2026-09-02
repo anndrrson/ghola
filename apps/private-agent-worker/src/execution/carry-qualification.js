@@ -223,7 +223,15 @@ function qualificationReconciliationBinding(record) {
       venueId,
       record?.monitoring_context?.venue_access?.[venueId]?.account_commitment,
     ])),
+    inventory_expectations: qualificationInventoryExpectations(record),
   };
+}
+
+function qualificationInventoryExpectations(record) {
+  const venueIds = [record?.position?.long_venue_id, record?.position?.short_venue_id];
+  const expected = record?.position?.inventory_expectation_by_venue;
+  if (expected && venueIds.every((venueId) => expected[venueId])) return expected;
+  return record?.position?.active_observed_at_ms == null ? null : {};
 }
 
 export function qualificationKey(venueId, adapterId, imageDigest) {

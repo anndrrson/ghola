@@ -23,6 +23,13 @@ import {
 import { storeCarryTransferRouteEvidence } from "../src/execution/carry-transfer-routes.js";
 import { authenticateCarryCreationOpportunity } from "../src/execution/carry-opportunity-authentication.js";
 import { carryAccountStateCommitment } from "../src/execution/carry-readiness.js";
+import {
+  carryInventoryClientOrderIdentityCommitment,
+  carryInventoryExpectation,
+  carryInventoryPositionIdentityCommitment,
+  carryInventoryProviderOrderIdentityCommitment,
+} from "../src/execution/carry-inventory.js";
+import { carryReconciliationCommitment } from "../src/execution/carry-reconciliation.js";
 import { createWorkerState, createWorkerStateAdapter } from "../src/state/private-state.js";
 import { liquidationDistanceSourceForVenue } from "../src/venues/liquidation-distance.js";
 import {
@@ -887,28 +894,23 @@ test("creates an owner-signed migration replacement only from the selected flat 
     assert.equal(advanced.ok, true, advanced.error);
     parent = advanced.record;
   }
+  const finalReconciliation = exactFlatReconciliation(
+    parent.position.position_id,
+    ["hyperliquid", "lighter"],
+    NOW + 5,
+  );
   const reconciled = await advanceStoredCarryPosition({
     state,
     position_id: parent.position.position_id,
     owner_commitment: OWNER,
-    event: event(5, "exit_reconciled", {
-      owner_commitment: OWNER,
-      carry_position_id: parent.position.position_id,
-      account_state_checked: true,
-      transaction_broadcast: false,
-      gross_exposure_micro_usdc: 0,
-      open_order_count: 0,
-      checked_at_ms: NOW + 5,
-      reconciliation_commitment: "carry:reconciliation:migration-parent:0001",
-      venues: [
-        { venue_id: "hyperliquid", account_commitment: "account:hyperliquid:0001", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
-        { venue_id: "lighter", account_commitment: "account:lighter:0001", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
-      ],
-    }),
+    event: event(5, "exit_reconciled", finalReconciliation),
     now_ms: NOW + 5,
   });
   assert.equal(reconciled.record.position.pending_migration.status, "owner_signature_required");
-  assert.equal(reconciled.record.final_reconciliation_evidence.reconciliation_commitment, "carry:reconciliation:migration-parent:0001");
+  assert.equal(
+    reconciled.record.final_reconciliation_evidence.reconciliation_commitment,
+    finalReconciliation.reconciliation_commitment,
+  );
 
   const replacementBase = {
     version: 1,
@@ -1053,6 +1055,7 @@ test("monitoring durably preserves only self-contained account-state evidence bo
       "liquidation_distance_bps",
       "liquidation_distance_verified",
       "liquidation_distance_source",
+      "inventory",
       "account_state_commitment",
     ],
     [
@@ -1066,6 +1069,7 @@ test("monitoring durably preserves only self-contained account-state evidence bo
       "liquidation_distance_bps",
       "liquidation_distance_verified",
       "liquidation_distance_source",
+      "inventory",
       "account_state_commitment",
     ],
   ]);
@@ -1139,6 +1143,130 @@ test("monitoring fails closed before persisting unbound account-state evidence",
     assert.equal(result.record.lifecycle_events.at(-1).type, "observation_unavailable", suffix);
     assert.match(result.record.lifecycle_events.at(-1).reason, /^account_state_evidence:/, suffix);
     assert.equal("account_state_evidence" in result.record.lifecycle_events.at(-1), false, suffix);
+  }
+});
+
+test("monitoring reduces risk for proven target-leg drift and ignores unrelated position counts", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-monitor-inventory-drift-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const cases = [
+    ["missing", (inventory) => { inventory.target_positions = []; }],
+    ["wrong-side", (inventory) => { inventory.target_positions[0].side = "short"; }],
+    ["size-drift", (inventory) => { inventory.target_positions[0].base_size = "0.0005"; }],
+    ["carry-order-open", (inventory) => {
+      inventory.target_open_orders = [{
+        market: "BTC",
+        side: "buy",
+        base_size: "0.001",
+        reduce_only: false,
+        order_identity_commitment: "order:carry:btc:0001",
+        client_order_identity_commitment: carryInventoryClientOrderIdentityCommitment({
+          venue_id: "hyperliquid",
+          client_order_id: "entry-hyperliquid-0001",
+        }),
+        provider_order_identity_commitment: carryInventoryProviderOrderIdentityCommitment({
+          venue_id: "hyperliquid",
+          provider_order_id: "provider-order-hyperliquid-0001",
+        }),
+        carry_work_order_commitment: null,
+        carry_provider_ref_commitment: null,
+      }];
+    }],
+  ];
+  for (const [suffix, mutate] of cases) {
+    const state = createWorkerState(dir);
+    const active = await activePosition(state, `inventory-${suffix}`);
+    const result = await observeStoredCarryPosition({
+      state,
+      owner_commitment: OWNER,
+      position_id: active.position.position_id,
+      venue_access: monitoringContext().venue_access,
+      preflight: async () => {
+        const observed = monitoringObservation({
+          economic_opportunity: monitoringOpportunity(NOW + 100, 9),
+          margin_runways: [monitoringRunway("hyperliquid"), monitoringRunway("lighter")],
+          qualification_reasons: [],
+        });
+        const account = observed.evidence[0].account_state;
+        mutate(account.inventory);
+        account.account_state_commitment = carryAccountStateCommitment(account);
+        observed.margin_runways[0].account_state_commitment = account.account_state_commitment;
+        return observed;
+      },
+      now_ms: NOW + 100,
+    });
+    assert.equal(result.ok, true, suffix);
+    assert.equal(result.observation_ok, false, suffix);
+    assert.equal(result.record.position.status, "exiting", suffix);
+    assert.equal(result.record.position.terminal_reason, "inventory_drift", suffix);
+    assert.deepEqual(result.record.position.next_actions, ["cancel_open_orders", "reduce_only_close_filled_exposure"], suffix);
+    assert.equal(result.record.lifecycle_events.at(-1).type, "inventory_drift", suffix);
+  }
+});
+
+test("monitoring freezes on unverified or foreign target-market orders", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-monitor-inventory-ambiguous-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const cases = [
+    ["unverified", (inventory) => { inventory.position_inventory_verified = false; }],
+    ["foreign-order", (inventory) => {
+      inventory.target_open_orders = [{
+        market: "BTC",
+        side: "sell",
+        base_size: "0.001",
+        reduce_only: true,
+        order_identity_commitment: "order:foreign:btc:0001",
+        carry_work_order_commitment: null,
+        carry_provider_ref_commitment: null,
+      }];
+    }],
+    ["client-id-collision", (inventory) => {
+      inventory.target_open_orders = [{
+        market: "BTC",
+        side: "buy",
+        base_size: "0.001",
+        reduce_only: false,
+        order_identity_commitment: "order:collision:btc:0001",
+        client_order_identity_commitment: carryInventoryClientOrderIdentityCommitment({
+          venue_id: "hyperliquid",
+          client_order_id: "entry-hyperliquid-0001",
+        }),
+        provider_order_identity_commitment: carryInventoryProviderOrderIdentityCommitment({
+          venue_id: "hyperliquid",
+          provider_order_id: "provider-order-foreign-0001",
+        }),
+        carry_work_order_commitment: null,
+        carry_provider_ref_commitment: null,
+      }];
+    }],
+  ];
+  for (const [suffix, mutate] of cases) {
+    const state = createWorkerState(dir);
+    const active = await activePosition(state, `inventory-ambiguous-${suffix}`);
+    const result = await observeStoredCarryPosition({
+      state,
+      owner_commitment: OWNER,
+      position_id: active.position.position_id,
+      venue_access: monitoringContext().venue_access,
+      preflight: async () => {
+        const observed = monitoringObservation({
+          economic_opportunity: monitoringOpportunity(NOW + 100, 9),
+          margin_runways: [monitoringRunway("hyperliquid"), monitoringRunway("lighter")],
+          qualification_reasons: [],
+        });
+        const account = observed.evidence[0].account_state;
+        mutate(account.inventory);
+        account.account_state_commitment = carryAccountStateCommitment(account);
+        observed.margin_runways[0].account_state_commitment = account.account_state_commitment;
+        return observed;
+      },
+      now_ms: NOW + 100,
+    });
+    assert.equal(result.ok, true, suffix);
+    assert.equal(result.observation_ok, false, suffix);
+    assert.equal(result.record.position.status, "frozen", suffix);
+    assert.deepEqual(result.record.position.next_actions, ["reconcile_only"], suffix);
+    assert.equal(result.record.lifecycle_events.at(-1).type, "observation_unavailable", suffix);
   }
 });
 
@@ -2199,6 +2327,7 @@ function monitoringAccountState(runway, overrides = {}) {
     liquidation_distance_bps: runway.liquidation_distance_bps,
     liquidation_distance_verified: runway.liquidation_distance_verified,
     liquidation_distance_source: runway.liquidation_distance_source,
+    inventory: monitoringInventory(runway.venue_id, runway.position_open !== false),
     ...overrides,
   };
   return {
@@ -2206,6 +2335,57 @@ function monitoringAccountState(runway, overrides = {}) {
     account_state_commitment: overrides.account_state_commitment
       ?? carryAccountStateCommitment(material),
   };
+}
+
+function monitoringInventory(venueId, positionOpen = true) {
+  const accountCommitment = `account:${venueId}:0001`;
+  return {
+    version: 1,
+    target_market: "BTC",
+    position_inventory_verified: true,
+    open_order_inventory_verified: true,
+    target_positions: positionOpen ? [{
+      market: "BTC",
+      side: venueId === "hyperliquid" ? "long" : "short",
+      base_size: "0.001",
+      position_identity_commitment: carryInventoryPositionIdentityCommitment({
+        venue_id: venueId,
+        account_commitment: accountCommitment,
+        market: "BTC",
+      }),
+    }] : [],
+    target_open_orders: [],
+  };
+}
+
+function exactFlatReconciliation(positionId, venueIds, checkedAtMs) {
+  const evidence = {
+    owner_commitment: OWNER,
+    carry_position_id: positionId,
+    account_state_checked: true,
+    transaction_broadcast: false,
+    gross_exposure_micro_usdc: 0,
+    open_order_count: 0,
+    checked_at_ms: checkedAtMs,
+    reconciliation_commitment: null,
+    venues: venueIds.map((venueId) => ({
+      venue_id: venueId,
+      account_commitment: `account:${venueId}:0001`,
+      authorized: true,
+      flat_zero_orders: true,
+      position_count: 0,
+      open_order_count: 0,
+      account_state_checked: true,
+      position_identity_commitment: carryInventoryPositionIdentityCommitment({
+        venue_id: venueId,
+        account_commitment: `account:${venueId}:0001`,
+        market: "BTC",
+      }),
+      inventory: monitoringInventory(venueId, false),
+    })),
+  };
+  evidence.reconciliation_commitment = carryReconciliationCommitment(evidence);
+  return evidence;
 }
 
 function transferRoute(overrides = {}) {
@@ -2279,6 +2459,7 @@ function lifecycle() {
       hedge_error_micro_usdc: 0,
       first_exposure_observed_at_ms: NOW + 1,
       exposure_boundary_provenance: "worker_observed_positive_fill",
+      inventory_expectation_by_venue: monitoringInventoryExpectations(),
     }),
     event(3, "manual_exit_requested"),
     event(4, "exit_reconciled", {
@@ -2288,6 +2469,29 @@ function lifecycle() {
       reconciliation_commitment: "carry:reconciliation:0001",
     }),
   ];
+}
+
+function monitoringInventoryExpectations() {
+  return Object.fromEntries(["hyperliquid", "lighter"].map((venueId) => [
+    venueId,
+    carryInventoryExpectation({
+      venue_id: venueId,
+      account_commitment: `account:${venueId}:0001`,
+      market: "BTC",
+      side: venueId === "hyperliquid" ? "buy" : "sell",
+      base_size: "0.001",
+      entry_work_order_commitment: `work:carry:entry:${venueId}`,
+      entry_provider_ref_commitment: `provider:carry:entry:${venueId}`,
+      entry_client_order_identity_commitment: carryInventoryClientOrderIdentityCommitment({
+        venue_id: venueId,
+        client_order_id: `entry-${venueId}-0001`,
+      }),
+      entry_provider_order_identity_commitment: carryInventoryProviderOrderIdentityCommitment({
+        venue_id: venueId,
+        provider_order_id: `provider-order-${venueId}-0001`,
+      }),
+    }),
+  ]));
 }
 
 function completeValueEvidence() {

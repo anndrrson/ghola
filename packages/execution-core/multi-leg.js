@@ -17,14 +17,15 @@ export function createMultiLegSaga(value) {
   const raw = object(value, "saga_required");
   version(raw.version, "saga_version");
   const nowMs = positiveInteger(raw.now_ms, "saga_now");
-  const legs = array(raw.legs, "saga_legs", 2, 8).map(normalizeLeg);
+  const strategyId = enumValue(raw.strategy_id, STRATEGIES, "strategy_id");
+  const legs = array(raw.legs, "saga_legs", strategyId === "exposure_rebalance" ? 1 : 2, 8).map(normalizeLeg);
   if (new Set(legs.map((leg) => leg.leg_id)).size !== legs.length) fail("duplicate_leg_id");
   const saga = {
     version: 1,
     saga_id: identifier(raw.saga_id, "saga_id"),
     idempotency_key: identifier(raw.idempotency_key, "idempotency_key"),
     plan_commitment: identifier(raw.plan_commitment, "plan_commitment"),
-    strategy_id: enumValue(raw.strategy_id, STRATEGIES, "strategy_id"),
+    strategy_id: strategyId,
     recovery_mode: enumValue(raw.recovery_mode || "unwind", RECOVERY_MODES, "recovery_mode"),
     status: "preflighting",
     terminal: false,
@@ -204,7 +205,8 @@ function settleFillState(saga, nowMs) {
     return;
   }
   refreshExposure(saga);
-  if (saga.hedge_error_micro_usdc <= saga.max_hedge_error_micro_usdc) saga.status = "reconciling";
+  if (riskReducingRebalanceComplete(saga)
+    || saga.hedge_error_micro_usdc <= saga.max_hedge_error_micro_usdc) saga.status = "reconciling";
   else enterCompensating(saga, nowMs);
 }
 
@@ -215,8 +217,16 @@ function settleFinalizedFillState(saga, nowMs) {
     return;
   }
   refreshExposure(saga);
-  if (saga.hedge_error_micro_usdc <= saga.max_hedge_error_micro_usdc) saga.status = "reconciling";
+  if (riskReducingRebalanceComplete(saga)
+    || saga.hedge_error_micro_usdc <= saga.max_hedge_error_micro_usdc) saga.status = "reconciling";
   else enterCompensating(saga, nowMs);
+}
+
+function riskReducingRebalanceComplete(saga) {
+  return saga.strategy_id === "exposure_rebalance"
+    && saga.legs.length === 1
+    && saga.recovery_mode === "complete_reduce_only"
+    && saga.legs[0].filled_micro_usdc === saga.legs[0].notional_micro_usdc;
 }
 
 function enterCompensating(saga, nowMs) {
@@ -384,7 +394,7 @@ function mutableSaga(value) {
   const raw = object(value, "existing_saga_required");
   version(raw.version, "existing_saga_version");
   identifier(raw.saga_id, "existing_saga_id");
-  array(raw.legs, "existing_saga_legs", 2, 8);
+  array(raw.legs, "existing_saga_legs", raw.strategy_id === "exposure_rebalance" ? 1 : 2, 8);
   array(raw.processed_event_ids, "existing_event_ids", 0, 256);
   return JSON.parse(JSON.stringify(raw));
 }

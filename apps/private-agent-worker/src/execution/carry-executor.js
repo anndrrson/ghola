@@ -15,7 +15,10 @@ import {
 } from "./carry-positions.js";
 import { preflightCarryPair } from "./carry-preflight.js";
 import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
-import { hasExactCarryFlatReconciliation } from "./carry-reconciliation.js";
+import {
+  carryReconciliationCommitment,
+  hasExactCarryFlatReconciliation,
+} from "./carry-reconciliation.js";
 import { listAllCarryPositionRecords } from "./carry-record-scan.js";
 import { createCarryLoopSupervisor, disabledCarryLoopHealth } from "./carry-loop-supervisor.js";
 import {
@@ -28,6 +31,16 @@ import { readCarryShadowQualification } from "./carry-shadow-qualification.js";
 import { buildCarryPrivatePrimeReadiness } from "./carry-private-prime-readiness.js";
 import { verifyCashflowValuationEvidence } from "./carry-stablecoin-conversion.js";
 import { loadCarryTransferRouteEvidence } from "./carry-transfer-routes.js";
+import {
+  carryInventoryClientOrderIdentityCommitment,
+  carryInventoryExpectation,
+  carryInventoryPositionIdentityCommitment,
+  carryInventoryProviderOrderIdentityCommitment,
+  inspectCarryInventoryForRecovery,
+  validCarryInventoryExpectation,
+  validCarryInventoryEvidence,
+} from "./carry-inventory.js";
+import { lighterClientOrderIndex } from "../venues/lighter.js";
 import { recordCompletedCarryLifecycleProof } from "./carry-release-evidence.js";
 import { hasProvenLiveOrderBroadcast } from "./order-broadcast-proof.js";
 import {
@@ -413,17 +426,46 @@ export async function executeStoredCarryExit({
   }
   const entrySaga = record.entry_saga_id ? await state.getMultiLegSaga(record.entry_saga_id) : null;
   if (!entrySaga || entrySaga.status !== "reconciled") return denied("carry_entry_reconciliation_missing");
+  const startedAt = now();
   const exactBases = await exactEntryBases(state, entrySaga, env);
   if (!exactBases.ok) return exactBases;
-
-  const startedAt = now();
+  let recoveryTargets = null;
+  if (record.position.terminal_reason === "inventory_drift") {
+    const prepared = await prepareInventoryDriftExit({
+      state,
+      record,
+      entrySaga,
+      recipient,
+      verifyOrder,
+      executeOrder,
+      preflight,
+      env,
+      now,
+      nowMs: startedAt,
+    });
+    if (!prepared.ok) return prepared;
+    if (prepared.already_flat) {
+      return completeAlreadyFlatInventoryDrift({ state, record, evidence: prepared.evidence, nowMs: now() });
+    }
+    recoveryTargets = prepared.byVenue;
+  }
+  const exitBases = recoveryTargets
+    ? {
+      ...exactBases.byVenue,
+      ...Object.fromEntries(Object.entries(recoveryTargets).map(([venueId, target]) => [venueId, target.base_size])),
+    }
+    : exactBases.byVenue;
+  const exitSides = recoveryTargets
+    ? Object.fromEntries(Object.entries(recoveryTargets).map(([venueId, target]) => [venueId, target.close_side]))
+    : null;
   let proof;
   try {
     proof = await preflight({
       body: {
         ...preflightBody(record, startedAt),
         phase: "exit",
-        exit_base_size_by_venue: { ...exactBases.byVenue },
+        exit_base_size_by_venue: { ...exitBases },
+        ...(exitSides ? { exit_side_by_venue: { ...exitSides } } : {}),
       },
       recipient,
       state,
@@ -435,7 +477,7 @@ export async function executeStoredCarryExit({
     return denied(errorCode(error, "carry_exit_preflight_failed"));
   }
   if (proof?.no_submit_ready !== true || proof?.transaction_broadcast !== false) return denied("carry_exit_preflight_not_ready");
-  const legs = buildExitLegs(record, proof, entrySaga, exactBases.byVenue, startedAt);
+  const legs = buildExitLegs(record, proof, entrySaga, exitBases, startedAt, recoveryTargets);
   if (!legs.ok) return legs;
   const sagaId = `saga:carry:exit:${digest(`${positionId}:${startedAt}`).slice(0, 36)}`;
   const policy = carrySessionPolicy(record, legs.legs, startedAt);
@@ -640,8 +682,21 @@ export async function runCarryExecutionTick({
     && activeReservationPositions.has(record.position.position_id)
   );
   const recoveryFrozenRecords = frozenRecords.filter((record) => !isRecoverableMonitoringFreeze(record.position));
+  const migrationRecords = uniqueCarryRecords([
+    ...records,
+    ...recoveryFrozenRecords,
+    ...pendingNormalFinalization,
+    ...pendingAbortedFinalization,
+    ...pendingExposureRelease,
+  ].filter((record) => inventoryExpectationMigrationEligible(record)
+    && inventoryExpectationBackfillRequired(record)));
+  const migrationPositionIds = new Set(migrationRecords.map((record) => record.position.position_id));
   const tasks = [
-    ...records.map((record) => ({
+    ...migrationRecords.map((record) => ({
+      position_id: record.position?.position_id,
+      run: () => backfillCarryInventoryExpectations({ state, record, env, nowMs: now() }),
+    })),
+    ...records.filter((record) => !migrationPositionIds.has(record.position.position_id)).map((record) => ({
       position_id: record.position?.position_id,
       run: () => processExitingCarryRecord({
         state,
@@ -656,7 +711,7 @@ export async function runCarryExecutionTick({
         now,
       }),
     })),
-    ...recoveryFrozenRecords.map((record) => ({
+    ...recoveryFrozenRecords.filter((record) => !migrationPositionIds.has(record.position.position_id)).map((record) => ({
       position_id: record.position?.position_id,
       run: () => synchronizeFrozenCarryRecovery({
         state,
@@ -670,7 +725,7 @@ export async function runCarryExecutionTick({
         now,
       }),
     })),
-    ...pendingNormalFinalization.map((record) => ({
+    ...pendingNormalFinalization.filter((record) => !migrationPositionIds.has(record.position.position_id)).map((record) => ({
       position_id: record.position?.position_id,
       run: async () => {
         const finalized = await finalizeCarryValueEvidenceIfComplete({
@@ -709,7 +764,7 @@ export async function runCarryExecutionTick({
         };
       },
     })),
-    ...pendingAbortedFinalization.map((record) => ({
+    ...pendingAbortedFinalization.filter((record) => !migrationPositionIds.has(record.position.position_id)).map((record) => ({
       position_id: record.position?.position_id,
       run: () => finalizeAbortedCarryValueEvidenceIfComplete({
         state,
@@ -720,7 +775,7 @@ export async function runCarryExecutionTick({
         nowMs: now(),
       }),
     })),
-    ...pendingExposureRelease.map((record) => ({
+    ...pendingExposureRelease.filter((record) => !migrationPositionIds.has(record.position.position_id)).map((record) => ({
       position_id: record.position?.position_id,
       run: async () => {
         const released = await releaseCarryExposureReservation({ state, record });
@@ -887,15 +942,33 @@ export async function auditCarryPositionsAfterRestart({
   now_ms: nowMs = Date.now(),
   env = process.env,
 }) {
-  const [draftRecords, openingRecords, exitingRecords] = await Promise.all([
+  const [draftRecords, openingRecords, activeRecords, rebalancingRecords, frozenRecords, exitingRecords, reconciledRecords, activeReservationPositionIds] = await Promise.all([
     listAllCarryPositionRecords({ state, status: "draft" }),
     listAllCarryPositionRecords({ state, status: "opening" }),
+    listAllCarryPositionRecords({ state, status: "active" }),
+    listAllCarryPositionRecords({ state, status: "rebalancing" }),
+    listAllCarryPositionRecords({ state, status: "frozen" }),
     listAllCarryPositionRecords({ state, status: "exiting" }),
+    listAllCarryPositionRecords({ state, status: "reconciled" }),
+    typeof state.listActiveCarryExposureReservationPositionIds === "function"
+      ? state.listActiveCarryExposureReservationPositionIds()
+      : [],
   ]);
-  const records = [...draftRecords, ...openingRecords, ...exitingRecords];
+  const activeReservationPositions = new Set(activeReservationPositionIds);
+  const records = uniqueCarryRecords([
+    ...draftRecords,
+    ...openingRecords,
+    ...activeRecords.filter(inventoryExpectationBackfillRequired),
+    ...rebalancingRecords.filter(inventoryExpectationBackfillRequired),
+    ...frozenRecords.filter(inventoryExpectationBackfillRequired),
+    ...exitingRecords,
+    ...reconciledRecords.filter((record) => activeReservationPositions.has(record.position.position_id)
+      && inventoryExpectationBackfillRequired(record)),
+  ]);
   const cutoff = new Date(nowMs).getTime();
   const results = [];
-  for (const record of records) {
+  for (const initialRecord of records) {
+    let record = initialRecord;
     const updatedAt = new Date(record.updated_at || record.created_at || 0).getTime();
     const phase = ["draft", "opening"].includes(record.position.status) && record.entry_saga_id
       ? "entry"
@@ -909,6 +982,16 @@ export async function auditCarryPositionsAfterRestart({
       && saga?.execution_context?.carry_position_id === record.position.position_id
       && saga.execution_context?.owner_commitment === record.owner_commitment;
     if (Number.isFinite(updatedAt) && updatedAt > cutoff && !reconciledEntryPredatesCutoff) continue;
+    if (inventoryExpectationMigrationEligible(record) && inventoryExpectationBackfillRequired(record)) {
+      const migrated = await backfillCarryInventoryExpectations({ state, record, env, nowMs });
+      if (!migrated.ok || migrated.migration_required === true) {
+        results.push(migrated);
+        continue;
+      }
+      record = await state.getCarryPositionRecord(record.position.position_id);
+      results.push({ ...migrated, restart_action: "inventory_expectations_backfilled" });
+      continue;
+    }
     if (phase && provablyPreSubmitCarrySaga(saga, record, phase)) {
       let cancelled = saga;
       if (saga.terminal !== true) {
@@ -997,6 +1080,8 @@ export async function auditCarryPositionsAfterRestart({
 async function completeReconciledCarryEntry({ state, record, saga, env, nowMs = Date.now(), liveLegs = null, receiptByLeg = null }) {
   const material = await reconciledCarryEntryMaterial({ state, record, saga, env, liveLegs, receiptByLeg });
   if (!material.ok) return { ...material, completion_proven: false };
+  const inventoryExpectations = await reconciledEntryInventoryExpectations(state, record, material);
+  if (!inventoryExpectations.ok) return { ...inventoryExpectations, completion_proven: true };
   const evidenceAt = saga.updated_at_ms;
   const transitionAt = Number.isSafeInteger(nowMs) && nowMs > 0
     ? Math.max(evidenceAt, nowMs)
@@ -1040,10 +1125,145 @@ async function completeReconciledCarryEntry({ state, record, saga, env, nowMs = 
       exposure_boundary_provenance: material.exposure_boundary.provenance,
       first_exposure_observed_at_ms_by_venue: material.exposure_boundary.observed_at_ms_by_venue,
       exposure_boundary_provenance_by_venue: material.exposure_boundary.provenance_by_venue,
+      inventory_expectation_by_venue: inventoryExpectations.byVenue,
     }),
     now_ms: transitionAt,
   });
   return { ...advanced, completion_proven: true, accounting: accounting.summary };
+}
+
+function inventoryExpectationBackfillRequired(record) {
+  const expected = record?.position?.inventory_expectation_by_venue;
+  const venues = [record?.position?.long_venue_id, record?.position?.short_venue_id];
+  return !expected || typeof expected !== "object" || Array.isArray(expected)
+    || venues.some((venueId) => !venueId || !validCarryInventoryExpectation(expected[venueId], {
+      venue_id: venueId,
+      account_commitment: record?.monitoring_context?.venue_access?.[venueId]?.account_commitment,
+    }));
+}
+
+async function backfillCarryInventoryExpectations({ state, record, env, nowMs }) {
+  const current = await state.getCarryPositionRecord(record.position.position_id);
+  if (!current || current.owner_commitment !== record.owner_commitment || !inventoryExpectationMigrationEligible(current)) {
+    return denied("carry_inventory_expectation_migration_parent_changed");
+  }
+  if (!inventoryExpectationBackfillRequired(current)) return { ok: true, record: publicCarryRecord(current), duplicate: true };
+  const saga = current.entry_saga_id ? await state.getMultiLegSaga(current.entry_saga_id) : null;
+  const material = saga
+    ? await reconciledCarryEntryMaterial({ state, record: current, saga, env, allowInventoryMigration: true })
+    : denied("carry_inventory_expectation_migration_entry_saga_missing");
+  const inventoryExpectations = material.ok
+    ? await reconciledEntryInventoryExpectations(state, current, material)
+    : material;
+  if (!inventoryExpectations.ok) {
+    if (current.position.status === "reconciled") {
+      const stored = await state.putCarryPositionRecord({
+        ...current,
+        inventory_expectation_migration: {
+          version: 1,
+          source: "manual_migration_required",
+          error: inventoryExpectations.error,
+          completed_at_ms: nowMs,
+        },
+      }, { expected_version: current.record_version });
+      return {
+        ok: stored.ok,
+        error: stored.ok ? inventoryExpectations.error : stored.error,
+        migration_required: true,
+        record: stored.ok ? publicCarryRecord(stored.record) : publicCarryRecord(current),
+      };
+    }
+    const frozen = await advanceStoredCarryPosition({
+      state,
+      owner_commitment: current.owner_commitment,
+      position_id: current.position.position_id,
+      event: carryEvent(current.position, "inventory_expectation_migration_required"),
+      now_ms: nowMs,
+    });
+    return {
+      ...frozen,
+      ok: frozen.ok,
+      error: frozen.ok ? inventoryExpectations.error : frozen.error,
+      migration_required: true,
+    };
+  }
+  const migrated = await advanceStoredCarryPosition({
+    state,
+    owner_commitment: current.owner_commitment,
+    position_id: current.position.position_id,
+    event: carryEvent(current.position, "inventory_expectation_migrated", {
+      inventory_expectation_by_venue: inventoryExpectations.byVenue,
+    }),
+    now_ms: nowMs,
+  });
+  if (!migrated.ok) return migrated;
+  const durable = await state.getCarryPositionRecord(current.position.position_id);
+  const stored = await state.putCarryPositionRecord({
+    ...durable,
+    inventory_expectation_migration: {
+      version: 1,
+      source: "durable_reconciled_entry_receipts",
+      entry_saga_id: saga.saga_id,
+      completed_at_ms: nowMs,
+    },
+  }, { expected_version: durable.record_version });
+  return stored.ok
+    ? { ok: true, record: publicCarryRecord(stored.record) }
+    : denied(stored.error || "carry_inventory_expectation_migration_record_conflict");
+}
+
+function inventoryExpectationMigrationEligible(record) {
+  const position = record?.position;
+  return new Set(["active", "rebalancing", "frozen", "exiting", "reconciled"]).has(position?.status)
+    && (Number.isSafeInteger(position?.active_observed_at_ms)
+      || Number.isSafeInteger(position?.active_at_ms));
+}
+
+function uniqueCarryRecords(records) {
+  return [...new Map(records.map((record) => [record?.position?.position_id, record])).values()]
+    .filter((record) => record?.position?.position_id);
+}
+
+async function reconciledEntryInventoryExpectations(state, record, material) {
+  const byVenue = {};
+  for (const leg of material.legs) {
+    const receipt = material.receiptByLeg?.[leg.leg_id];
+    const clientOrderId = leg.venue_id === "hyperliquid"
+      ? await state.deriveHyperliquidCloid(leg.work_order_commitment)
+      : leg.venue_id === "lighter"
+        ? lighterClientOrderIndex(leg.work_order_commitment)
+        : await state.deriveClientOrderId("gh", leg.work_order_commitment);
+    const expectation = carryInventoryExpectation({
+      venue_id: leg.venue_id,
+      account_commitment: record.monitoring_context?.venue_access?.[leg.venue_id]?.account_commitment,
+      market: leg.market,
+      side: leg.side,
+      base_size: receipt?.final_proof?.filled_base_size,
+      entry_work_order_commitment: leg.work_order_commitment,
+      entry_provider_ref_commitment: receipt?.provider_ref_commitment,
+      entry_client_order_identity_commitment: carryInventoryClientOrderIdentityCommitment({
+        venue_id: leg.venue_id,
+        client_order_id: clientOrderId,
+      }),
+      entry_provider_order_identity_commitment: carryInventoryProviderOrderIdentityCommitment({
+        venue_id: leg.venue_id,
+        provider_order_id: receiptProviderOrderId(leg.venue_id, receipt),
+      }),
+    });
+    if (!expectation) return denied(`carry_entry_inventory_binding_unproven:${leg.venue_id}`);
+    byVenue[leg.venue_id] = expectation;
+  }
+  return Object.keys(byVenue).length === 2
+    ? { ok: true, byVenue }
+    : denied("carry_entry_inventory_bindings_incomplete");
+}
+
+function receiptProviderOrderId(venueId, receipt) {
+  const seed = receipt?.provider_ref_seed;
+  if (venueId === "hyperliquid") return seed?.oid ?? seed?.submission_oid ?? null;
+  if (venueId === "lighter") return seed?.order_index ?? null;
+  if (venueId === "aster") return seed?.order_id ?? seed?.submission_order_id ?? null;
+  return null;
 }
 
 function carryExposureReservation(record, boundLegs = null) {
@@ -1094,7 +1314,12 @@ async function releaseCarryExposureReservation({ state, record }) {
   if (durable.position.status !== "reconciled" || !hasExactCarryFlatReconciliation(
     durable.final_reconciliation_evidence,
     venueIds,
-    { owner_commitment: durable.owner_commitment, carry_position_id: durable.position.position_id, account_commitments: accountCommitments },
+    {
+      owner_commitment: durable.owner_commitment,
+      carry_position_id: durable.position.position_id,
+      account_commitments: accountCommitments,
+      inventory_expectations: carryReconciliationInventoryExpectations(durable),
+    },
   )) return { ok: false };
   const reservation = carryExposureReservation(durable);
   return state.releaseCarryExposureReservations(
@@ -1106,6 +1331,7 @@ async function releaseCarryExposureReservation({ state, record }) {
       position_id: durable.position.position_id,
       venue_ids: venueIds,
       account_commitments: accountCommitments,
+      inventory_expectations: carryReconciliationInventoryExpectations(durable),
     },
   );
 }
@@ -1124,9 +1350,11 @@ async function releaseCarryExposureReservationBeforeSubmit({ state, record, saga
   );
 }
 
-async function reconciledCarryEntryMaterial({ state, record, saga, env, liveLegs, receiptByLeg }) {
+async function reconciledCarryEntryMaterial({ state, record, saga, env, liveLegs, receiptByLeg, allowActive = false, allowInventoryMigration = false }) {
   const exposureBoundary = resolveSagaExposureBoundary(saga);
-  if (!record || !entryParentCanComplete(record.position) || record.entry_saga_id !== saga?.saga_id
+  if (!record || !(entryParentCanComplete(record.position)
+    || (allowActive === true && record.position?.status === "active")
+    || (allowInventoryMigration === true && inventoryExpectationMigrationEligible(record))) || record.entry_saga_id !== saga?.saga_id
     || saga?.terminal !== true || saga.status !== "reconciled" || saga.terminal_reason !== "all_legs_reconciled"
     || saga.recovery_mode !== "unwind" || saga.execution_context?.carry_position_id !== record.position.position_id
     || saga.execution_context?.owner_commitment !== record.owner_commitment
@@ -1362,6 +1590,12 @@ function provablyPreSubmitCarrySaga(saga, record, phase) {
   const alreadyCancelled = saga?.terminal === true
     && saga?.status === "failed_no_submit"
     && saga?.terminal_reason === "cancelled_before_submit";
+  const legs = Array.isArray(saga?.legs) ? saga.legs : [];
+  const contexts = Array.isArray(saga?.execution_context?.legs) ? saga.execution_context.legs : [];
+  const pair = new Set([record?.position?.long_venue_id, record?.position?.short_venue_id]);
+  const legCountValid = phase === "entry"
+    ? legs.length === 2
+    : saga?.strategy_id === "exposure_rebalance" && [1, 2].includes(legs.length);
   return Boolean(saga)
     && (cancellable || alreadyCancelled)
     && saga.saga_id.startsWith(prefix)
@@ -1369,9 +1603,14 @@ function provablyPreSubmitCarrySaga(saga, record, phase) {
     && saga.unhedged_deadline_ms === null
     && saga.execution_context?.carry_position_id === record.position.position_id
     && saga.execution_context?.owner_commitment === record.owner_commitment
-    && Array.isArray(saga.legs)
-    && saga.legs.length === 2
-    && saga.legs.every((leg) => leg.submission_status === "pending"
+    && legCountValid
+    && contexts.length === legs.length
+    && new Set(legs.map((leg) => leg.venue_id)).size === legs.length
+    && legs.every((leg) => pair.has(leg.venue_id)
+      && contexts.some((context) => context.leg_id === leg.leg_id
+        && context.instruction?.venue_id === leg.venue_id
+        && (phase !== "exit" || context.instruction?.order?.reduce_only === true))
+      && leg.submission_status === "pending"
       && leg.provider_ref_commitment === null
       && leg.filled_micro_usdc === 0);
 }
@@ -1529,6 +1768,7 @@ async function inspectCarryAccountState({ state, record, saga, recipient, verify
     if (matches.length !== 1) return null;
     const item = matches[0];
     const expectedAccountCommitment = record.monitoring_context?.venue_access?.[venueId]?.account_commitment;
+    const expectation = record.position.inventory_expectation_by_venue?.[venueId];
     const positionCount = item.position_count;
     const openOrderCount = item.open_order_count;
     if (item.authorized !== true
@@ -1536,19 +1776,36 @@ async function inspectCarryAccountState({ state, record, saga, recipient, verify
       || !Number.isSafeInteger(positionCount)
       || positionCount < 0
       || !Number.isSafeInteger(openOrderCount)
-      || openOrderCount < 0) {
+      || openOrderCount < 0
+      || !validCarryInventoryEvidence(item.inventory, {
+        venue_id: venueId,
+        account_commitment: expectedAccountCommitment,
+      })) {
       return null;
     }
-    const flatZeroOrders = positionCount === 0 && openOrderCount === 0;
-    if (item.flat_zero_orders !== flatZeroOrders) return null;
+    const recovery = expectation
+      ? inspectCarryInventoryForRecovery({ account_state: item, expectation })
+      : exactPreEntryFlatInventory({ item, saga, venueId });
+    if (!recovery.ok) return null;
+    const targetPositionCount = recovery.position ? 1 : 0;
+    const targetOpenOrderCount = recovery.owned_open_orders.length;
+    const flatZeroOrders = targetPositionCount === 0 && targetOpenOrderCount === 0;
     return Object.freeze({
       venue_id: venueId,
       account_commitment: expectedAccountCommitment,
       authorized: true,
       flat_zero_orders: flatZeroOrders,
-      position_count: positionCount,
-      open_order_count: openOrderCount,
+      position_count: targetPositionCount,
+      open_order_count: targetOpenOrderCount,
       account_state_checked: true,
+      inventory: structuredClone(item.inventory),
+      position_identity_commitment: expectation?.position_identity_commitment
+        || carryInventoryPositionIdentityCommitment({
+          venue_id: venueId,
+          account_commitment: expectedAccountCommitment,
+          market: item.inventory.target_market,
+        }),
+      recovery,
     });
   });
   if (venueProof.some((item) => item === null)) {
@@ -1556,25 +1813,22 @@ async function inspectCarryAccountState({ state, record, saga, recipient, verify
   }
   const knownFlat = venueProof.every((item) => item.flat_zero_orders === true);
   const openOrderCount = venueProof.reduce((sum, item) => sum + item.open_order_count, 0);
+  const evidence = {
+    owner_commitment: record.owner_commitment,
+    carry_position_id: record.position.position_id,
+    gross_exposure_micro_usdc: knownFlat ? 0 : record.position.target_notional_micro_usdc,
+    open_order_count: openOrderCount,
+    account_state_checked: true,
+    transaction_broadcast: false,
+    checked_at_ms: nowMs,
+    venues: venueProof,
+  };
   return {
     ok: true,
     known_flat: knownFlat,
     evidence: {
-      owner_commitment: record.owner_commitment,
-      carry_position_id: record.position.position_id,
-      gross_exposure_micro_usdc: knownFlat ? 0 : record.position.target_notional_micro_usdc,
-      open_order_count: openOrderCount,
-      account_state_checked: true,
-      transaction_broadcast: false,
-      checked_at_ms: nowMs,
-      venues: venueProof,
-      reconciliation_commitment: `carry:reconciliation:${digest(JSON.stringify({
-        owner_commitment: record.owner_commitment,
-        position_id: record.position.position_id,
-        saga_id: saga.saga_id,
-        checked_at_ms: nowMs,
-        venue_readiness: venueProof,
-      })).slice(0, 40)}`,
+      ...evidence,
+      reconciliation_commitment: carryReconciliationCommitment(evidence),
     },
   };
 }
@@ -2822,6 +3076,155 @@ export function startCarryExecutionLoop({ state, recipient, verifyOrder, execute
   };
 }
 
+function exactPreEntryFlatInventory({ item, saga, venueId }) {
+  const context = saga?.execution_context?.legs?.find((leg) => {
+    const sagaLeg = saga.legs?.find((candidate) => candidate.leg_id === leg.leg_id);
+    return sagaLeg?.venue_id === venueId;
+  });
+  const expectedMarket = String(context?.instruction?.order?.market || "").toUpperCase();
+  const inventory = item?.inventory;
+  if (!expectedMarket || inventory?.target_market !== expectedMarket
+    || inventory.position_inventory_verified !== true
+    || inventory.open_order_inventory_verified !== true
+    || !Array.isArray(inventory.target_positions)
+    || !Array.isArray(inventory.target_open_orders)
+    || inventory.target_positions.length > 1
+    || inventory.target_open_orders.length !== 0) {
+    return { ok: false, disposition: "ambiguous", reason: "pre_entry_inventory_unproven" };
+  }
+  return { ok: true, position: inventory.target_positions[0] || null, owned_open_orders: [] };
+}
+
+async function prepareInventoryDriftExit({
+  state,
+  record,
+  entrySaga,
+  recipient,
+  verifyOrder,
+  executeOrder,
+  preflight,
+  env,
+  now,
+  nowMs,
+}) {
+  const initial = await inspectCarryAccountState({
+    state, record, saga: entrySaga, recipient, verifyOrder, preflight, env, nowMs,
+  });
+  if (!initial.ok) return freezeInventoryDriftRecovery({ state, record, nowMs, error: initial.error });
+  const cancellations = initial.evidence.venues.filter((venue) => venue.recovery.owned_open_orders.length === 1);
+  if (cancellations.length > 0) {
+    const policy = carrySessionPolicy(record, cancellations.map((venue) => ({
+      market: record.position.inventory_expectation_by_venue[venue.venue_id].market,
+    })), nowMs);
+    const settled = await Promise.allSettled(cancellations.map((venue) => executeOrder(carryInventoryCancelArgs({
+      state,
+      record,
+      recipient,
+      policy,
+      venueId: venue.venue_id,
+      nowMs,
+    }))));
+    const failed = settled.find((outcome) => outcome.status === "rejected" || !carryCancelConfirmed(outcome.value));
+    if (failed) {
+      return freezeInventoryDriftRecovery({
+        state,
+        record,
+        nowMs: now(),
+        error: failed.status === "rejected" && isAmbiguous(failed.reason)
+          ? "carry_inventory_cancel_ambiguous"
+          : "carry_inventory_cancel_unconfirmed",
+      });
+    }
+  }
+  const checkedAt = Math.max(now(), nowMs + 1);
+  const refreshed = await inspectCarryAccountState({
+    state, record, saga: entrySaga, recipient, verifyOrder, preflight, env, nowMs: checkedAt,
+  });
+  if (!refreshed.ok) return freezeInventoryDriftRecovery({ state, record, nowMs: checkedAt, error: refreshed.error });
+  const byVenue = {};
+  for (const venue of refreshed.evidence.venues) {
+    if (venue.recovery.owned_open_orders.length !== 0) {
+      return freezeInventoryDriftRecovery({
+        state, record, nowMs: checkedAt, error: `carry_inventory_order_remains_open:${venue.venue_id}`,
+      });
+    }
+    const position = venue.recovery.position;
+    if (!position) continue;
+    byVenue[venue.venue_id] = Object.freeze({
+      base_size: position.base_size,
+      close_side: position.side === "long" ? "sell" : "buy",
+    });
+  }
+  return Object.keys(byVenue).length > 0
+    ? { ok: true, byVenue }
+    : { ok: true, already_flat: true, evidence: refreshed.evidence };
+}
+
+async function completeAlreadyFlatInventoryDrift({ state, record, evidence, nowMs }) {
+  const advanced = await advanceStoredCarryPosition({
+    state,
+    owner_commitment: record.owner_commitment,
+    position_id: record.position.position_id,
+    event: carryEvent(record.position, "exit_reconciled", evidence),
+    now_ms: nowMs,
+  });
+  if (!advanced.ok) return advanced;
+  const released = await releaseCarryExposureReservation({ state, record: advanced.record });
+  return released.ok
+    ? { ...advanced, value_finalized: false, exit_not_required: true }
+    : { ok: false, error: "carry_exposure_reservation_release_failed", record: advanced.record };
+}
+
+function carryInventoryCancelArgs({ state, record, recipient, policy, venueId, nowMs }) {
+  const expectation = record.position.inventory_expectation_by_venue[venueId];
+  const access = record.monitoring_context.venue_access[venueId];
+  return {
+    venue_id: venueId,
+    operation_class: "cancel",
+    work_order_commitment: `work:carry:inventory-cancel:${digest(`${record.position.position_id}:${venueId}`).slice(0, 32)}`,
+    policy_commitment: policy.policy_commitment,
+    session_policy: policy,
+    instruction: {
+      version: 1,
+      kind: "ghola_private_execution_instruction",
+      venue_id: venueId,
+      operation_class: "cancel",
+      expires_at: new Date(nowMs + 5 * 60_000).toISOString(),
+      cancel: {
+        market: expectation.market,
+        target_work_order_commitment: expectation.entry_work_order_commitment,
+      },
+    },
+    execution: {
+      execution_mode: "byo_api_key",
+      vault_commitment: access.vault_commitment,
+      encrypted_vault_commitment: access.encrypted_vault_commitment,
+      encrypted_execution_vault: access.encrypted_execution_vault,
+      account_commitment: access.account_commitment,
+      owner_commitment: record.owner_commitment,
+      carry_position_id: record.position.position_id,
+    },
+    recipient,
+    state,
+  };
+}
+
+function carryCancelConfirmed(receipt) {
+  return ["cancelled", "canceled"].includes(String(receipt?.status || "").toLowerCase());
+}
+
+async function freezeInventoryDriftRecovery({ state, record, nowMs, error }) {
+  const current = await state.getCarryPositionRecord(record.position.position_id);
+  const frozen = await advanceStoredCarryPosition({
+    state,
+    owner_commitment: current.owner_commitment,
+    position_id: current.position.position_id,
+    event: carryEvent(current.position, "recovery_failed"),
+    now_ms: nowMs,
+  });
+  return { ok: false, error: error || "carry_inventory_recovery_failed", record: frozen.record };
+}
+
 async function exactEntryBases(state, saga, env) {
   const byVenue = {};
   for (const leg of saga.legs) {
@@ -2844,11 +3247,13 @@ async function exactEntryBases(state, saga, env) {
   return { ok: true, byVenue };
 }
 
-function buildExitLegs(record, proof, entrySaga, bases, nowMs) {
+function buildExitLegs(record, proof, entrySaga, bases, nowMs, recoveryTargets = null) {
   const evidence = Array.isArray(proof.evidence) ? proof.evidence : [];
   const legs = [];
   for (const entryLeg of entrySaga.legs) {
-    const side = entryLeg.side === "buy" ? "sell" : "buy";
+    if (recoveryTargets && !recoveryTargets[entryLeg.venue_id]) continue;
+    const side = recoveryTargets?.[entryLeg.venue_id]?.close_side
+      || (entryLeg.side === "buy" ? "sell" : "buy");
     const verified = evidence.find((item) => item.venue_id === entryLeg.venue_id);
     const shape = verified?.order_shape;
     const quoteAsset = accountingAsset(verified?.quote_asset);
@@ -2856,11 +3261,13 @@ function buildExitLegs(record, proof, entrySaga, bases, nowMs) {
     const pnlSettlementAsset = accountingAsset(verified?.collateral_asset);
     const assetValuations = accountingValuations(verified?.asset_valuations);
     const base = bases[entryLeg.venue_id];
-    const notionalMicroUsdc = Number(entryLeg.filled_micro_usdc);
+    const notionalMicroUsdc = recoveryTargets
+      ? Math.round(Number(base) * Number(verified?.reference_mark_price_e8) / 100)
+      : Number(entryLeg.filled_micro_usdc);
     if (!shape?.market || !shape?.limit_price || shape.side !== side || shape.reduce_only !== true
       || !base || canonicalPositiveDecimal(shape.base_size) !== base
       || !Number.isSafeInteger(notionalMicroUsdc) || notionalMicroUsdc <= 0
-      || notionalMicroUsdc > record.position.target_notional_micro_usdc
+      || (!recoveryTargets && notionalMicroUsdc > record.position.target_notional_micro_usdc)
       || verified.transaction_broadcast !== false || !quoteAsset || !feeSettlementAsset
       || !pnlSettlementAsset || !assetValuations) {
       return denied(`carry_exit_order_shape_missing:${entryLeg.venue_id}`);
@@ -2938,7 +3345,15 @@ function carryReconciliationBinding(record) {
       venueId,
       record.monitoring_context?.venue_access?.[venueId]?.account_commitment,
     ])),
+    inventory_expectations: carryReconciliationInventoryExpectations(record),
   };
+}
+
+function carryReconciliationInventoryExpectations(record) {
+  const venueIds = [record?.position?.long_venue_id, record?.position?.short_venue_id];
+  const expected = record?.position?.inventory_expectation_by_venue;
+  if (expected && venueIds.every((venueId) => expected[venueId])) return expected;
+  return record?.position?.active_observed_at_ms == null ? null : {};
 }
 
 function qualificationContext(proof, checkedAtMs) {

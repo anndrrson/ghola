@@ -3,6 +3,10 @@ import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { didKeyFromVerifying, openSealedBundle } from "../crypto/envelope.js";
+import {
+  carryInventoryClientOrderIdentityCommitment,
+  carryInventoryProviderOrderIdentityCommitment,
+} from "../execution/carry-inventory.js";
 import { fundingSigningIdentity } from "./shielded_funding_attestation.js";
 import { lighterLiquidationDistance } from "./liquidation-distance.js";
 
@@ -910,7 +914,11 @@ function lighterMarket(value) {
 }
 
 function normalizedVerification(result, order, expectedAccountIndex) {
-  const account = sanitizeAccount(result.account, result.market, { expectedAccountIndex });
+  const account = sanitizeAccount({
+    ...result.account,
+    target_active_orders: result.target_active_orders,
+    target_active_orders_pagination_complete: result.target_active_orders_pagination_complete,
+  }, result.market, { expectedAccountIndex });
   return {
     status: account.can_trade && account.available_balance > 0 ? "verified_ready" : "verified_no_funds",
     checks: {
@@ -1002,6 +1010,8 @@ function sanitizeAccount(account = {}, market = {}, {
     : null;
   const makerFeeBps = rateBps(market.maker_fee);
   const takerFeeBps = rateBps(market.taker_fee);
+  const positionInventory = sanitizeLighterPositions(account.positions);
+  const targetOrderInventory = sanitizeLighterTargetOrders(account.target_active_orders, market);
   if (code !== 0
     || !Number.isSafeInteger(accountStatus)
     || ![LIGHTER_ACCOUNT_STATUS_INACTIVE, LIGHTER_ACCOUNT_STATUS_ACTIVE].includes(accountStatus)
@@ -1037,6 +1047,20 @@ function sanitizeAccount(account = {}, market = {}, {
     liquidation_distance_verified: liquidation.liquidation_distance_verified,
     liquidation_distance_source: liquidation.liquidation_distance_source,
     open_order_count: openOrderCount,
+    positions: positionInventory.rows,
+    target_open_orders: targetOrderInventory.rows,
+    position_inventory_verified: account.inventory_pagination_complete === true
+      && positionInventory.verified
+      && positionInventory.rows.length === liquidation.position_count,
+    position_inventory_pagination_complete: account.inventory_pagination_complete === true,
+    position_inventory_has_more: account.inventory_pagination_complete !== true,
+    open_order_inventory_verified: (targetOrderInventory.verified
+      && account.target_active_orders_pagination_complete === true)
+      || (openOrderCount === 0 && account.target_active_orders === undefined),
+    open_order_inventory_pagination_complete: account.target_active_orders_pagination_complete === true
+      || (openOrderCount === 0 && account.target_active_orders === undefined),
+    open_order_inventory_has_more: account.target_active_orders_pagination_complete !== true
+      && !(openOrderCount === 0 && account.target_active_orders === undefined),
     flat_zero_orders: liquidation.position_count === 0 && openOrderCount === 0,
     maker_fee_bps: makerFeeBps,
     taker_fee_bps: takerFeeBps,
@@ -1044,6 +1068,55 @@ function sanitizeAccount(account = {}, market = {}, {
     fees_exact_for_account: false,
     fees_conservative_upper_bound: Number.isFinite(makerFeeBps) && Number.isFinite(takerFeeBps),
   };
+}
+
+function sanitizeLighterPositions(positions) {
+  if (!Array.isArray(positions)) return { verified: false, rows: [] };
+  const active = positions.filter((row) => strictDecimal(row?.position) !== 0);
+  const rows = active.map((row) => {
+    const signed = canonicalDecimal(row?.position, { signed: true });
+    const sign = Number(row?.sign);
+    const market = String(row?.symbol || row?.market || "").toUpperCase();
+    const negative = signed?.startsWith("-") || sign < 0;
+    const baseSize = signed?.replace(/^-/, "") || null;
+    if (!baseSize || !/^[A-Z0-9._-]{1,16}$/.test(market)
+      || ![-1, 1].includes(sign) || (negative ? sign !== -1 : sign !== 1)) return null;
+    return { market, side: negative ? "short" : "long", base_size: baseSize };
+  });
+  return { verified: rows.every(Boolean), rows: rows.filter(Boolean) };
+}
+
+function sanitizeLighterTargetOrders(orders, market) {
+  if (!Array.isArray(orders)) return { verified: false, rows: [] };
+  const targetMarket = String(market?.symbol || "").toUpperCase();
+  const rows = orders.map((row) => {
+    const baseSize = canonicalDecimal(row?.remaining_base_amount ?? row?.initial_base_amount, { positive: true });
+    const side = typeof row?.is_ask === "boolean"
+      ? row.is_ask ? "sell" : "buy"
+      : String(row?.side || "").toLowerCase();
+    const identitySeed = row?.order_index ?? row?.client_order_index;
+    if (!/^[A-Z0-9._-]{1,16}$/.test(targetMarket)
+      || !["buy", "sell"].includes(side)
+      || !baseSize || identitySeed === undefined || identitySeed === null) return null;
+    return {
+      market: targetMarket,
+      side,
+      base_size: baseSize,
+      reduce_only: row?.reduce_only === true,
+      order_handle_commitment: `lighter:order:${createHash("sha256")
+        .update(JSON.stringify({ order_index: row?.order_index ?? null, client_order_index: row?.client_order_index ?? null }))
+        .digest("hex").slice(0, 40)}`,
+      client_order_identity_commitment: carryInventoryClientOrderIdentityCommitment({
+        venue_id: "lighter",
+        client_order_id: row?.client_order_index,
+      }),
+      provider_order_identity_commitment: carryInventoryProviderOrderIdentityCommitment({
+        venue_id: "lighter",
+        provider_order_id: row?.order_index,
+      }),
+    };
+  });
+  return { verified: rows.every(Boolean), rows: rows.filter(Boolean) };
 }
 
 function orderStatus(order) {

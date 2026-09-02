@@ -1756,6 +1756,20 @@ test("ambiguous submission freezes and permits reconciliation, never retry", () 
   assert.equal(duplicate.duplicate, true);
 });
 
+test("legacy active inventory migration freezes for manual exit", () => {
+  const active = activePositionForObservation();
+  const result = advanceCarryPosition({
+    position: active,
+    event: event(3, "inventory_expectation_migration_required"),
+    now_ms: NOW + 3,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.position.status, "frozen");
+  assert.equal(result.position.retry_permitted, false);
+  assert.equal(result.position.terminal_reason, "inventory_expectation_migration_required");
+  assert.deepEqual(result.position.next_actions, ["reconcile_only", "manual_exit_required"]);
+});
+
 test("only a restart-frozen entry can complete from durable reconciliation", () => {
   let opening = position();
   opening = advanceCarryPosition({

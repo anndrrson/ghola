@@ -16,6 +16,7 @@ import {
 import { advanceStoredCarryPosition, createStoredCarryPosition, runCarryMonitoringTick } from "../src/execution/carry-positions.js";
 import { readCarryVenueQualification } from "../src/execution/carry-qualification.js";
 import { carryAccountStateCommitment } from "../src/execution/carry-readiness.js";
+import { buildCarryInventoryEvidence } from "../src/execution/carry-inventory.js";
 import { applyDurableMultiLegEvent, recoverDueMultiLegSagas } from "../src/execution/multi-leg-orchestrator.js";
 import { createWorkerState } from "../src/state/private-state.js";
 import { authenticateCarryCreationOpportunity } from "../src/execution/carry-opportunity-authentication.js";
@@ -438,8 +439,8 @@ test("bootstraps one capped candidate only after separate qualification confirma
         };
       }),
       account_readiness: [
-        { venue_id: "hyperliquid", account_commitment: "account:hyperliquid:pilot", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
-        { venue_id: "aster", account_commitment: "account:aster:pilot", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
+        { venue_id: "hyperliquid", account_commitment: "account:hyperliquid:pilot", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, inventory: flatCarryInventory("hyperliquid", "account:hyperliquid:pilot") },
+        { venue_id: "aster", account_commitment: "account:aster:pilot", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, inventory: flatCarryInventory("aster", "account:aster:pilot") },
       ],
     }),
   });
@@ -637,12 +638,108 @@ test("restart audit freezes an in-flight opening without resubmission", async (t
   const restartedState = createWorkerState(fixture.state_dir);
   const audited = await auditCarryPositionsAfterRestart({ state: restartedState, now_ms: NOW + 2 });
   assert.equal(audited.ok, true);
-  assert.equal(audited.frozen, 1);
+  assert.equal(audited.frozen, 1, JSON.stringify(audited));
   const frozen = await restartedState.getCarryPositionRecord(fixture.position_id);
   assert.equal(frozen.position.status, "frozen");
   assert.equal(frozen.position.retry_permitted, false);
   assert.deepEqual(frozen.position.next_actions, ["reconcile_only"]);
 });
+
+test("restart backfills a legacy active inventory binding only from durable exact receipts", async (t) => {
+  const fixture = await setup(t, "restart-active-inventory-backfill");
+  const opened = await executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async (args) => {
+      const receipt = exactLiveValueReceipt(args);
+      await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(opened.ok, true, opened.error);
+  const statePath = join(fixture.state_dir, "private-agent-execution-state-v1.json");
+  const persisted = JSON.parse(readFileSync(statePath, "utf8"));
+  persisted.carry_positions[fixture.position_id].position.inventory_expectation_by_venue = {};
+  writeFileSync(statePath, JSON.stringify(persisted));
+
+  const restarted = createWorkerState(fixture.state_dir);
+  const audited = await auditCarryPositionsAfterRestart({
+    state: restarted,
+    now_ms: fixture.now(),
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(audited.ok, true, JSON.stringify(audited));
+  assert.equal(audited.checked, 1);
+  assert.equal(audited.recovered, 1);
+  const repaired = await restarted.getCarryPositionRecord(fixture.position_id);
+  assert.equal(repaired.position.status, "active");
+  assert.deepEqual(Object.keys(repaired.position.inventory_expectation_by_venue).sort(), ["aster", "lighter"]);
+  assert.equal(repaired.inventory_expectation_migration.source, "durable_reconciled_entry_receipts");
+});
+
+test("restart freezes legacy active inventory without a durable exact entry receipt", async (t) => {
+  const fixture = await setup(t, "restart-active-inventory-migration-required");
+  const opened = await executeStoredCarryEntry({
+    ...fixture,
+    executeOrder: async (args) => {
+      const receipt = exactLiveValueReceipt(args);
+      await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+      return receipt;
+    },
+  });
+  assert.equal(opened.ok, true, opened.error);
+  const statePath = join(fixture.state_dir, "private-agent-execution-state-v1.json");
+  const persisted = JSON.parse(readFileSync(statePath, "utf8"));
+  persisted.carry_positions[fixture.position_id].entry_saga_id = null;
+  persisted.carry_positions[fixture.position_id].position.inventory_expectation_by_venue = {};
+  writeFileSync(statePath, JSON.stringify(persisted));
+  const legacyState = createWorkerState(fixture.state_dir);
+
+  const audited = await auditCarryPositionsAfterRestart({
+    state: legacyState,
+    now_ms: fixture.now(),
+    env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+  });
+  assert.equal(audited.ok, true, JSON.stringify(audited));
+  assert.equal(audited.frozen, 1, JSON.stringify(audited));
+  const frozen = await legacyState.getCarryPositionRecord(fixture.position_id);
+  assert.equal(frozen.position.status, "frozen");
+  assert.equal(frozen.position.terminal_reason, "inventory_expectation_migration_required");
+  assert.deepEqual(frozen.position.next_actions, ["reconcile_only", "manual_exit_required"]);
+});
+
+for (const legacyStatus of ["rebalancing", "frozen", "exiting", "reconciled"]) {
+  test(`restart backfills legacy ${legacyStatus} inventory from exact entry receipts`, async (t) => {
+    const fixture = await setup(t, `restart-${legacyStatus}-inventory-backfill`);
+    const opened = await executeStoredCarryEntry({
+      ...fixture,
+      executeOrder: async (args) => {
+        const receipt = exactLiveValueReceipt(args);
+        await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+        return receipt;
+      },
+    });
+    assert.equal(opened.ok, true, opened.error);
+    const statePath = join(fixture.state_dir, "private-agent-execution-state-v1.json");
+    const persisted = JSON.parse(readFileSync(statePath, "utf8"));
+    const legacy = persisted.carry_positions[fixture.position_id];
+    legacy.position.status = legacyStatus;
+    legacy.position.inventory_expectation_by_venue = {};
+    if (legacyStatus === "frozen") legacy.position.terminal_reason = "observation_unavailable";
+    writeFileSync(statePath, JSON.stringify(persisted));
+
+    const restarted = createWorkerState(fixture.state_dir);
+    const audited = await auditCarryPositionsAfterRestart({
+      state: restarted,
+      now_ms: fixture.now(),
+      env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+    });
+    assert.equal(audited.ok, true, JSON.stringify(audited));
+    assert.equal(audited.recovered, 1, JSON.stringify(audited));
+    const repaired = await restarted.getCarryPositionRecord(fixture.position_id);
+    assert.equal(repaired.position.status, legacyStatus);
+    assert.deepEqual(Object.keys(repaired.position.inventory_expectation_by_venue).sort(), ["aster", "lighter"]);
+  });
+}
 
 test("restart releases a linked entry only when its saga proves no submit occurred", async (t) => {
   const fixture = await setup(t, "restart-entry-before-submit");
@@ -1077,6 +1174,93 @@ test("restart safely retries an exit linked before any submission", async (t) =>
   assert.equal(closed.record.final_reconciliation_evidence.open_order_count, 0);
 });
 
+test("restart detaches a one-leg inventory-drift exit before submission", async (t) => {
+  const fixture = await setup(t, "restart-one-leg-drift-before-submit");
+  await openActive(fixture);
+  const active = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  const drifting = await advanceStoredCarryPosition({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.position_id,
+    event: {
+      version: 1,
+      event_id: "carry:inventory:drift:restart-one-leg",
+      sequence: active.position.last_event_sequence + 1,
+      type: "inventory_drift",
+      reason: "target_position_missing",
+    },
+    now_ms: fixture.now(),
+  });
+  assert.equal(drifting.record.position.status, "exiting");
+
+  const inventory = (venueId, positions) => buildCarryInventoryEvidence({
+    venue_id: venueId,
+    account_commitment: `account:${venueId}:0001`,
+    target_market: carryMarket(venueId),
+    positions,
+    open_orders: [],
+    position_inventory_verified: true,
+    open_order_inventory_verified: true,
+  });
+  const readiness = [
+    {
+      venue_id: "aster", account_commitment: "account:aster:0001", authorized: true,
+      flat_zero_orders: true, position_count: 0, open_order_count: 0,
+      inventory: inventory("aster", []),
+    },
+    {
+      venue_id: "lighter", account_commitment: "account:lighter:0001", authorized: true,
+      flat_zero_orders: false, position_count: 1, open_order_count: 0,
+      inventory: inventory("lighter", [{ market: carryMarket("lighter"), side: "long", base_size: "0.0007" }]),
+    },
+  ];
+  const preflight = async ({ body }) => {
+    const proof = preflightProof(undefined, { phase: body?.phase });
+    proof.account_readiness = readiness;
+    if (body?.phase === "exit") {
+      proof.evidence = proof.evidence.map((item) => body.exit_side_by_venue?.[item.venue_id]
+        ? {
+          ...item,
+          side: body.exit_side_by_venue[item.venue_id],
+          order_shape: {
+            ...item.order_shape,
+            side: body.exit_side_by_venue[item.venue_id],
+            base_size: body.exit_base_size_by_venue[item.venue_id],
+          },
+        }
+        : item);
+    }
+    return proof;
+  };
+  const putRecord = fixture.state.putCarryPositionRecord.bind(fixture.state);
+  let crashed = false;
+  fixture.state.putCarryPositionRecord = async (record, options) => {
+    const stored = await putRecord(record, options);
+    if (!crashed && stored.ok && record.exit_saga_id) {
+      crashed = true;
+      throw new Error("simulated worker crash after one-leg exit saga link");
+    }
+    return stored;
+  };
+  await assert.rejects(executeStoredCarryExit({
+    ...fixture,
+    preflight,
+    executeOrder: async () => { throw new Error("submit must not start"); },
+  }), /simulated worker crash/);
+  fixture.state.putCarryPositionRecord = putRecord;
+
+  const linked = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  const sagaId = linked.exit_saga_id;
+  const saga = await fixture.state.getMultiLegSaga(sagaId);
+  assert.equal(saga.legs.length, 1);
+  assert.equal(saga.status, "preflighting");
+  const audit = await auditCarryPositionsAfterRestart({ state: fixture.state, now_ms: fixture.now() });
+  assert.equal(audit.ok, true, JSON.stringify(audit));
+  assert.equal(audit.recovered, 1);
+  assert.equal((await fixture.state.getMultiLegSaga(sagaId)).status, "failed_no_submit");
+  assert.equal((await fixture.state.getCarryPositionRecord(fixture.position_id)).exit_saga_id, null);
+});
+
 test("terminal entry recovery synchronizes flat parent after restart without resubmission", async (t) => {
   const fixture = await setup(t, "restart-recovered-flat");
   let submissions = 0;
@@ -1141,8 +1325,24 @@ test("terminal entry recovery synchronizes flat parent after restart without res
     preflight: async () => ({
       ...preflightProof(),
       account_readiness: [
-        { venue_id: "aster", account_commitment: "account:aster:0001", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
-        { venue_id: "lighter", account_commitment: "account:lighter:0001", authorized: true, flat_zero_orders: false, position_count: 1, open_order_count: 0 },
+        { venue_id: "aster", account_commitment: "account:aster:0001", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, inventory: flatCarryInventory("aster") },
+        {
+          venue_id: "lighter",
+          account_commitment: "account:lighter:0001",
+          authorized: true,
+          flat_zero_orders: false,
+          position_count: 1,
+          open_order_count: 0,
+          inventory: buildCarryInventoryEvidence({
+            venue_id: "lighter",
+            account_commitment: "account:lighter:0001",
+            target_market: carryMarket("lighter"),
+            positions: [{ market: carryMarket("lighter"), side: "short", base_size: "0.001" }],
+            open_orders: [],
+            position_inventory_verified: true,
+            open_order_inventory_verified: true,
+          }),
+        },
       ],
     }),
     executeOrder: async () => { submissions += 1; throw new Error("unexpected submit"); },
@@ -1254,7 +1454,7 @@ test("records a fully rejected pair as flat with no recovery order", async (t) =
     executeOrder: async () => { throw new Error("venue rejected order"); },
   });
   assert.equal(result.ok, false);
-  assert.equal(result.error, "carry_entry_failed_no_fill");
+  assert.equal(result.error, "carry_entry_failed_no_fill", JSON.stringify(result));
   assert.equal(result.record.position.status, "reconciled");
   assert.equal(result.record.position.terminal_reason, "entry_failed_no_fill");
 });
@@ -2230,6 +2430,141 @@ test("background monitoring triggers an automatic reduce-only exit and finalizes
   assert.equal(result.record.value_ledger.realized.net_value_micro_usdc, 19_000);
 });
 
+test("inventory drift cancels owned orders, rereads, and closes only current surviving exposure", async (t) => {
+  const fixture = await setup(t, "inventory-drift-current-exposure");
+  await openActive(fixture);
+  const active = await fixture.state.getCarryPositionRecord(fixture.position_id);
+  const expectations = active.position.inventory_expectation_by_venue;
+  const drifting = await advanceStoredCarryPosition({
+    state: fixture.state,
+    owner_commitment: OWNER,
+    position_id: fixture.position_id,
+    event: {
+      version: 1,
+      event_id: "carry:inventory:drift:current-exposure",
+      sequence: active.position.last_event_sequence + 1,
+      type: "inventory_drift",
+      reason: "carry_order_remains_open",
+    },
+    now_ms: NOW + 50,
+  });
+  assert.equal(drifting.record.position.status, "exiting");
+
+  let cancelled = false;
+  let closed = false;
+  const actions = [];
+  const inventory = (venueId, positions, openOrders = []) => buildCarryInventoryEvidence({
+    venue_id: venueId,
+    account_commitment: `account:${venueId}:0001`,
+    target_market: carryMarket(venueId),
+    positions,
+    open_orders: openOrders,
+    position_inventory_verified: true,
+    open_order_inventory_verified: true,
+  });
+  const readiness = () => {
+    if (closed) return ["aster", "lighter"].map((venueId) => ({
+      venue_id: venueId,
+      account_commitment: `account:${venueId}:0001`,
+      authorized: true,
+      flat_zero_orders: true,
+      position_count: 0,
+      open_order_count: 0,
+      inventory: inventory(venueId, []),
+    }));
+    if (cancelled) return [
+      {
+        venue_id: "aster", account_commitment: "account:aster:0001", authorized: true,
+        flat_zero_orders: true, position_count: 0, open_order_count: 0,
+        inventory: inventory("aster", []),
+      },
+      {
+        venue_id: "lighter", account_commitment: "account:lighter:0001", authorized: true,
+        flat_zero_orders: false, position_count: 1, open_order_count: 0,
+        inventory: inventory("lighter", [{ market: carryMarket("lighter"), side: "long", base_size: "0.0007" }]),
+      },
+    ];
+    return [
+      {
+        venue_id: "aster", account_commitment: "account:aster:0001", authorized: true,
+        flat_zero_orders: false, position_count: 1, open_order_count: 1,
+        inventory: inventory(
+          "aster",
+          [{ market: carryMarket("aster"), side: "long", base_size: "0.001" }],
+          [{
+            market: carryMarket("aster"), side: "buy", base_size: "0.0002", reduce_only: false,
+            order_identity_commitment: "order:aster:inventory:0001",
+            carry_work_order_commitment: expectations.aster.entry_work_order_commitment,
+            carry_provider_ref_commitment: expectations.aster.entry_provider_ref_commitment,
+          }],
+        ),
+      },
+      {
+        venue_id: "lighter", account_commitment: "account:lighter:0001", authorized: true,
+        flat_zero_orders: false, position_count: 1, open_order_count: 0,
+        inventory: inventory("lighter", [{ market: carryMarket("lighter"), side: "short", base_size: "0.001" }]),
+      },
+    ];
+  };
+  const preflight = async ({ body }) => {
+    const proof = preflightProof(undefined, { phase: body?.phase });
+    proof.account_readiness = readiness();
+    if (body?.phase === "exit") {
+      proof.evidence = proof.evidence.map((item) => ({
+        ...item,
+        side: body.exit_side_by_venue[item.venue_id],
+        order_shape: {
+          ...item.order_shape,
+          side: body.exit_side_by_venue[item.venue_id],
+          base_size: body.exit_base_size_by_venue[item.venue_id],
+        },
+      }));
+    }
+    return proof;
+  };
+  const result = await executeStoredCarryExit({
+    ...fixture,
+    preflight,
+    executeOrder: async (args) => {
+      actions.push({
+        venue_id: args.venue_id,
+        operation_class: args.operation_class,
+        side: args.instruction.order?.side,
+        base_size: args.instruction.order?.base_size,
+      });
+      if (args.operation_class === "cancel") {
+        assert.equal(args.venue_id, "aster");
+        assert.equal(args.instruction.cancel.target_work_order_commitment, expectations.aster.entry_work_order_commitment);
+        cancelled = true;
+        return { status: "cancelled" };
+      }
+      assert.equal(cancelled, true);
+      assert.equal(args.venue_id, "lighter");
+      assert.equal(args.instruction.order.reduce_only, true);
+      assert.equal(args.instruction.order.side, "sell");
+      assert.equal(args.instruction.order.base_size, "0.0007");
+      closed = true;
+      const receipt = filledReceipt(args);
+      return {
+        ...receipt,
+        final_proof: {
+          ...receipt.final_proof,
+          cumulative_filled_micro_usdc: 7_000_000,
+          filled_base_size: "0.0007",
+        },
+      };
+    },
+  });
+  assert.equal(result.ok, true, result.error);
+  assert.deepEqual(actions, [
+    { venue_id: "aster", operation_class: "cancel", side: undefined, base_size: undefined },
+    { venue_id: "lighter", operation_class: "limit_order", side: "sell", base_size: "0.0007" },
+  ]);
+  assert.equal(result.record.position.status, "reconciled");
+  assert.equal(result.record.final_reconciliation_evidence.venues.every((venue) =>
+    venue.inventory.target_positions.length === 0 && venue.inventory.target_open_orders.length === 0), true);
+});
+
 test("execution recovery does not misclassify a monitoring quarantine as an ambiguous saga", async (t) => {
   const fixture = await setup(t, "monitoring-quarantine-retry");
   const entry = await executeStoredCarryEntry({
@@ -2499,20 +2834,33 @@ function monitoringContext(pair = { long: "aster", short: "lighter" }, sharedAcc
 
 function preflightProof(pair = { long: "aster", short: "lighter" }, { phase = "opening", account_commitment: accountCommitment = null } = {}) {
   const exit = phase === "exit";
+  const account = (venueId) => accountCommitment || `account:${venueId}:0001`;
   return {
     version: 1,
     transaction_broadcast: false,
     no_submit_ready: true,
     live_creation_ready: true,
     account_readiness: [
-      { venue_id: pair.long, account_commitment: accountCommitment || `account:${pair.long}:0001`, authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
-      { venue_id: pair.short, account_commitment: accountCommitment || `account:${pair.short}:0001`, authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0 },
+      { venue_id: pair.long, account_commitment: account(pair.long), authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, inventory: flatCarryInventory(pair.long, account(pair.long)) },
+      { venue_id: pair.short, account_commitment: account(pair.short), authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, inventory: flatCarryInventory(pair.short, account(pair.short)) },
     ],
     evidence: [
       preflightLeg(pair.long, exit ? "sell" : "buy", exit, accountCommitment),
       preflightLeg(pair.short, exit ? "buy" : "sell", exit, accountCommitment),
     ],
   };
+}
+
+function flatCarryInventory(venueId, accountCommitment = `account:${venueId}:0001`) {
+  return buildCarryInventoryEvidence({
+    venue_id: venueId,
+    account_commitment: accountCommitment,
+    target_market: carryMarket(venueId),
+    positions: [],
+    open_orders: [],
+    position_inventory_verified: true,
+    open_order_inventory_verified: true,
+  });
 }
 
 function preflightLeg(venueId, side, reduceOnly, accountCommitment = null) {
@@ -2544,8 +2892,8 @@ function preflightLeg(venueId, side, reduceOnly, accountCommitment = null) {
 function automaticMonitoringProof(pair = { long: "aster", short: "lighter" }, checkedAtMs = NOW + 100) {
   const base = preflightProof(pair);
   const marginRunways = [
-    monitoringRunway(pair.long, checkedAtMs),
-    monitoringRunway(pair.short, checkedAtMs),
+    monitoringRunway(pair.long, checkedAtMs, "long"),
+    monitoringRunway(pair.short, checkedAtMs, "short"),
   ];
   return {
     ...base,
@@ -2569,7 +2917,7 @@ function automaticMonitoringProof(pair = { long: "aster", short: "lighter" }, ch
     margin_runways: marginRunways,
     evidence: base.evidence.map((item, index) => ({
       ...item,
-      account_state: monitoringAccountState(marginRunways[index]),
+      account_state: monitoringAccountState(marginRunways[index], index === 0 ? "long" : "short"),
     })),
     qualification_reasons: [],
   };
@@ -2703,7 +3051,7 @@ function signedDecimalMicro(value) {
   return negative ? -amount : amount;
 }
 
-function monitoringRunway(venueId, checkedAtMs) {
+function monitoringRunway(venueId, checkedAtMs, side) {
   const runway = {
     version: 1,
     venue_id: venueId,
@@ -2724,11 +3072,24 @@ function monitoringRunway(venueId, checkedAtMs) {
   };
   return {
     ...runway,
-    account_state_commitment: monitoringAccountState(runway).account_state_commitment,
+    account_state_commitment: monitoringAccountState(runway, side).account_state_commitment,
   };
 }
 
-function monitoringAccountState(runway) {
+function monitoringAccountState(runway, side) {
+  const inventory = buildCarryInventoryEvidence({
+    venue_id: runway.venue_id,
+    account_commitment: runway.account_commitment,
+    target_market: carryMarket(runway.venue_id),
+    positions: [{
+      market: carryMarket(runway.venue_id),
+      side,
+      base_size: "0.001",
+    }],
+    open_orders: [],
+    position_inventory_verified: true,
+    open_order_inventory_verified: true,
+  });
   const state = {
     venue_id: runway.venue_id,
     account_commitment: runway.account_commitment,
@@ -2740,6 +3101,7 @@ function monitoringAccountState(runway) {
     liquidation_distance_bps: runway.liquidation_distance_bps,
     liquidation_distance_verified: runway.liquidation_distance_verified,
     liquidation_distance_source: runway.liquidation_distance_source,
+    inventory,
   };
   return {
     ...state,

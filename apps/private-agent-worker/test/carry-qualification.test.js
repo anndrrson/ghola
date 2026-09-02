@@ -7,6 +7,11 @@ import {
   recordCompletedCarryVenueQualifications,
   storeCarryVenueQualification,
 } from "../src/execution/carry-qualification.js";
+import {
+  carryInventoryExpectation,
+  carryInventoryPositionIdentityCommitment,
+} from "../src/execution/carry-inventory.js";
+import { carryReconciliationCommitment } from "../src/execution/carry-reconciliation.js";
 
 const NOW = 1_800_000_000_000;
 const IMAGE = "sha256:abcdef123456";
@@ -110,7 +115,14 @@ test("derives qualification only from a completed durable flat lifecycle", async
   ]);
   const record = {
     owner_commitment: "owner:carry:qualification:0001",
-    position: { position_id: "carry:position:0001", status: "reconciled", long_venue_id: "hyperliquid", short_venue_id: "aster" },
+    position: {
+      position_id: "carry:position:0001",
+      status: "reconciled",
+      long_venue_id: "hyperliquid",
+      short_venue_id: "aster",
+      active_observed_at_ms: NOW - 2,
+      inventory_expectation_by_venue: qualificationInventoryExpectations(),
+    },
     entry_saga_id: "saga:entry:0001",
     exit_saga_id: "saga:exit:0001",
     monitoring_context: {
@@ -119,20 +131,7 @@ test("derives qualification only from a completed durable flat lifecycle", async
         aster: { account_commitment: "account:aster:qualification:0001" },
       },
     },
-    final_reconciliation_evidence: {
-      owner_commitment: "owner:carry:qualification:0001",
-      carry_position_id: "carry:position:0001",
-      account_state_checked: true,
-      transaction_broadcast: false,
-      gross_exposure_micro_usdc: 0,
-      open_order_count: 0,
-      checked_at_ms: NOW,
-      reconciliation_commitment: "carry:reconciliation:qualification:0001",
-      venues: [
-        { venue_id: "hyperliquid", account_commitment: "account:hyperliquid:qualification:0001", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
-        { venue_id: "aster", account_commitment: "account:aster:qualification:0001", authorized: true, flat_zero_orders: true, position_count: 0, open_order_count: 0, account_state_checked: true },
-      ],
-    },
+    final_reconciliation_evidence: qualificationFlatReconciliation(),
     qualification_context: {
       venues: {
         aster: {
@@ -306,4 +305,69 @@ function reconciledSaga(phase, workOrder, reduceOnly) {
       }],
     },
   };
+}
+
+function qualificationInventoryExpectations() {
+  return {
+    hyperliquid: carryInventoryExpectation({
+      venue_id: "hyperliquid",
+      account_commitment: "account:hyperliquid:qualification:0001",
+      market: "BTC",
+      side: "buy",
+      base_size: "0.001",
+      entry_work_order_commitment: "work:carry:hyperliquid:entry:0001",
+      entry_provider_ref_commitment: "provider:hyperliquid:qualification:0001",
+    }),
+    aster: carryInventoryExpectation({
+      venue_id: "aster",
+      account_commitment: "account:aster:qualification:0001",
+      market: "BTCUSDT",
+      side: "sell",
+      base_size: "0.001",
+      entry_work_order_commitment: "work:carry:aster:entry:0001",
+      entry_provider_ref_commitment: "provider_reference_0001",
+    }),
+  };
+}
+
+function qualificationFlatReconciliation() {
+  const markets = { hyperliquid: "BTC", aster: "BTCUSDT" };
+  const result = {
+    owner_commitment: "owner:carry:qualification:0001",
+    carry_position_id: "carry:position:0001",
+    account_state_checked: true,
+    transaction_broadcast: false,
+    gross_exposure_micro_usdc: 0,
+    open_order_count: 0,
+    checked_at_ms: NOW,
+    reconciliation_commitment: null,
+    venues: ["hyperliquid", "aster"].map((venueId) => {
+      const accountCommitment = `account:${venueId}:qualification:0001`;
+      const market = markets[venueId];
+      return {
+        venue_id: venueId,
+        account_commitment: accountCommitment,
+        authorized: true,
+        flat_zero_orders: true,
+        position_count: 0,
+        open_order_count: 0,
+        account_state_checked: true,
+        position_identity_commitment: carryInventoryPositionIdentityCommitment({
+          venue_id: venueId,
+          account_commitment: accountCommitment,
+          market,
+        }),
+        inventory: {
+          version: 1,
+          target_market: market,
+          position_inventory_verified: true,
+          open_order_inventory_verified: true,
+          target_positions: [],
+          target_open_orders: [],
+        },
+      };
+    }),
+  };
+  result.reconciliation_commitment = carryReconciliationCommitment(result);
+  return result;
 }

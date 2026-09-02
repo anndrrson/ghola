@@ -24,6 +24,7 @@ import {
 import { observeCarryFundingPersistence } from "./carry-funding-persistence.js";
 import { authenticateCarryCreationOpportunity } from "./carry-opportunity-authentication.js";
 import { validVenueLiquidationBinding } from "../venues/liquidation-distance.js";
+import { buildCarryInventoryEvidence, validCarryInventoryEvidence } from "./carry-inventory.js";
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -107,6 +108,7 @@ export async function preflightCarryPair({
       const instruction = orderInstruction(leg, notionalUsd, {
         phase,
         exact_base_size: body.exit_base_size_by_venue?.[leg.venue_id],
+        exact_exit_side: body.exit_side_by_venue?.[leg.venue_id],
       });
       const workOrderCommitment = `${body.work_order_commitment}_${leg.venue_id}`;
       const execution = executionFromAccess(access);
@@ -500,6 +502,10 @@ function validAccountStateEvidence(value, receipt) {
     && Number.isSafeInteger(value?.open_order_count)
     && value.open_order_count >= 0
     && value.flat_zero_orders === (value.position_count === 0 && value.open_order_count === 0)
+    && validCarryInventoryEvidence(value?.inventory, {
+      venue_id: value?.venue_id,
+      account_commitment: value?.account_commitment,
+    })
     && validVenueLiquidationBinding(value, value.position_count)
     && validCommitment(value?.account_state_commitment)
     && value.account_state_commitment === carryAccountStateCommitment(value);
@@ -556,7 +562,8 @@ export function modelCarryPairPreflight({
   const connectionReady = evidence.every((leg, index) =>
     leg.receipt?.checks?.transaction_broadcast === false &&
     (leg.receipt?.checks?.order_request_built === true || leg.receipt?.checks?.order_request_checked === true) &&
-    accounts[index].authorized
+    accounts[index].authorized &&
+    accounts[index].inventory_verified
   );
   const capitalReady = accounts.every((account) => account.capital_ready);
   const monitoringReady = accounts.every((account) => account.monitoring_ready);
@@ -818,6 +825,31 @@ function accountReadiness(leg, notionalMicro) {
         && liquidationPositionCount === positionCount));
   const flat = countsKnown && positionCount === 0 && openOrderCount === 0;
   const authorized = leg.receipt?.checks?.transaction_broadcast === false && account.can_trade === true && accountSnapshotReady;
+  const inventorySource = leg.venue_id === "hyperliquid" ? leg.account_snapshot || {} : account;
+  const rawPositions = inventorySource.positions;
+  const rawOpenOrders = inventorySource.target_open_orders ?? inventorySource.open_orders;
+  const positionInventoryVerified = Array.isArray(rawPositions)
+    && rawPositions.length === positionCount
+    && inventorySource.position_inventory_verified === true
+    && inventorySource.position_inventory_pagination_complete === true
+    && inventorySource.position_inventory_has_more === false;
+  const openOrderInventoryVerified = Array.isArray(rawOpenOrders)
+    && inventorySource.open_order_inventory_verified === true
+    && inventorySource.open_order_inventory_pagination_complete === true
+    && inventorySource.open_order_inventory_has_more === false
+    && (inventorySource.target_open_orders !== undefined
+      || rawOpenOrders.length === openOrderCount);
+  const inventory = buildCarryInventoryEvidence({
+    venue_id: leg.venue_id,
+    account_commitment: leg.account_commitment,
+    target_market: leg.receipt?.order_shape?.market ?? leg.snapshot?.market,
+    positions: rawPositions || [],
+    open_orders: rawOpenOrders || [],
+    position_inventory_verified: countsKnown && positionInventoryVerified,
+    open_order_inventory_verified: countsKnown && openOrderInventoryVerified,
+  });
+  const inventoryVerified = inventory.position_inventory_verified === true
+    && inventory.open_order_inventory_verified === true;
   return {
     venue_id: leg.venue_id,
     account_commitment: leg.account_commitment,
@@ -828,8 +860,10 @@ function accountReadiness(leg, notionalMicro) {
     liquidation_distance_bps: account.liquidation_distance_bps ?? null,
     liquidation_distance_verified: account.liquidation_distance_verified === true,
     liquidation_distance_source: account.liquidation_distance_source ?? null,
-    capital_ready: authorized && flat && openingCollateralShortfall === 0,
-    monitoring_ready: authorized && balance > 0,
+    inventory,
+    inventory_verified: inventoryVerified,
+    capital_ready: authorized && inventoryVerified && flat && openingCollateralShortfall === 0,
+    monitoring_ready: authorized && inventoryVerified && balance > 0,
     available_balance_micro_usdc: available,
     margin_balance_micro_usdc: balance,
     venue_minimum_margin_micro_usdc: venueMinimumMargin,
@@ -890,9 +924,13 @@ function verifiedLiquidationDistance(account, venueId) {
   return Object.freeze({ distance_bps: distance, source });
 }
 
-function orderInstruction(leg, notionalUsd, { phase = "opening", exact_base_size: exactBaseSize = null } = {}) {
+function orderInstruction(leg, notionalUsd, {
+  phase = "opening",
+  exact_base_size: exactBaseSize = null,
+  exact_exit_side: exactExitSide = null,
+} = {}) {
   const snapshot = leg.snapshot;
-  if (phase === "exit") return exactExitOrderInstruction(leg, exactBaseSize);
+  if (phase === "exit") return exactExitOrderInstruction(leg, exactBaseSize, exactExitSide);
   if (leg.venue_id === "hyperliquid") {
     return {
       version: 1,
@@ -943,10 +981,15 @@ function orderInstruction(leg, notionalUsd, { phase = "opening", exact_base_size
   };
 }
 
-function exactExitOrderInstruction(leg, exactBaseSize) {
+function exactExitOrderInstruction(leg, exactBaseSize, exactExitSide = null) {
   const snapshot = leg.snapshot;
   const baseSize = positiveDecimalString(exactBaseSize, `carry_exit_base_size_invalid:${leg.venue_id}`);
-  const side = leg.side === "buy" ? "sell" : "buy";
+  const defaultSide = leg.side === "buy" ? "sell" : "buy";
+  const side = exactExitSide === null || exactExitSide === undefined
+    ? defaultSide
+    : exactExitSide === "buy" || exactExitSide === "sell"
+      ? exactExitSide
+      : (() => { throw carryError(`carry_exit_side_invalid:${leg.venue_id}`, 422); })();
   const order = {
     market: snapshot.asset,
     side,
@@ -1050,6 +1093,7 @@ function bindAccountStateEvidence(account, leg) {
     liquidation_distance_bps: account.liquidation_distance_bps,
     liquidation_distance_verified: account.liquidation_distance_verified,
     liquidation_distance_source: account.liquidation_distance_source,
+    inventory: account.inventory,
   };
   return {
     ...account,
@@ -1090,6 +1134,7 @@ function publicEvidence(leg, qualification, accountReadiness) {
     liquidation_distance_bps: accountReadiness.liquidation_distance_bps,
     liquidation_distance_verified: accountReadiness.liquidation_distance_verified,
     liquidation_distance_source: accountReadiness.liquidation_distance_source,
+    inventory: accountReadiness.inventory,
     account_state_commitment: accountReadiness.account_state_commitment,
   };
   return {

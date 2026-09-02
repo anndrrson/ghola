@@ -8,6 +8,7 @@ const MARKET = /^[A-Z0-9][A-Z0-9._/-]{0,63}$/;
 const ETH_ADDRESS = /^0x[0-9a-f]{40}$/;
 const ETH_SIGNATURE = /^0x[0-9a-f]{130}$/;
 const ETH_COMMITMENT = /^0x[0-9a-f]{64}$/;
+const INVENTORY_POSITION_COMMITMENT = /^carry:inventory-position:[0-9a-f]{40}$/;
 const CARRY_OPPORTUNITY_EVIDENCE = /^carry:creation-opportunity:evidence:[0-9a-f]{64}$/;
 const CURRENT_FUNDING_OBSERVATION = /^carry:funding:current:[0-9a-f]{64}$/;
 const CASHFLOW_VALUATION_EVIDENCE = /^carry:cashflow-valuation:evidence:[0-9a-f]{64}$/;
@@ -25,7 +26,7 @@ const RECOVERABLE_MONITORING_FREEZE_REASONS = new Set([
 ]);
 const EVENT_TYPES = new Set([
   "preflight_passed", "entry_reconciled", "entry_failed_no_fill", "observation", "manual_exit_requested",
-  "observation_unavailable", "mandate_invalid", "submission_ambiguous", "restart_detected", "recovery_failed", "reconciliation_complete", "exit_reconciled",
+  "observation_unavailable", "inventory_drift", "mandate_invalid", "submission_ambiguous", "restart_detected", "recovery_failed", "inventory_expectation_migrated", "inventory_expectation_migration_required", "reconciliation_complete", "exit_reconciled",
 ]);
 const VALUE_ENTRY_TYPES = new Set([
   "funding", "trading_fee", "slippage", "gas", "capital_cost", "transfer_fee", "rebate", "settlement_adjustment",
@@ -2101,6 +2102,7 @@ export function createCarryPosition(value) {
     active_boundary_provenance: null,
     active_observed_at_ms_by_venue: {},
     active_boundary_provenance_by_venue: {},
+    inventory_expectation_by_venue: {},
     created_at_ms: nowMs,
     updated_at_ms: nowMs,
     terminal_reason: null,
@@ -2117,7 +2119,10 @@ export function advanceCarryPosition({ position: positionInput, event: eventInpu
       return deepFreeze({ ok: true, duplicate: true, position: deepFreeze(positionInput) });
     }
     if (event.sequence !== position.last_event_sequence + 1) fail("carry_event_sequence_invalid");
-    if (position.status === "reconciled" || position.status === "manual_intervention") fail("carry_position_terminal");
+    if ((position.status === "reconciled" || position.status === "manual_intervention")
+      && !(position.status === "reconciled" && event.type === "inventory_expectation_migrated")) {
+      fail("carry_position_terminal");
+    }
     applyEvent(position, event, nowMs);
     position.last_event_sequence = event.sequence;
     position.processed_event_ids.push(event.event_id);
@@ -2352,6 +2357,23 @@ export function finalizeCarryValueLedger({ ledger: ledgerInput, evidence: eviden
 }
 
 function applyEvent(position, event, nowMs) {
+  if (event.type === "inventory_expectation_migrated") {
+    requireStatus(position, new Set(["active", "rebalancing", "frozen", "exiting", "reconciled"]));
+    position.inventory_expectation_by_venue = normalizeCarryInventoryExpectations(
+      event.inventory_expectation_by_venue,
+      [position.long_venue_id, position.short_venue_id],
+    );
+    return;
+  }
+  if (event.type === "inventory_drift") {
+    requireMonitorableStatus(position);
+    position.status = "exiting";
+    position.next_actions = ["cancel_open_orders", "reduce_only_close_filled_exposure"];
+    position.retry_permitted = false;
+    position.inventory_drift_reason = normalizedInventoryDriftReason(event.reason);
+    position.terminal_reason = "inventory_drift";
+    return;
+  }
   if (event.type === "mandate_invalid") {
     requireStatus(position, new Set(["active", "rebalancing", "frozen"]));
     position.status = "exiting";
@@ -2366,6 +2388,14 @@ function applyEvent(position, event, nowMs) {
     position.next_actions = ["reconcile_only"];
     position.retry_permitted = false;
     position.terminal_reason = "observation_unavailable";
+    return;
+  }
+  if (event.type === "inventory_expectation_migration_required") {
+    requireStatus(position, new Set(["active", "rebalancing", "frozen", "exiting"]));
+    position.status = "frozen";
+    position.next_actions = ["reconcile_only", "manual_exit_required"];
+    position.retry_permitted = false;
+    position.terminal_reason = "inventory_expectation_migration_required";
     return;
   }
   if (event.type === "submission_ambiguous" || event.type === "restart_detected" || event.type === "recovery_failed") {
@@ -2437,6 +2467,9 @@ function applyEvent(position, event, nowMs) {
     position.active_boundary_provenance = boundaryProvenance;
     position.active_observed_at_ms_by_venue = boundaryByVenue;
     position.active_boundary_provenance_by_venue = provenanceByVenue;
+    position.inventory_expectation_by_venue = event.inventory_expectation_by_venue === undefined
+      ? {}
+      : normalizeCarryInventoryExpectations(event.inventory_expectation_by_venue, venueIds);
     const mandateExpiresAt = position.mandate_authorization?.signed_mandate?.expires_at_ms;
     const mandateValid = Number.isSafeInteger(mandateExpiresAt) && mandateExpiresAt > nowMs;
     if (longFilled === position.target_notional_micro_usdc && shortFilled === position.target_notional_micro_usdc
@@ -4096,6 +4129,70 @@ function carryExposureProvenanceRecord(value, venueIds, fallback) {
 
 function requireStatus(position, allowed) {
   if (!allowed.has(position.status)) fail("carry_event_not_allowed_in_state");
+}
+
+function normalizeCarryInventoryExpectations(value, venueIds) {
+  const raw = object(value, "carry_inventory_expectations_required");
+  if (Object.keys(raw).length !== venueIds.length
+    || !venueIds.every((venueId) => Object.hasOwn(raw, venueId))) {
+    fail("carry_inventory_expectations_unbound");
+  }
+  return Object.fromEntries(venueIds.map((venueId) => {
+    const row = object(raw[venueId], "carry_inventory_expectation_required");
+    exactVersion(row.version, "carry_inventory_expectation_version");
+    if (row.venue_id !== venueId) fail("carry_inventory_expectation_venue");
+    const baseSize = canonicalPositiveDecimal(row.base_size, "carry_inventory_expectation_base_size");
+    const positionSide = enumValue(row.side, new Set(["long", "short"]), "carry_inventory_expectation_side");
+    const expectedSide = venueId === venueIds[0] ? "long" : "short";
+    if (positionSide !== expectedSide || row.expected_carry_open_order_count !== 0) {
+      fail("carry_inventory_expectation_direction");
+    }
+    return [venueId, {
+      version: 1,
+      venue_id: venueId,
+      account_commitment: identifier(row.account_commitment, "carry_inventory_expectation_account"),
+      market: normalized(row.market, MARKET, "carry_inventory_expectation_market"),
+      side: positionSide,
+      base_size: baseSize,
+      position_identity_commitment: typeof row.position_identity_commitment === "string"
+        && INVENTORY_POSITION_COMMITMENT.test(row.position_identity_commitment)
+        ? row.position_identity_commitment
+        : fail("carry_inventory_expectation_position_identity"),
+      entry_work_order_commitment: identifier(row.entry_work_order_commitment, "carry_inventory_expectation_work_order"),
+      entry_provider_ref_commitment: identifier(row.entry_provider_ref_commitment, "carry_inventory_expectation_provider_ref"),
+      entry_client_order_identity_commitment: row.entry_client_order_identity_commitment === null
+        || row.entry_client_order_identity_commitment === undefined
+        ? null
+        : typeof row.entry_client_order_identity_commitment === "string"
+          && /^carry:inventory-client-order:[0-9a-f]{40}$/.test(row.entry_client_order_identity_commitment)
+          ? row.entry_client_order_identity_commitment
+          : fail("carry_inventory_expectation_client_order_identity"),
+      entry_provider_order_identity_commitment: row.entry_provider_order_identity_commitment === null
+        || row.entry_provider_order_identity_commitment === undefined
+        ? null
+        : typeof row.entry_provider_order_identity_commitment === "string"
+          && /^carry:inventory-provider-order:[0-9a-f]{40}$/.test(row.entry_provider_order_identity_commitment)
+          ? row.entry_provider_order_identity_commitment
+          : fail("carry_inventory_expectation_provider_order_identity"),
+      expected_carry_open_order_count: 0,
+    }];
+  }));
+}
+
+function canonicalPositiveDecimal(value, code) {
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(String(value ?? ""));
+  if (!match) fail(code);
+  const whole = match[1].replace(/^0+(?=\d)/, "");
+  const fraction = String(match[2] || "").replace(/0+$/, "");
+  if (!/[1-9]/.test(`${whole}${fraction}`)) fail(code);
+  return fraction ? `${whole}.${fraction}` : whole;
+}
+
+function normalizedInventoryDriftReason(value) {
+  const reason = String(value || "");
+  if (!/^target_position_(?:missing|not_unique|side_drift|size_drift)$/.test(reason)
+    && reason !== "carry_order_remains_open") fail("carry_inventory_drift_reason");
+  return reason;
 }
 
 function venue(value, code) {

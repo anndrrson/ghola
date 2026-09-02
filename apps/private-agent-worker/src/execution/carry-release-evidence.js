@@ -25,6 +25,10 @@ import { verifyCashflowValuationEvidence } from "./carry-stablecoin-conversion.j
 import { hasProvenLiveOrderBroadcast } from "./order-broadcast-proof.js";
 import { liquidationDistanceSourceForVenue } from "../venues/liquidation-distance.js";
 import { finalizeCarryLifecycleEventRecord } from "../state/private-state.js";
+import {
+  validCarryInventoryEvidence,
+  validateCarryInventoryBinding,
+} from "./carry-inventory.js";
 
 const DEFAULT_LIFECYCLE_PROOF_MAX_AGE_MS = 90 * 86_400_000;
 const MAX_LIFECYCLE_PROOFS_PER_ASSET = 64;
@@ -585,6 +589,7 @@ export async function buildCompletedCarryReleaseMaterial({
     owner_commitment: record.owner_commitment,
     carry_position_id: record.position.position_id,
     account_commitments: accountCommitments,
+    inventory_expectations: releaseInventoryExpectations(record),
   });
   if (!finalAssessment.flat) return denied("carry_release_final_state_unproven");
   const [entrySaga, exitSaga] = await Promise.all([
@@ -605,7 +610,7 @@ export async function buildCompletedCarryReleaseMaterial({
   }
   const exitRequest = [...events].reverse().find((event) => event?.type === "manual_exit_requested");
   const exitRequestedAt = exitRequest?.recorded_at_ms || exitSaga.created_at_ms;
-  const monitoringFailures = events.filter((event) => ["observation_unavailable", "mandate_invalid"].includes(event?.type)
+  const monitoringFailures = events.filter((event) => ["observation_unavailable", "inventory_drift", "mandate_invalid"].includes(event?.type)
     && positiveInteger(event.recorded_at_ms)
     && event.recorded_at_ms >= entryReconciledAt
     && event.recorded_at_ms <= exitRequestedAt);
@@ -789,6 +794,13 @@ export async function buildCompletedCarryReleaseMaterial({
   return { ok: true, material };
 }
 
+function releaseInventoryExpectations(record) {
+  const venueIds = [record?.position?.long_venue_id, record?.position?.short_venue_id];
+  const expected = record?.position?.inventory_expectation_by_venue;
+  if (expected && venueIds.every((venueId) => expected[venueId])) return expected;
+  return record?.position?.active_observed_at_ms == null ? null : {};
+}
+
 function releaseCollateralRouteReadiness({
   route_evidence: routeEvidence,
   monitoring_context: monitoringContext,
@@ -957,15 +969,24 @@ function releaseMarginRunways({ observation, venue_ids: venueIds, position, moni
     if (state?.checked_at_ms !== observedAt
       || !commitment(state?.verification_commitment)
       || !Number.isSafeInteger(state?.position_count)
-      || state.position_count <= 0
+      || state.position_count < 0
       || !Number.isSafeInteger(state?.open_order_count)
       || state.open_order_count < 0
       || state.flat_zero_orders !== false
+      || !validCarryInventoryEvidence(state.inventory, {
+        venue_id: venueId,
+        account_commitment: state.account_commitment,
+      })
       || !/^carry:account-state:[0-9a-f]{40}$/.test(String(state?.account_state_commitment || ""))
       || state.account_state_commitment !== carryAccountStateCommitment(state)
       || leg?.account_state_commitment !== state.account_state_commitment) {
       return denied("carry_release_margin_runway_account_state_invalid");
     }
+    const inventoryBinding = validateCarryInventoryBinding({
+      account_state: state,
+      expectation: position?.inventory_expectation_by_venue?.[venueId],
+    });
+    if (!inventoryBinding.ok) return denied("carry_release_margin_runway_inventory_binding_invalid");
     if (typeof source !== "string"
       || state.liquidation_distance_source !== source
       || state.liquidation_distance_verified !== true
@@ -1001,6 +1022,7 @@ function releaseMarginRunways({ observation, venue_ids: venueIds, position, moni
       minimum_liquidation_distance_bps: leg.minimum_liquidation_distance_bps,
       liquidation_distance_verified: state.liquidation_distance_verified,
       liquidation_distance_source: state.liquidation_distance_source,
+      inventory: JSON.parse(JSON.stringify(state.inventory)),
     }));
   }
   return { ok: true, runways: Object.freeze(runways) };

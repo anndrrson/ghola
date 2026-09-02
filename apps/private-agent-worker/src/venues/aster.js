@@ -1,5 +1,10 @@
+import { createHash } from "node:crypto";
 import { privateKeyToAccount } from "viem/accounts";
 import { createCoinbaseUsdtCashflowValuationReader } from "../execution/carry-stablecoin-conversion.js";
+import {
+  carryInventoryClientOrderIdentityCommitment,
+  carryInventoryProviderOrderIdentityCommitment,
+} from "../execution/carry-inventory.js";
 import { asterLiquidationDistance } from "./liquidation-distance.js";
 
 const MAINNET_URL = "https://fapi.asterdex.com";
@@ -166,6 +171,8 @@ export async function readAsterAccountState({
     throw new AsterExecutionError("aster account state response is invalid", 502, "connector_submit_failed");
   }
   const openOrderCount = openOrders.length;
+  const positionInventory = sanitizeAsterPositions(positions);
+  const openOrderInventory = sanitizeAsterOpenOrders(openOrders);
   const makerFeeBps = rateToBps(commission?.makerCommissionRate);
   const takerFeeBps = rateToBps(commission?.takerCommissionRate);
   return {
@@ -180,6 +187,16 @@ export async function readAsterAccountState({
     liquidation_distance_source: liquidation.liquidation_distance_source,
     open_order_count: openOrderCount,
     target_symbol_open_order_count: openOrders.filter((item) => String(item.symbol).toUpperCase() === normalizedSymbol).length,
+    positions: positionInventory.rows,
+    open_orders: openOrderInventory.rows,
+    position_inventory_verified: positionInventory.verified
+      && positionInventory.rows.length === liquidation.position_count,
+    position_inventory_pagination_complete: true,
+    position_inventory_has_more: false,
+    open_order_inventory_verified: openOrderInventory.verified
+      && openOrderInventory.rows.length === openOrderCount,
+    open_order_inventory_pagination_complete: true,
+    open_order_inventory_has_more: false,
     flat_zero_orders: liquidation.position_count === 0 && openOrderCount === 0,
     maker_fee_bps: makerFeeBps,
     taker_fee_bps: takerFeeBps,
@@ -187,6 +204,66 @@ export async function readAsterAccountState({
     fees_exact_for_account: makerFeeBps !== null && takerFeeBps !== null,
     fees_conservative_upper_bound: false,
   };
+}
+
+function sanitizeAsterPositions(positions) {
+  if (!Array.isArray(positions)) return { verified: false, rows: [] };
+  const active = positions.filter((row) => strictDecimal(row?.positionAmt) !== 0);
+  const rows = active.map((row) => {
+    const signed = canonicalSignedDecimal(row?.positionAmt);
+    const market = String(row?.symbol || "").toUpperCase();
+    if (!signed || !/^[A-Z0-9]{5,24}$/.test(market)) return null;
+    return {
+      market,
+      side: signed.startsWith("-") ? "short" : "long",
+      base_size: signed.replace(/^-/, ""),
+    };
+  });
+  return { verified: rows.every(Boolean), rows: rows.filter(Boolean) };
+}
+
+function sanitizeAsterOpenOrders(openOrders) {
+  if (!Array.isArray(openOrders)) return { verified: false, rows: [] };
+  const rows = openOrders.map((row) => {
+    const market = String(row?.symbol || "").toUpperCase();
+    const side = String(row?.side || "").toLowerCase();
+    const baseSize = canonicalPositiveDecimal(row?.origQty ?? row?.quantity);
+    const identitySeed = row?.clientOrderId ?? row?.orderId;
+    if (!/^[A-Z0-9]{5,24}$/.test(market)
+      || !["buy", "sell"].includes(side)
+      || !baseSize
+      || identitySeed === undefined || identitySeed === null) return null;
+    return {
+      market,
+      side,
+      base_size: baseSize,
+      reduce_only: row?.reduceOnly === true || row?.reduceOnly === "true",
+      order_handle_commitment: `aster:order:${createHash("sha256")
+        .update(JSON.stringify({ order_id: row?.orderId ?? null, client_order_id: row?.clientOrderId ?? null }))
+        .digest("hex").slice(0, 40)}`,
+      client_order_identity_commitment: carryInventoryClientOrderIdentityCommitment({
+        venue_id: "aster",
+        client_order_id: row?.clientOrderId,
+      }),
+      provider_order_identity_commitment: carryInventoryProviderOrderIdentityCommitment({
+        venue_id: "aster",
+        provider_order_id: row?.orderId,
+      }),
+    };
+  });
+  return { verified: rows.every(Boolean), rows: rows.filter(Boolean) };
+}
+
+function canonicalSignedDecimal(value) {
+  const parsed = exactDecimal(value, { signed: true });
+  if (parsed === null || parsed.coefficient === 0n) return null;
+  return exactDecimalString(parsed);
+}
+
+function canonicalPositiveDecimal(value) {
+  const parsed = exactDecimal(value);
+  if (parsed === null || parsed.coefficient <= 0n) return null;
+  return exactDecimalString(parsed);
 }
 
 export async function readAsterFundingSettlements({

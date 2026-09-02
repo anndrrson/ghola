@@ -153,6 +153,27 @@ function exactFeeEvidence() {
   };
 }
 
+function flatInventory() {
+  return {
+    positions: [],
+    open_orders: [],
+    target_open_orders: [],
+    position_inventory_verified: true,
+    position_inventory_pagination_complete: true,
+    position_inventory_has_more: false,
+    open_order_inventory_verified: true,
+    open_order_inventory_pagination_complete: true,
+    open_order_inventory_has_more: false,
+  };
+}
+
+function exactPositionInventory({ market, side, baseSize }) {
+  return {
+    ...flatInventory(),
+    positions: [{ market, side, base_size: baseSize }],
+  };
+}
+
 test("verifies the exact reduce-only exit sides and filled base quantities", async () => {
   const verified = [];
   const account = {
@@ -166,6 +187,7 @@ test("verifies the exact reduce-only exit sides and filled base quantities", asy
     ...exactFeeEvidence(),
     position_count: 1,
     open_order_count: 0,
+    ...exactPositionInventory({ market: "BTCUSDT", side: "short", baseSize: "0.002" }),
   };
   const exactBases = { hyperliquid: "0.001", aster: "0.002" };
   const result = await preflightCarryPair({
@@ -213,6 +235,7 @@ test("verifies the exact reduce-only exit sides and filled base quantities", asy
       trading_enabled: true,
       position_count: 1,
       open_order_count: 0,
+      ...exactPositionInventory({ market: "BTC", side: "long", baseSize: "0.001" }),
     }),
     readHyperliquidCarryMetrics: async () => account,
   });
@@ -245,6 +268,7 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
     ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
+    ...flatInventory(),
     liquidation_distance_bps: null,
     liquidation_distance_verified: false,
     liquidation_distance_source: null,
@@ -279,7 +303,7 @@ test("pairs authenticated no-submit evidence but blocks live creation until Aste
         ...(venue_id === "aster" ? { account } : {}),
       };
     },
-    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0 }),
+    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0, ...flatInventory() }),
     readHyperliquidCarryMetrics: async () => account,
   });
 
@@ -397,6 +421,7 @@ test("rejects unlabeled numeric account fees from positive-net qualification", a
     taker_fee_bps: 2,
     position_count: 0,
     open_order_count: 0,
+    ...flatInventory(),
   };
   const result = await preflightCarryPair({
     body: {
@@ -457,6 +482,7 @@ test("reports exact owner-funded opening shortfalls and never advertises releasa
     ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
+    ...flatInventory(),
   };
   const evidence = [
     { venue_id: "hyperliquid", side: "buy", snapshot: snapshot("hyperliquid") },
@@ -465,7 +491,7 @@ test("reports exact owner-funded opening shortfalls and never advertises releasa
     ...leg,
     account,
     account_snapshot: leg.venue_id === "hyperliquid"
-      ? { status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0 }
+      ? { status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0, ...flatInventory() }
       : null,
     receipt: {
       checks: { transaction_broadcast: false, order_request_checked: true },
@@ -663,6 +689,7 @@ test("prices entry and exit from notional-weighted depth without whole-bp roundi
     ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
+    ...flatInventory(),
   };
   const result = await preflightCarryPair({
     body: {
@@ -774,7 +801,7 @@ test("fails carry economics closed when displayed depth cannot fill the target n
       account,
       authority_boundary: { venue_native_trade_only: true },
     }),
-    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0 }),
+    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0, ...flatInventory() }),
     readHyperliquidCarryMetrics: async () => account,
   });
 
@@ -864,6 +891,7 @@ test("rejects no-submit evidence returned for a different sealed account", async
     ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
+    ...flatInventory(),
   };
   await assert.rejects(
     preflightCarryPair({
@@ -983,6 +1011,7 @@ test("migration preflight applies signed opening limits and never broadcasts", a
     ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
+    ...flatInventory(),
   };
   const result = await preflightCarryPair({
     body: {
@@ -1015,7 +1044,7 @@ test("migration preflight applies signed opening limits and never broadcasts", a
       account,
       authority_boundary: { venue_native_trade_only: true },
     }),
-    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0 }),
+    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0, ...flatInventory() }),
     readHyperliquidCarryMetrics: async () => account,
   });
   assert.equal(result.mode, "paired_migration_no_submit");
@@ -1063,6 +1092,7 @@ test("accepts Lighter's owner-destination custody boundary and conservative fee 
     ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
+    ...flatInventory(),
   };
   const result = await preflightCarryPair({
     body: {
@@ -1099,7 +1129,7 @@ test("accepts Lighter's owner-destination custody boundary and conservative fee 
       } : {}),
       instruction_venue: instruction.venue_id,
     }),
-    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0 }),
+    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0, ...flatInventory() }),
     readHyperliquidCarryMetrics: async () => account,
   });
 
@@ -1127,6 +1157,7 @@ test("verifies all three execution venues through one no-broadcast matrix", asyn
     ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
+    ...flatInventory(),
     liquidation_distance_bps: null,
     liquidation_distance_verified: false,
     liquidation_distance_source: null,
@@ -1179,7 +1210,7 @@ test("verifies all three execution venues through one no-broadcast matrix", asyn
         } : { authority_boundary: { venue_native_trade_only: true } }),
       };
     },
-    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0 }),
+    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0, ...flatInventory() }),
     readHyperliquidCarryMetrics: async () => account,
   });
 
@@ -1251,6 +1282,7 @@ test("isolates failed pairs without discarding successful no-submit evidence or 
     ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
+    ...flatInventory(),
   };
   const result = await preflightCarryExecutionMatrix({
     body: {
@@ -1298,7 +1330,7 @@ test("isolates failed pairs without discarding successful no-submit evidence or 
         } : { authority_boundary: { venue_native_trade_only: true } }),
       };
     },
-    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0 }),
+    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0, ...flatInventory() }),
     readHyperliquidCarryMetrics: async () => account,
   });
 
@@ -1437,6 +1469,7 @@ test("enables an economically eligible Aster pair only after deployment-bound qu
     ...exactFeeEvidence(),
     position_count: 0,
     open_order_count: 0,
+    ...flatInventory(),
   };
   const preflightInput = {
     body: {
@@ -1471,7 +1504,7 @@ test("enables an economically eligible Aster pair only after deployment-bound qu
       account,
       authority_boundary: { venue_native_trade_only: true },
     }),
-    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0 }),
+    readHyperliquidSnapshot: async () => ({ status: "ready_to_trade", trading_enabled: true, position_count: 0, open_order_count: 0, ...flatInventory() }),
     readHyperliquidCarryMetrics: async () => account,
   };
   const result = await preflightCarryPair({ ...preflightInput, state });

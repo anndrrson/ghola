@@ -11,6 +11,7 @@ import {
   storeCarryExecutionReadiness,
   verifyCarryExecutionReadinessResult,
 } from "../src/execution/carry-readiness.js";
+import { buildCarryInventoryEvidence } from "../src/execution/carry-inventory.js";
 
 const NOW = 1_800_000_000_000;
 const OWNER = "owner_commitment_readiness_0001";
@@ -71,6 +72,15 @@ function matrix(workOrderCommitment = request().work_order_commitment) {
           liquidation_distance_bps: null,
           liquidation_distance_verified: false,
           liquidation_distance_source: null,
+          inventory: buildCarryInventoryEvidence({
+            venue_id: venueId,
+            account_commitment: access(venueId).account_commitment,
+            target_market: venueId === "aster" ? "BTCUSDT" : "BTC",
+            positions: [],
+            open_orders: [],
+            position_inventory_verified: true,
+            open_order_inventory_verified: true,
+          }),
         };
         accountState.account_state_commitment = carryAccountStateCommitment(accountState);
         venue.work_order_commitments.push(workOrderCommitment);
@@ -98,6 +108,7 @@ function matrix(workOrderCommitment = request().work_order_commitment) {
           const state = legEvidence.find((item) => item.venue_id === venueId).account_state;
           return {
             venue_id: venueId,
+            account_commitment: access(venueId).account_commitment,
             authorized: true,
             flat_zero_orders: true,
             position_count: 0,
@@ -105,6 +116,8 @@ function matrix(workOrderCommitment = request().work_order_commitment) {
             liquidation_distance_bps: null,
             liquidation_distance_verified: false,
             liquidation_distance_source: null,
+            inventory: state.inventory,
+            inventory_verified: true,
             account_state_checked_at_ms: NOW,
             account_state_commitment: state.account_state_commitment,
             capital_ready: true,
@@ -154,6 +167,13 @@ function memoryState() {
   };
 }
 
+function reorderObjectKeys(value) {
+  if (Array.isArray(value)) return value.map(reorderObjectKeys);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).reverse()
+    .map(([key, child]) => [key, reorderObjectKeys(child)]));
+}
+
 test("persists deployment-, owner-, account-, and registry-bound three-venue readiness", async () => {
   const state = memoryState();
   const stored = await storeCarryExecutionReadiness({ state, request: request(), matrix: matrix(), now_ms: NOW, env: ENV });
@@ -183,6 +203,27 @@ test("persists deployment-, owner-, account-, and registry-bound three-venue rea
     && item.account_state_commitment.startsWith("carry:account-state:")
   ), true);
   assert.equal(verifyCarryExecutionReadinessResult(read, { now_ms: NOW + 1_000 }).ok, true);
+});
+
+test("accepts semantically identical inventory after JSONB key reordering", async () => {
+  const candidate = matrix();
+  const pair = candidate.pairs[0];
+  const legState = pair.leg_evidence[0].account_state;
+  const reorderedInventory = reorderObjectKeys(legState.inventory);
+  assert.equal(carryAccountStateCommitment({
+    ...legState,
+    inventory: reorderedInventory,
+  }), legState.account_state_commitment);
+  pair.account_readiness[0].inventory = reorderedInventory;
+  const stored = await storeCarryExecutionReadiness({
+    state: memoryState(),
+    request: request(),
+    matrix: candidate,
+    now_ms: NOW,
+    env: ENV,
+  });
+  assert.equal(stored.ok, true);
+  assert.equal(stored.readiness.ready, true);
 });
 
 test("does not promote registered recovery adapters without deployment-bound lifecycle qualification", async () => {

@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 
 MAX_INACTIVE_ORDER_PAGES = 4
 INACTIVE_ORDER_PAGE_SIZE = 100
+MAX_ACCOUNT_PAGES = 16
 MAX_TRADE_PAGES = 8
 TRADE_PAGE_SIZE = 100
 LIGHTER_FEE_TICK_DENOMINATOR = Decimal(1_000_000)
@@ -108,10 +109,72 @@ async def market_for(client, symbol):
 
 
 async def account_for(client, account_index):
-    response = await lighter.AccountApi(client.api_client).account(by="index", value=str(account_index))
-    if not response.accounts:
-        fail("lighter account is unavailable", "venue_access_required")
-    return as_dict(response.accounts[0])
+    api = lighter.AccountApi(client.api_client)
+    cursor = None
+    seen_cursors = set()
+    merged = None
+    paginated_fields = (
+        "positions", "assets", "shares", "pending_unlocks", "approved_integrators"
+    )
+    for _ in range(MAX_ACCOUNT_PAGES):
+        params = {"by": "index", "value": str(account_index)}
+        if cursor is not None:
+            params["cursor"] = cursor
+        response = await api.account(**params)
+        accounts = getattr(response, "accounts", None)
+        if not isinstance(accounts, list) or len(accounts) != 1:
+            fail("lighter account is unavailable", "venue_access_required")
+        page = as_dict(accounts[0])
+        if not page:
+            fail("lighter account read is invalid")
+        account_identity_fields = [field for field in ("account_index", "index") if field in page]
+        if not account_identity_fields:
+            fail("lighter account identity evidence is missing")
+        for field in account_identity_fields:
+            try:
+                page_account_index = int(page[field])
+            except (TypeError, ValueError):
+                fail("lighter account identity evidence is invalid")
+            if page_account_index != int(account_index):
+                fail("lighter account identity changed during pagination")
+        if not isinstance(page.get("positions"), list):
+            fail("lighter account positions inventory is invalid")
+        if merged is None:
+            merged = dict(page)
+            for field in paginated_fields:
+                value = merged.get(field, [])
+                if not isinstance(value, list):
+                    fail("lighter account inventory is invalid")
+                merged[field] = list(value)
+        else:
+            for key, value in page.items():
+                if key in paginated_fields:
+                    if not isinstance(value, list):
+                        fail("lighter account inventory is invalid")
+                    existing = merged.setdefault(key, [])
+                    seen = {json.dumps(item, sort_keys=True, separators=(",", ":")) for item in existing}
+                    for item in value:
+                        fingerprint = json.dumps(item, sort_keys=True, separators=(",", ":"))
+                        if fingerprint not in seen:
+                            existing.append(item)
+                            seen.add(fingerprint)
+                elif merged.get(key) != value:
+                    fail("lighter account changed during pagination")
+        missing_cursor = object()
+        next_cursor = getattr(response, "next_cursor", missing_cursor)
+        if next_cursor is missing_cursor:
+            fail("lighter account cursor evidence is missing")
+        if next_cursor is not None and not isinstance(next_cursor, str):
+            fail("lighter account cursor is invalid")
+        next_cursor = str(next_cursor or "").strip() or None
+        if next_cursor is None:
+            merged["inventory_pagination_complete"] = True
+            return merged
+        if next_cursor == cursor or next_cursor in seen_cursors:
+            fail("lighter account pagination did not advance")
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+    fail("lighter account pagination exceeded the evidence bound")
 
 
 def order_page_from_response(response):
@@ -462,7 +525,9 @@ async def exact_account_order(client, account_index, market_index, client_order_
         market_id=int(market_index),
         authorization=auth,
     )
-    active_orders, _ = order_page_from_response(active_response)
+    active_orders, active_cursor = order_page_from_response(active_response)
+    if active_cursor is not None:
+        fail("lighter active-order inventory is incomplete")
     target = exact_market_order(
         active_orders,
         client_order_index,
@@ -624,6 +689,13 @@ async def run(payload):
             market = await market_for(client, order.get("market"))
             account = await account_for(client, credential["account_index"])
             if action == "verify":
+                auth = await auth_token(client)
+                active_response = await client.order_api.account_active_orders(
+                    account_index=int(credential["account_index"]),
+                    market_id=int(market.market_id),
+                    authorization=auth,
+                )
+                active_orders, active_cursor = order_page_from_response(active_response)
                 (tx_type, tx_info, tx_hash, sign_err), shape, expected_fields = signed_order(
                     client, order, market, nonce=0, skip_nonce=client.SKIP_NONCE_ON
                 )
@@ -639,6 +711,8 @@ async def run(payload):
                     "transaction_broadcast": False,
                     "account": account,
                     "market": as_dict(market),
+                    "target_active_orders": active_orders,
+                    "target_active_orders_pagination_complete": active_cursor is None,
                     "order_shape": shape,
                 }
             size_decimals = int(market.supported_size_decimals)

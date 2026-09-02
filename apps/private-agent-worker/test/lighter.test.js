@@ -48,6 +48,7 @@ function detailedAccount(overrides = {}) {
     cross_maintenance_margin_requirement: "0",
     pending_order_count: 0,
     positions: [],
+    inventory_pagination_complete: true,
     ...overrides,
   };
 }
@@ -391,6 +392,107 @@ async def main():
         assert str(error) == "connector_submit_failed"
     else:
         raise AssertionError("repeated cursor accepted")
+asyncio.run(main())
+print("checked")
+`;
+  const result = spawnSync(process.env.PRIVATE_AGENT_PYTHON || "python3", ["-c", check, runnerPath], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.stdout.trim(), "checked");
+});
+
+test("paginates the pinned Lighter account API before attesting position inventory", () => {
+  const runnerPath = fileURLToPath(new URL("../src/venues/lighter_runner.py", import.meta.url));
+  const check = String.raw`
+import asyncio, importlib.util, types, sys
+spec = importlib.util.spec_from_file_location("lighter_runner", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+def strict_fail(message, code="connector_submit_failed"):
+    raise RuntimeError(message)
+module.fail = strict_fail
+base = {
+    "index": 123, "account_index": 123, "status": 1,
+    "pending_order_count": 0, "available_balance": "50", "total_asset_value": "50",
+    "assets": [], "shares": [], "pending_unlocks": [], "approved_integrators": [],
+}
+class Response:
+    def __init__(self, account, cursor):
+        self.accounts = [account]
+        self.next_cursor = cursor
+class Api:
+    def __init__(self, _client): self.calls = []
+    async def account(self, **kwargs):
+        self.calls.append(kwargs)
+        if kwargs.get("cursor") == "page-2":
+            return Response({**base, "positions": [{"market_id": 1, "symbol": "BTC", "sign": 1, "position": "0.5"}]}, None)
+        return Response({**base, "positions": []}, "page-2")
+api = Api(None)
+module.lighter = types.SimpleNamespace(AccountApi=lambda _client: api)
+async def main():
+    account = await module.account_for(types.SimpleNamespace(api_client=None), 123)
+    assert account["inventory_pagination_complete"] is True
+    assert account["positions"] == [{"market_id": 1, "symbol": "BTC", "sign": 1, "position": "0.5"}]
+    assert api.calls == [
+        {"by": "index", "value": "123"},
+        {"by": "index", "value": "123", "cursor": "page-2"},
+    ]
+asyncio.run(main())
+print("checked")
+`;
+  const result = spawnSync(process.env.PRIVATE_AGENT_PYTHON || "python3", ["-c", check, runnerPath], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.stdout.trim(), "checked");
+});
+
+test("quarantines malformed HTTP-200 Lighter account inventory and cursor evidence", () => {
+  const runnerPath = fileURLToPath(new URL("../src/venues/lighter_runner.py", import.meta.url));
+  const check = String.raw`
+import asyncio, importlib.util, types, sys
+spec = importlib.util.spec_from_file_location("lighter_runner", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+def strict_fail(message, code="connector_submit_failed"):
+    raise RuntimeError(message)
+module.fail = strict_fail
+class MissingPositions:
+    accounts = [{"index": 123, "assets": []}]
+    next_cursor = None
+class MissingCursor:
+    accounts = [{"index": 123, "positions": [], "assets": []}]
+class MissingIdentity:
+    accounts = [{"positions": [], "assets": []}]
+    next_cursor = None
+class Api:
+    def __init__(self, response): self.response = response
+    async def account(self, **kwargs): return self.response
+async def rejected(response, expected):
+    api = Api(response)
+    module.lighter = types.SimpleNamespace(AccountApi=lambda _client: api)
+    try:
+        await module.account_for(types.SimpleNamespace(api_client=None), 123)
+    except RuntimeError as error:
+        assert str(error) == expected
+    else:
+        raise AssertionError("malformed account evidence accepted")
+async def main():
+    await rejected(MissingPositions(), "lighter account positions inventory is invalid")
+    await rejected(MissingCursor(), "lighter account cursor evidence is missing")
+    await rejected(MissingIdentity(), "lighter account identity evidence is missing")
+    class PageTwoMissingIdentityApi:
+        async def account(self, **kwargs):
+            if kwargs.get("cursor") == "page-2":
+                return type("Response", (), {"accounts": [{"positions": [], "assets": []}], "next_cursor": None})()
+            return type("Response", (), {
+                "accounts": [{"index": 123, "positions": [], "assets": []}],
+                "next_cursor": "page-2",
+            })()
+    module.lighter = types.SimpleNamespace(AccountApi=lambda _client: PageTwoMissingIdentityApi())
+    try:
+        await module.account_for(types.SimpleNamespace(api_client=None), 123)
+    except RuntimeError as error:
+        assert str(error) == "lighter account identity evidence is missing"
+    else:
+        raise AssertionError("later page without account identity accepted")
 asyncio.run(main())
 print("checked")
 `;
