@@ -678,18 +678,22 @@ export async function runCarryExecutionTick({
     && typeof readCashflowValuation === "function"
   );
   const pendingExposureRelease = reconciledRecords.filter((record) =>
-    record.final_reconciliation_evidence
-    && activeReservationPositions.has(record.position.position_id)
+    activeReservationPositions.has(record.position.position_id)
   );
   const recoveryFrozenRecords = frozenRecords.filter((record) => !isRecoverableMonitoringFreeze(record.position));
-  const migrationRecords = uniqueCarryRecords([
+  const migrationCandidates = [
     ...records,
     ...recoveryFrozenRecords,
     ...pendingNormalFinalization,
     ...pendingAbortedFinalization,
     ...pendingExposureRelease,
-  ].filter((record) => inventoryExpectationMigrationEligible(record)
-    && inventoryExpectationBackfillRequired(record)));
+  ];
+  const migrationRecords = uniqueCarryRecords([
+    ...migrationCandidates.filter((record) => inventoryExpectationMigrationEligible(record)
+      && inventoryExpectationBackfillRequired(record)),
+    ...pendingExposureRelease.filter((record) => inventoryExpectationMigrationEligible(record)
+      && legacyReconciliationRefreshRequired(record)),
+  ]);
   const migrationPositionIds = new Set(migrationRecords.map((record) => record.position.position_id));
   const tasks = [
     ...migrationRecords.map((record) => ({
@@ -965,7 +969,8 @@ export async function auditCarryPositionsAfterRestart({
     ...frozenRecords.filter(inventoryExpectationBackfillRequired),
     ...exitingRecords,
     ...reconciledRecords.filter((record) => activeReservationPositions.has(record.position.position_id)
-      && inventoryExpectationBackfillRequired(record)),
+      && (inventoryExpectationBackfillRequired(record)
+        || legacyReconciliationRefreshRequired(record))),
   ]);
   const cutoff = new Date(nowMs).getTime();
   const results = [];
@@ -984,7 +989,9 @@ export async function auditCarryPositionsAfterRestart({
       && saga?.execution_context?.carry_position_id === record.position.position_id
       && saga.execution_context?.owner_commitment === record.owner_commitment;
     if (Number.isFinite(updatedAt) && updatedAt > cutoff && !reconciledEntryPredatesCutoff) continue;
-    if (inventoryExpectationMigrationEligible(record) && inventoryExpectationBackfillRequired(record)) {
+    if (inventoryExpectationMigrationEligible(record)
+      && (inventoryExpectationBackfillRequired(record)
+        || legacyReconciliationRefreshRequired(record))) {
       const migrated = await backfillCarryInventoryExpectations({
         state, record, recipient, verifyOrder, preflight, env, nowMs,
       });
@@ -1149,6 +1156,16 @@ function inventoryExpectationBackfillRequired(record) {
     }));
 }
 
+function legacyReconciliationRefreshRequired(record) {
+  if (record?.position?.status !== "reconciled") return false;
+  const venueIds = [record.position.long_venue_id, record.position.short_venue_id];
+  return !hasExactCarryFlatReconciliation(
+    record.final_reconciliation_evidence,
+    venueIds,
+    carryReconciliationBinding(record),
+  );
+}
+
 async function backfillCarryInventoryExpectations({
   state,
   record,
@@ -1162,7 +1179,20 @@ async function backfillCarryInventoryExpectations({
   if (!current || current.owner_commitment !== record.owner_commitment || !inventoryExpectationMigrationEligible(current)) {
     return denied("carry_inventory_expectation_migration_parent_changed");
   }
-  if (!inventoryExpectationBackfillRequired(current)) return { ok: true, record: publicCarryRecord(current), duplicate: true };
+  if (!inventoryExpectationBackfillRequired(current)) {
+    if (legacyReconciliationRefreshRequired(current)) {
+      return refreshLegacyReconciledReleaseEvidence({
+        state,
+        record: current,
+        recipient,
+        verifyOrder,
+        preflight,
+        env,
+        nowMs,
+      });
+    }
+    return { ok: true, record: publicCarryRecord(current), duplicate: true };
+  }
   const saga = current.entry_saga_id ? await state.getMultiLegSaga(current.entry_saga_id) : null;
   const material = saga
     ? await reconciledCarryEntryMaterial({ state, record: current, saga, env, allowInventoryMigration: true })

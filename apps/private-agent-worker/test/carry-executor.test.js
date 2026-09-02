@@ -822,6 +822,67 @@ for (const residualExposure of [false, true]) {
   });
 }
 
+for (const recoveryPath of ["restart audit", "execution tick"]) {
+  test(`${recoveryPath} refreshes legacy final evidence after expectation migration already persisted`, async (t) => {
+    const fixture = await setup(t, `reconciled-crash-boundary-${recoveryPath.replace(" ", "-")}`);
+    const opened = await executeStoredCarryEntry({
+      ...fixture,
+      executeOrder: async (args) => {
+        const receipt = exactLiveValueReceipt(args);
+        await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+        return receipt;
+      },
+    });
+    assert.equal(opened.ok, true, opened.error);
+    const expected = structuredClone(opened.record.position.inventory_expectation_by_venue);
+    const statePath = join(fixture.state_dir, "private-agent-execution-state-v1.json");
+    const persisted = JSON.parse(readFileSync(statePath, "utf8"));
+    const crashed = persisted.carry_positions[fixture.position_id];
+    crashed.position.status = "reconciled";
+    crashed.position.inventory_expectation_by_venue = expected;
+    crashed.inventory_expectation_migration = {
+      version: 1,
+      source: "durable_reconciled_entry_receipts",
+      entry_saga_id: crashed.entry_saga_id,
+      completed_at_ms: NOW + 10,
+    };
+    crashed.final_reconciliation_evidence = {
+      gross_exposure_micro_usdc: 0,
+      open_order_count: 0,
+      account_state_checked: true,
+      transaction_broadcast: false,
+      reconciliation_commitment: "carry:reconciliation:legacy-count-only",
+      checked_at_ms: NOW + 10,
+    };
+    writeFileSync(statePath, JSON.stringify(persisted));
+
+    const restarted = createWorkerState(fixture.state_dir);
+    const preflight = async () => preflightProof();
+    const recovered = recoveryPath === "restart audit"
+      ? await auditCarryPositionsAfterRestart({
+        state: restarted,
+        preflight,
+        now_ms: fixture.now(),
+        env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+      })
+      : await runCarryExecutionTick({
+        ...fixture,
+        state: restarted,
+        preflight,
+        executeOrder: async () => { throw new Error("recovery must not submit"); },
+      });
+    assert.equal(recovered.ok, true, JSON.stringify(recovered));
+    assert.equal(recovered.checked, 1, JSON.stringify(recovered));
+    assert.equal(recovered.results[0].restart_action, "legacy_reconciliation_refreshed_and_released");
+    const repaired = await restarted.getCarryPositionRecord(fixture.position_id);
+    assert.deepEqual(repaired.position.inventory_expectation_by_venue, expected);
+    assert.equal(repaired.final_reconciliation_evidence.venues.length, 2);
+    assert.equal(repaired.final_reconciliation_evidence.venues.every((venue) =>
+      venue.inventory.target_positions.length === 0 && venue.inventory.target_open_orders.length === 0), true);
+    assert.deepEqual(await restarted.listActiveCarryExposureReservationPositionIds(), []);
+  });
+}
+
 test("restart releases a linked entry only when its saga proves no submit occurred", async (t) => {
   const fixture = await setup(t, "restart-entry-before-submit");
   const putRecord = fixture.state.putCarryPositionRecord.bind(fixture.state);
