@@ -3,10 +3,13 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   PRIVATE_WORKER_PREVIEW_ENV_GROUPS,
+  assessPreviewBranchMaterializedEnv,
   assessPreviewBranchEnvScope,
   currentGitBranch,
   listVercelPreviewEnvKeys,
   parseVercelEnvListKeys,
+  pullVercelPreviewEnv,
+  verifyCurrentPreviewBranchPreflight,
   verifyCurrentPreviewBranchEnvScope,
 } from "./check-preview-env-branch-scope.mjs";
 
@@ -22,6 +25,10 @@ const KEYS = Object.freeze({
   privateAccountStore: "GHOLA_PRIVATE_ACCOUNT_STORE",
   requestProofSecret: "GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET",
   requestProofMode: "GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_MODE",
+  queryOrganization: "GHOLA_TURNKEY_QUERY_ORGANIZATION_ID",
+  queryPublicKey: "GHOLA_TURNKEY_QUERY_API_PUBLIC_KEY",
+  queryPrivateKey: "GHOLA_TURNKEY_QUERY_API_PRIVATE_KEY",
+  lighterRpc: "GHOLA_LIGHTER_ETHEREUM_RPC_URL",
 });
 
 test("extracts only allowlisted names from Vercel output and never returns values", () => {
@@ -61,13 +68,12 @@ test("fails clearly when private-worker variables exist only on another branch",
 });
 
 test("distinguishes absent Preview configuration from another-branch scope", () => {
-  const productKeys = [
-    KEYS.turnkeyOrganization,
-    KEYS.turnkeyAuthProxy,
-    KEYS.publicBeta,
-    KEYS.mainnetDelegation,
-    KEYS.privateAccountStore,
-  ];
+  const productKeys = Object.values(KEYS).filter((key) => ![
+    KEYS.url,
+    KEYS.auth,
+    KEYS.image,
+    KEYS.signer,
+  ].includes(key));
   assert.throws(
     () => assessPreviewBranchEnvScope({
       branch: "feature/current",
@@ -136,6 +142,27 @@ test("Vercel list failures suppress command output", () => {
   );
 });
 
+test("Vercel materialization failures suppress output and remove the secret file", () => {
+  const secret = "materialized-secret-must-not-appear";
+  const removed = [];
+  assert.throws(
+    () => pullVercelPreviewEnv({
+      branch: "feature/carry",
+      cwd: "/repo",
+      run: () => ({ status: 1, stdout: secret, stderr: secret }),
+      makeTemp: () => "/tmp/ghola-preview-env-test",
+      read: () => secret,
+      remove: (...args) => removed.push(args),
+    }),
+    (error) => {
+      assert.match(error.message, /preview_env_materialization_failed/);
+      assert.doesNotMatch(error.message, new RegExp(secret));
+      return true;
+    },
+  );
+  assert.deepEqual(removed, [["/tmp/ghola-preview-env-test", { recursive: true, force: true }]]);
+});
+
 test("checks all Preview metadata before branch-effective metadata", () => {
   const calls = [];
   const result = verifyCurrentPreviewBranchEnvScope({
@@ -149,11 +176,44 @@ test("checks all Preview metadata before branch-effective metadata", () => {
   assert.equal(result.branch, "feature/carry");
 });
 
+test("rejects branch keys whose encrypted values are empty or opaque", () => {
+  const env = Object.fromEntries(Object.values(KEYS).map((key) => [key, `materialized-${key}`]));
+  env[KEYS.auth] = "";
+  env[KEYS.requestProofSecret] = "[SENSITIVE]";
+  env[KEYS.queryPrivateKey] = "<REDACTED>";
+  assert.throws(
+    () => assessPreviewBranchMaterializedEnv({ branch: "feature/carry", env }),
+    /preview_env_branch_values_invalid:feature\/carry:empty_or_opaque:private_worker_auth,private_account_request_proof_secret,turnkey_query_api_private_key/,
+  );
+});
+
+test("preflight verifies both named scope and materialized values", () => {
+  const env = Object.fromEntries(Object.values(KEYS).map((key) => [key, `materialized-${key}`]));
+  const calls = [];
+  const result = verifyCurrentPreviewBranchPreflight({
+    branch: "feature/carry",
+    list: ({ branch }) => {
+      calls.push(branch ?? null);
+      return new Set(Object.values(KEYS));
+    },
+    pull: ({ branch }) => {
+      calls.push(`pull:${branch}`);
+      return env;
+    },
+  });
+  assert.deepEqual(calls, [null, "feature/carry", "pull:feature/carry"]);
+  assert.equal(result.branch, "feature/carry");
+  assert.deepEqual(result.checked_groups, result.materialized_groups);
+});
+
 test("the supported Preview deploy command runs the branch guard before Vercel", () => {
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const deploySource = readFileSync(new URL("./deploy-preview.mjs", import.meta.url), "utf8");
   assert.equal(
     pkg.scripts["preview:deploy"],
     "node scripts/deploy-preview.mjs",
   );
   assert.match(pkg.scripts["test:release-gates"], /check-preview-env-branch-scope\.test\.mjs/);
+  assert.match(deploySource, /verifyCurrentPreviewBranchPreflight/);
+  assert.doesNotMatch(deploySource, /verifyCurrentPreviewBranchEnvScope/);
 });
