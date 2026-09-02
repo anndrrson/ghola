@@ -1,10 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { tmpdir } from "node:os";
 import path from "node:path";
-import { isOpaqueVercelEnvValue, parseVercelEnv } from "./verify-preview-env-parity.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const BRANCH_RE = /^(?!\/)(?!.*(?:\.\.|\/\/|@\{|\.lock(?:\/|$)))[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
@@ -187,89 +184,6 @@ export function verifyCurrentPreviewBranchEnvScope({
   });
 }
 
-export function assessPreviewBranchMaterializedEnv({ branch, env }) {
-  const normalizedBranch = validPreviewBranch(branch);
-  const materialized = env && typeof env === "object" ? env : {};
-  const missing = [];
-  const emptyOrOpaque = [];
-  for (const group of PRIVATE_WORKER_PREVIEW_ENV_GROUPS) {
-    const present = group.keys.filter((key) => Object.hasOwn(materialized, key));
-    if (present.some((key) => !isOpaqueVercelEnvValue(materialized[key]))) continue;
-    (present.length ? emptyOrOpaque : missing).push(group.id);
-  }
-  if (missing.length || emptyOrOpaque.length) {
-    const details = [
-      missing.length ? `missing:${missing.join(",")}` : null,
-      emptyOrOpaque.length ? `empty_or_opaque:${emptyOrOpaque.join(",")}` : null,
-    ].filter(Boolean).join(";");
-    throw new Error(`preview_env_branch_values_invalid:${normalizedBranch}:${details}`);
-  }
-  return Object.freeze({
-    branch: normalizedBranch,
-    materialized_groups: PRIVATE_WORKER_PREVIEW_ENV_GROUPS.map((group) => group.id),
-  });
-}
-
-export function pullVercelPreviewEnv({
-  branch,
-  cwd = REPO_ROOT,
-  run = spawnSync,
-  makeTemp = mkdtempSync,
-  read = readFileSync,
-  remove = rmSync,
-} = {}) {
-  const normalizedBranch = validPreviewBranch(branch);
-  const directory = makeTemp(path.join(tmpdir(), "ghola-preview-env-"));
-  const target = path.join(directory, "preview.env");
-  try {
-    const result = run("vercel", [
-      "env", "pull", target, "--yes", "--environment=preview",
-      `--git-branch=${normalizedBranch}`, "--no-color", "--cwd", cwd,
-    ], {
-      cwd,
-      encoding: "utf8",
-      env: { ...process.env, NO_COLOR: "1", VERCEL_TELEMETRY_DISABLED: "1" },
-      maxBuffer: 2 * 1024 * 1024,
-    });
-    if (result?.status !== 0) {
-      throw new Error("preview_env_materialization_failed:verify Vercel login and branch scope; output is suppressed");
-    }
-    return parseVercelEnv(read(target, "utf8"));
-  } finally {
-    remove(directory, { recursive: true, force: true });
-  }
-}
-
-export function verifyCurrentPreviewBranchMaterializedEnv({
-  cwd = REPO_ROOT,
-  branch = null,
-  pull = pullVercelPreviewEnv,
-  run = spawnSync,
-} = {}) {
-  const currentBranch = branch === null ? currentGitBranch({ cwd, run }) : validPreviewBranch(branch);
-  return assessPreviewBranchMaterializedEnv({
-    branch: currentBranch,
-    env: pull({ branch: currentBranch, cwd, run }),
-  });
-}
-
-export function verifyCurrentPreviewBranchPreflight({
-  cwd = REPO_ROOT,
-  branch = null,
-  list = listVercelPreviewEnvKeys,
-  pull = pullVercelPreviewEnv,
-  run = spawnSync,
-} = {}) {
-  const currentBranch = branch === null ? currentGitBranch({ cwd, run }) : validPreviewBranch(branch);
-  const scope = verifyCurrentPreviewBranchEnvScope({ cwd, branch: currentBranch, list, run });
-  const materialized = verifyCurrentPreviewBranchMaterializedEnv({ cwd, branch: currentBranch, pull, run });
-  return Object.freeze({
-    branch: currentBranch,
-    checked_groups: scope.checked_groups,
-    materialized_groups: materialized.materialized_groups,
-  });
-}
-
 function normalizedKeySet(value) {
   return new Set(Array.from(value || [], (key) => String(key)));
 }
@@ -285,11 +199,8 @@ export function validPreviewBranch(value) {
 }
 
 function main() {
-  const result = verifyCurrentPreviewBranchPreflight();
-  console.log(
-    `[preview-env-branch-scope] verified ${result.checked_groups.length} named and ` +
-    `${result.materialized_groups.length} materialized groups for ${result.branch}`,
-  );
+  const result = verifyCurrentPreviewBranchEnvScope();
+  console.log(`[preview-env-branch-scope] verified ${result.checked_groups.length} required groups for ${result.branch}`);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

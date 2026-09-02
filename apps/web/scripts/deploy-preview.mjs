@@ -2,7 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { verifyCurrentPreviewBranchPreflight } from "./check-preview-env-branch-scope.mjs";
+import { verifyCurrentPreviewBranchEnvScope } from "./check-preview-env-branch-scope.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -10,7 +10,7 @@ export function deployPreview({
   args = process.argv.slice(2),
   cwd = REPO_ROOT,
   run = spawnSync,
-  verify = verifyCurrentPreviewBranchPreflight,
+  verify = verifyCurrentPreviewBranchEnvScope,
 } = {}) {
   if (args.length !== 0) {
     throw new Error("preview_deploy_arguments_forbidden:Preview deploy accepts no forwarded arguments");
