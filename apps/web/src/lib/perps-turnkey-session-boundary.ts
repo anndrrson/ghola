@@ -11,6 +11,12 @@ export interface PerpsTurnkeyPendingBinding {
   expiresAt: number;
 }
 
+export interface PerpsTurnkeyPendingBindingStorage {
+  getItem: (key: string) => string | null;
+  setItem: (key: string, value: string) => void;
+  removeItem: (key: string) => void;
+}
+
 export interface PerpsTurnkeySessionSnapshot {
   sessionKey: string;
   sessionType: "SESSION_TYPE_READ_WRITE";
@@ -20,6 +26,10 @@ export interface PerpsTurnkeySessionSnapshot {
   token: string;
   publicKey: string;
 }
+
+export type PerpsTurnkeyAttemptReconciliation =
+  | { kind: "matched"; session: PerpsTurnkeySessionSnapshot }
+  | { kind: "timed_out" };
 
 interface PerpsTurnkeySessionReader {
   getActiveSessionKey: () => Promise<string | undefined>;
@@ -66,6 +76,33 @@ export async function resolveExactActivePerpsTurnkeySession(
     token: session.token,
     publicKey: session.publicKey,
   };
+}
+
+export async function reconcileExactPerpsTurnkeySessionAttempt(input: {
+  attemptId: string;
+  readExactSession: () => Promise<PerpsTurnkeySessionSnapshot | null>;
+  wait?: (durationMs: number) => Promise<void>;
+  pollIntervalMs?: number;
+  maxWaitMs?: number;
+}): Promise<PerpsTurnkeyAttemptReconciliation> {
+  const pollIntervalMs = input.pollIntervalMs ?? 200;
+  const maxWaitMs = input.maxWaitMs ?? 2_000;
+  const pollCount = Math.max(1, Math.floor(maxWaitMs / pollIntervalMs) + 1);
+  const wait = input.wait ?? ((durationMs: number) =>
+    new Promise<void>((resolve) => setTimeout(resolve, durationMs)));
+
+  for (let poll = 0; poll < pollCount; poll += 1) {
+    let session: PerpsTurnkeySessionSnapshot | null = null;
+    try {
+      session = await input.readExactSession();
+    } catch {
+      // A transient storage/client read must not discard the owned attempt.
+    }
+    if (session?.sessionKey === input.attemptId) return { kind: "matched", session };
+    if (poll + 1 < pollCount) await wait(pollIntervalMs);
+  }
+
+  return { kind: "timed_out" };
 }
 
 export function perpsTurnkeyPendingBindingValue(
@@ -120,6 +157,67 @@ export function samePerpsTurnkeyPendingBinding(
     left.createdAt === right.createdAt &&
     left.expiresAt === right.expiresAt,
   );
+}
+
+export function claimPerpsTurnkeyPendingBinding(input: {
+  storage: PerpsTurnkeyPendingBindingStorage;
+  storageKey: string;
+  userId: string;
+  locallyOwnedAttemptId: string | null;
+  createAttemptId: () => string;
+  now?: number;
+}): { pending: PerpsTurnkeyPendingBinding; resumed: boolean } {
+  const now = input.now ?? Date.now();
+  const rawCurrent = input.storage.getItem(input.storageKey);
+  const current = parsePerpsTurnkeyPendingBinding(rawCurrent, now);
+  if (current) {
+    if (
+      current.userId === input.userId &&
+      current.attemptId === input.locallyOwnedAttemptId
+    ) {
+      return { pending: current, resumed: true };
+    }
+    throw new Error("Turnkey authentication is already active in another Ghola tab.");
+  }
+  if (rawCurrent) input.storage.removeItem(input.storageKey);
+  const serialized = perpsTurnkeyPendingBindingValue(
+    input.userId,
+    input.createAttemptId(),
+    now,
+  );
+  const pending = parsePerpsTurnkeyPendingBinding(serialized, now);
+  if (!pending) throw new Error("Failed to create a bounded Turnkey authentication attempt.");
+  input.storage.setItem(input.storageKey, serialized);
+  return { pending, resumed: false };
+}
+
+export function clearLocallyOwnedPerpsTurnkeyPendingBinding(input: {
+  storage: PerpsTurnkeyPendingBindingStorage;
+  storageKey: string;
+  locallyOwnedAttemptId: string | null;
+  now?: number;
+}): PerpsTurnkeyPendingBinding | null {
+  if (!input.locallyOwnedAttemptId) return null;
+  const rawCurrent = input.storage.getItem(input.storageKey);
+  const current = parsePerpsTurnkeyPendingBinding(rawCurrent, input.now ?? Date.now());
+  if (!current || current.attemptId !== input.locallyOwnedAttemptId) return null;
+  if (input.storage.getItem(input.storageKey) !== rawCurrent) return null;
+  input.storage.removeItem(input.storageKey);
+  return current;
+}
+
+export function isExactLocallyOwnedPerpsTurnkeyPendingBinding(input: {
+  storage: PerpsTurnkeyPendingBindingStorage;
+  storageKey: string;
+  expected: PerpsTurnkeyPendingBinding;
+  locallyOwnedAttemptId: string | null;
+  now?: number;
+}): boolean {
+  if (input.locallyOwnedAttemptId !== input.expected.attemptId) return false;
+  const rawCurrent = input.storage.getItem(input.storageKey);
+  const current = parsePerpsTurnkeyPendingBinding(rawCurrent, input.now ?? Date.now());
+  return samePerpsTurnkeyPendingBinding(current, input.expected) &&
+    input.storage.getItem(input.storageKey) === rawCurrent;
 }
 
 export function mergePerpsTurnkeyBinding(
