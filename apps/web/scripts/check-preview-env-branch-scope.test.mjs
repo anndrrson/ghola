@@ -26,6 +26,7 @@ const KEYS = Object.freeze({
   queryPublicKey: "GHOLA_TURNKEY_QUERY_API_PUBLIC_KEY",
   queryPrivateKey: "GHOLA_TURNKEY_QUERY_API_PRIVATE_KEY",
   lighterRpc: "GHOLA_LIGHTER_ETHEREUM_RPC_URL",
+  lighterBuilderKey: "GHOLA_LIGHTER_BUILDER_KEY",
 });
 
 test("extracts only allowlisted names from Vercel output and never returns values", () => {
@@ -103,6 +104,18 @@ test("fails before deploy when private-account request proof is absent from the 
       branchPreviewKeys: withoutRequestProof,
     }),
     /configured only outside this branch scope: private_account_request_proof_secret,private_account_request_proof_mode/,
+  );
+});
+
+test("fails before deploy when the server-only Lighter builder key is absent", () => {
+  const withoutBuilderKey = Object.values(KEYS).filter((key) => key !== KEYS.lighterBuilderKey);
+  assert.throws(
+    () => assessPreviewBranchEnvScope({
+      branch: "feature/current",
+      allPreviewKeys: Object.values(KEYS),
+      branchPreviewKeys: withoutBuilderKey,
+    }),
+    /configured only outside this branch scope: lighter_builder_key/,
   );
 });
 

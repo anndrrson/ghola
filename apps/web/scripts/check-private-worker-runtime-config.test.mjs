@@ -49,6 +49,11 @@ function productEnv(overrides = {}) {
     VERCEL: "1",
     NEXT_PUBLIC_TURNKEY_PERPS_ORGANIZATION_ID: "organization-id",
     NEXT_PUBLIC_TURNKEY_PERPS_AUTH_PROXY_CONFIG_ID: "auth-proxy-config-id",
+    GHOLA_TURNKEY_QUERY_ORGANIZATION_ID: "query-organization-id",
+    GHOLA_TURNKEY_QUERY_API_PUBLIC_KEY: "query-api-public-key",
+    GHOLA_TURNKEY_QUERY_API_PRIVATE_KEY: "query-api-private-key",
+    GHOLA_LIGHTER_BUILDER_KEY: "lighter-builder-key",
+    GHOLA_LIGHTER_ETHEREUM_RPC_URL: "https://ethereum.example/rpc",
     GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED: "true",
     NEXT_PUBLIC_GHOLA_PERPS_MAINNET_ENABLED: "true",
     DATABASE_URL: "postgres://private-account-store",
@@ -71,6 +76,29 @@ test("requires the Turnkey product runtime for every Vercel artifact", () => {
       new RegExp(`missing ${key}`),
     );
   }
+});
+
+test("requires materialized Lighter and query-only Turnkey credentials", () => {
+  for (const key of [
+    "GHOLA_TURNKEY_QUERY_ORGANIZATION_ID",
+    "GHOLA_TURNKEY_QUERY_API_PUBLIC_KEY",
+    "GHOLA_TURNKEY_QUERY_API_PRIVATE_KEY",
+    "GHOLA_LIGHTER_BUILDER_KEY",
+    "GHOLA_LIGHTER_ETHEREUM_RPC_URL",
+  ]) {
+    assert.throws(
+      () => verifyPreviewProductRuntimeConfig(productEnv({ [key]: "" })),
+      new RegExp(`missing ${key}`),
+    );
+  }
+  assert.throws(
+    () => verifyPreviewProductRuntimeConfig(productEnv({ GHOLA_LIGHTER_BUILDER_KEY: "[SENSITIVE]" })),
+    /preview_env_opaque:GHOLA_LIGHTER_BUILDER_KEY:runtime/,
+  );
+  assert.throws(
+    () => verifyPreviewProductRuntimeConfig(productEnv({ GHOLA_LIGHTER_ETHEREUM_RPC_URL: "http:\/\/ethereum.example" })),
+    /Lighter Ethereum RPC URL must use HTTPS/,
+  );
 });
 
 test("requires public beta and mainnet delegation flags", () => {

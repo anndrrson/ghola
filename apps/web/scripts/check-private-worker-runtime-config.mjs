@@ -45,6 +45,11 @@ export function verifyPreviewProductRuntimeConfig(env = process.env) {
 
   requiredMaterialized(env, "NEXT_PUBLIC_TURNKEY_PERPS_ORGANIZATION_ID");
   requiredMaterialized(env, "NEXT_PUBLIC_TURNKEY_PERPS_AUTH_PROXY_CONFIG_ID");
+  requiredMaterialized(env, "GHOLA_TURNKEY_QUERY_ORGANIZATION_ID");
+  requiredMaterialized(env, "GHOLA_TURNKEY_QUERY_API_PUBLIC_KEY");
+  requiredMaterialized(env, "GHOLA_TURNKEY_QUERY_API_PRIVATE_KEY");
+  requiredMaterialized(env, "GHOLA_LIGHTER_BUILDER_KEY");
+  requiredHttpsUrl(env, "GHOLA_LIGHTER_ETHEREUM_RPC_URL", "Vercel release Lighter Ethereum RPC URL");
   requiredTrue(env, "GHOLA_PRIVATE_AGENT_BETA_PUBLIC_ENABLED");
   requiredTrue(env, "NEXT_PUBLIC_GHOLA_PERPS_MAINNET_ENABLED");
 
@@ -154,6 +159,18 @@ function requiredMaterialized(env, key) {
 function requiredTrue(env, key) {
   const value = requiredMaterialized(env, key);
   if (value !== "true") throw new Error(`Vercel release requires ${key}=true`);
+}
+
+function requiredHttpsUrl(env, key, label) {
+  const value = requiredMaterialized(env, key);
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${label} is invalid`);
+  }
+  if (url.protocol !== "https:") throw new Error(`${label} must use HTTPS`);
+  return url;
 }
 
 function optionalHttpsUrl(raw, label) {

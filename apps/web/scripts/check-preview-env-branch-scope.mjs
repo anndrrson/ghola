@@ -94,6 +94,10 @@ export const PRIVATE_WORKER_PREVIEW_ENV_GROUPS = Object.freeze([
     id: "lighter_ethereum_rpc",
     keys: Object.freeze(["GHOLA_LIGHTER_ETHEREUM_RPC_URL"]),
   }),
+  Object.freeze({
+    id: "lighter_builder_key",
+    keys: Object.freeze(["GHOLA_LIGHTER_BUILDER_KEY"]),
+  }),
 ]);
 
 const KNOWN_KEYS = Object.freeze(PRIVATE_WORKER_PREVIEW_ENV_GROUPS.flatMap((group) => group.keys));

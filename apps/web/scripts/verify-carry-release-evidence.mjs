@@ -170,7 +170,7 @@ export async function verifyCarryLifecycleEvidence(evidence) {
   fail(sameStrings(shadowQualification.requested_assets, CARRY_SHADOW_ASSETS),
     "shadow_qualification_assets_invalid");
   fail(shadowRequiredSamples >= 3, "shadow_qualification_sample_floor_invalid");
-  fail(shadowCompletedSamples >= shadowRequiredSamples, "shadow_qualification_samples_incomplete");
+  fail(shadowCompletedSamples === shadowRequiredSamples, "shadow_qualification_sample_count_mismatch");
   const shadowMinimumSpanMs = positiveInteger(shadowQualification.minimum_span_ms);
   const shadowDurationMs = nonNegativeInteger(shadowQualification.duration_ms);
   fail(shadowMinimumSpanMs >= 120_000 && shadowDurationMs >= shadowMinimumSpanMs,

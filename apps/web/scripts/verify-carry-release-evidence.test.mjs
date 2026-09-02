@@ -815,7 +815,7 @@ test("rejects same-ticker proof whose contract basis exceeds the verified budget
 test("rejects missing, incomplete, or image-mismatched five-venue shadow qualification", async () => {
   for (const [mutate, expected] of [
     [(evidence) => { evidence.shadow_qualification.proven = false; }, /shadow_qualification_unproven/],
-    [(evidence) => { evidence.shadow_qualification.completed_samples = 2; }, /shadow_qualification_samples_incomplete|shadow_qualification_commitments_invalid/],
+    [(evidence) => { evidence.shadow_qualification.completed_samples = 2; }, /shadow_qualification_sample_count_mismatch|shadow_qualification_commitments_invalid/],
     [(evidence) => { evidence.shadow_qualification.image_digest = "sha256:fedcba9876543210"; }, /shadow_qualification_image_mismatch/],
     [(evidence) => { evidence.shadow_qualification.source_observation_commitments[1] = evidence.shadow_qualification.source_observation_commitments[0]; }, /shadow_qualification_source_observations_invalid/],
     [(evidence) => { evidence.shadow_qualification.duration_ms = 2_000; }, /shadow_qualification_duration_invalid/],
@@ -826,6 +826,19 @@ test("rejects missing, incomplete, or image-mismatched five-venue shadow qualifi
     evidence.evidence_commitment = carryEvidenceCommitment(evidence);
     await assert.rejects(() => verifyCarryReleaseEvidence(evidence), expected);
   }
+});
+
+test("rejects a five-venue sample count the worker cannot attest", async () => {
+  const evidence = await fixture();
+  evidence.shadow_qualification.completed_samples = 4;
+  evidence.shadow_qualification.sample_commitments.push(`carry:shadow:sample:${"88".repeat(32)}`);
+  evidence.shadow_qualification.source_observation_commitments.push(`carry:shadow:sources:${"99".repeat(32)}`);
+  evidence.worker_material_commitment = carryWorkerMaterialCommitment(evidence);
+  evidence.evidence_commitment = carryEvidenceCommitment(evidence);
+  await assert.rejects(
+    () => verifyCarryReleaseEvidence(evidence),
+    /shadow_qualification_sample_count_mismatch/,
+  );
 });
 
 test("rejects contract limits that differ from the signed risk mandate", async () => {
