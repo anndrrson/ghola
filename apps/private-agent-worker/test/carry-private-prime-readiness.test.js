@@ -626,6 +626,9 @@ function verifiedRouteEvidence() {
     aster: "aster_arbitrum_usdt_v1",
   };
   const collateral = { hyperliquid: "USDC", lighter: "USDC", aster: "USDT" };
+  const accountStateAttestations = venueIds.map((venueId) => routeAccountAttestation(venueId))
+    .sort((left, right) => left.venue_id.localeCompare(right.venue_id));
+  const attestationByVenue = new Map(accountStateAttestations.map((item) => [item.venue_id, item]));
   const routes = venueIds.flatMap((fromVenueId) => venueIds
     .filter((toVenueId) => toVenueId !== fromVenueId)
     .map((toVenueId) => {
@@ -641,6 +644,8 @@ function verifiedRouteEvidence() {
         destination_adapter_id: adapters[toVenueId],
         source_account_state_commitment: `carry:account-state:${fromVenueId}:0001`,
         destination_account_state_commitment: `carry:account-state:${toVenueId}:0001`,
+        source_account_state_attestation_commitment: attestationByVenue.get(fromVenueId).attestation_commitment,
+        destination_account_state_attestation_commitment: attestationByVenue.get(toVenueId).attestation_commitment,
         quote_commitment: `carry:transfer-quote:${fromVenueId}-${toVenueId}:0001`,
         valuation_asset: "USD",
         source_collateral_asset: collateral[fromVenueId],
@@ -673,6 +678,7 @@ function verifiedRouteEvidence() {
     kind: "ghola_carry_transfer_route_evidence",
     owner_commitment: "owner_commitment_0001",
     worker_image_digest: IMAGE,
+    account_state_attestations: accountStateAttestations,
     routes,
     checked_at_ms: NOW,
     expires_at_ms: NOW + 30_000,
@@ -698,6 +704,52 @@ function verifiedRouteEvidence() {
       evidence_checked_at_ms: evidence.checked_at_ms,
       worker_image_digest: evidence.worker_image_digest,
     })),
+  };
+}
+
+function routeAccountAttestation(venueId) {
+  const inventory = {
+    version: 1,
+    target_market: "BTC",
+    position_inventory_verified: true,
+    open_order_inventory_verified: true,
+    target_positions: [],
+    target_open_orders: [],
+  };
+  const state = {
+    venue_id: venueId,
+    account_commitment: `account:${venueId}:0001`,
+    position_count: 0,
+    open_order_count: 0,
+    flat_zero_orders: true,
+    liquidation_distance_bps: null,
+    liquidation_distance_verified: false,
+    liquidation_distance_source: null,
+    inventory,
+  };
+  const material = {
+    version: 1,
+    kind: "ghola_carry_route_account_state_attestation",
+    venue_id: venueId,
+    account_commitment: state.account_commitment,
+    expected_account_state_commitment: `carry:account-state:${venueId}:0001`,
+    observed_state_fingerprint: `carry:route-account-state:${createHash("sha256").update(stableJson(state)).digest("hex").slice(0, 40)}`,
+    observed_at_ms: NOW,
+    ...state,
+    available_balance_micro_usdc: 100_000_000,
+    margin_balance_micro_usdc: 100_000_000,
+    initial_margin_micro_usdc: 0,
+    maintenance_margin_micro_usdc: 0,
+    withdrawal_quote: null,
+    read_only: true,
+    owner_approval_required: true,
+    fund_movement_authorized: false,
+    transaction_broadcast: false,
+  };
+  return {
+    ...material,
+    attestation_commitment: `carry:route-account-attestation:${createHash("sha256")
+      .update(stableJson(material)).digest("hex").slice(0, 40)}`,
   };
 }
 

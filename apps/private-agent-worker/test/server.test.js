@@ -126,6 +126,39 @@ function shadowSnapshot(venueId, asset, observedAt) {
   };
 }
 
+async function testCarryRouteAccountObservation(account) {
+  return {
+    version: 1,
+    kind: "ghola_carry_route_account_observation",
+    venue_id: account.venue_id,
+    account_commitment: account.account_commitment,
+    observed_at_ms: account.account_state_checked_at_ms,
+    positions: account.inventory.target_positions,
+    open_orders: account.inventory.target_open_orders,
+    position_count: account.position_count,
+    open_order_count: account.open_order_count,
+    flat_zero_orders: account.flat_zero_orders,
+    liquidation_distance_bps: account.liquidation_distance_bps,
+    liquidation_distance_verified: account.liquidation_distance_verified,
+    liquidation_distance_source: account.liquidation_distance_source,
+    position_inventory_verified: true,
+    position_inventory_pagination_complete: true,
+    position_inventory_has_more: false,
+    open_order_inventory_verified: true,
+    open_order_inventory_pagination_complete: true,
+    open_order_inventory_has_more: false,
+    available_balance_micro_usdc: 500_000_000,
+    margin_balance_micro_usdc: 500_000_000,
+    initial_margin_micro_usdc: 0,
+    maintenance_margin_micro_usdc: 0,
+    withdrawal_quote: null,
+    read_only: true,
+    owner_approval_required: true,
+    fund_movement_authorized: false,
+    transaction_broadcast: false,
+  };
+}
+
 function cashflowValuation(sourceAsset, observedAtMs) {
   const valuation = {
     version: 1,
@@ -859,6 +892,14 @@ describe("private agent worker", () => {
       fees_conservative_upper_bound: false,
       position_count: 0,
       open_order_count: 0,
+      positions: [],
+      open_orders: [],
+      position_inventory_verified: true,
+      position_inventory_pagination_complete: true,
+      position_inventory_has_more: false,
+      open_order_inventory_verified: true,
+      open_order_inventory_pagination_complete: true,
+      open_order_inventory_has_more: false,
     };
     let verificationCount = 0;
     server = createPrivateAgentWorkerServer({
@@ -892,8 +933,17 @@ describe("private agent worker", () => {
         trading_enabled: true,
         position_count: 0,
         open_order_count: 0,
+        positions: [],
+        open_orders: [],
+        position_inventory_verified: true,
+        position_inventory_pagination_complete: true,
+        position_inventory_has_more: false,
+        open_order_inventory_verified: true,
+        open_order_inventory_pagination_complete: true,
+        open_order_inventory_has_more: false,
       }),
       carryReadHyperliquidMetrics: async () => account,
+      attestCarryRouteAccountState: testCarryRouteAccountObservation,
       probeCarryTransferRoute: async (request) => ({
         valuation_asset: "USD",
         source_collateral_asset: request.source_collateral_asset,
@@ -1044,6 +1094,14 @@ describe("private agent worker", () => {
       fees_conservative_upper_bound: false,
       position_count: 0,
       open_order_count: 0,
+      positions: [],
+      open_orders: [],
+      position_inventory_verified: true,
+      position_inventory_pagination_complete: true,
+      position_inventory_has_more: false,
+      open_order_inventory_verified: true,
+      open_order_inventory_pagination_complete: true,
+      open_order_inventory_has_more: false,
     };
     server = createPrivateAgentWorkerServer({
       carryFetchVenue: async ({ venue_id, assets, now_ms }) => assets.map((asset) => ({
@@ -1073,6 +1131,14 @@ describe("private agent worker", () => {
         trading_enabled: true,
         position_count: 0,
         open_order_count: 0,
+        positions: [],
+        open_orders: [],
+        position_inventory_verified: true,
+        position_inventory_pagination_complete: true,
+        position_inventory_has_more: false,
+        open_order_inventory_verified: true,
+        open_order_inventory_pagination_complete: true,
+        open_order_inventory_has_more: false,
       }),
       carryReadHyperliquidMetrics: async () => account,
       startAutopilotDueLoop: false,
