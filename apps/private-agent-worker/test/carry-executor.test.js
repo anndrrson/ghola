@@ -707,7 +707,7 @@ test("restart freezes legacy active inventory without a durable exact entry rece
   assert.deepEqual(frozen.position.next_actions, ["reconcile_only", "manual_exit_required"]);
 });
 
-for (const legacyStatus of ["rebalancing", "frozen", "exiting", "reconciled"]) {
+for (const legacyStatus of ["rebalancing", "frozen", "exiting"]) {
   test(`restart backfills legacy ${legacyStatus} inventory from exact entry receipts`, async (t) => {
     const fixture = await setup(t, `restart-${legacyStatus}-inventory-backfill`);
     const opened = await executeStoredCarryEntry({
@@ -738,6 +738,87 @@ for (const legacyStatus of ["rebalancing", "frozen", "exiting", "reconciled"]) {
     const repaired = await restarted.getCarryPositionRecord(fixture.position_id);
     assert.equal(repaired.position.status, legacyStatus);
     assert.deepEqual(Object.keys(repaired.position.inventory_expectation_by_venue).sort(), ["aster", "lighter"]);
+  });
+}
+
+for (const residualExposure of [false, true]) {
+  test(`restart ${residualExposure ? "quarantines" : "releases"} a legacy reconciled reservation after an exact fresh read`, async (t) => {
+    const fixture = await setup(t, `restart-reconciled-release-${residualExposure ? "residual" : "flat"}`);
+    const opened = await executeStoredCarryEntry({
+      ...fixture,
+      executeOrder: async (args) => {
+        const receipt = exactLiveValueReceipt(args);
+        await fixture.state.putIdempotency(args.work_order_commitment, receipt);
+        return receipt;
+      },
+    });
+    assert.equal(opened.ok, true, opened.error);
+    const statePath = join(fixture.state_dir, "private-agent-execution-state-v1.json");
+    const persisted = JSON.parse(readFileSync(statePath, "utf8"));
+    const legacy = persisted.carry_positions[fixture.position_id];
+    legacy.position.status = "reconciled";
+    legacy.position.inventory_expectation_by_venue = {};
+    legacy.final_reconciliation_evidence = {
+      gross_exposure_micro_usdc: 0,
+      open_order_count: 0,
+      account_state_checked: true,
+      transaction_broadcast: false,
+      reconciliation_commitment: "carry:reconciliation:legacy-count-only",
+      checked_at_ms: NOW + 10,
+    };
+    writeFileSync(statePath, JSON.stringify(persisted));
+
+    const restarted = createWorkerState(fixture.state_dir);
+    const inventory = (venueId, positions) => buildCarryInventoryEvidence({
+      venue_id: venueId,
+      account_commitment: `account:${venueId}:0001`,
+      target_market: carryMarket(venueId),
+      positions,
+      open_orders: [],
+      position_inventory_verified: true,
+      open_order_inventory_verified: true,
+    });
+    const preflight = async () => {
+      const proof = preflightProof();
+      proof.account_readiness = ["aster", "lighter"].map((venueId) => {
+        const positions = residualExposure && venueId === "lighter"
+          ? [{ market: carryMarket(venueId), side: "short", base_size: "0.001" }]
+          : [];
+        return {
+          venue_id: venueId,
+          account_commitment: `account:${venueId}:0001`,
+          authorized: true,
+          flat_zero_orders: positions.length === 0,
+          position_count: positions.length,
+          open_order_count: 0,
+          inventory: inventory(venueId, positions),
+        };
+      });
+      return proof;
+    };
+    const audited = await auditCarryPositionsAfterRestart({
+      state: restarted,
+      preflight,
+      now_ms: fixture.now(),
+      env: { PRIVATE_AGENT_VENUE_DRY_RUN: "false" },
+    });
+    assert.equal(audited.ok, true, JSON.stringify(audited));
+    assert.equal(audited.recovered, 1, JSON.stringify(audited));
+    const repaired = await restarted.getCarryPositionRecord(fixture.position_id);
+    assert.deepEqual(Object.keys(repaired.position.inventory_expectation_by_venue).sort(), ["aster", "lighter"]);
+    if (residualExposure) {
+      assert.equal(repaired.position.status, "manual_intervention");
+      assert.equal(repaired.position.terminal_reason, "legacy_reconciliation_state_unproven");
+      assert.deepEqual(repaired.position.next_actions, ["reconcile_only", "manual_exit_required"]);
+      assert.deepEqual(await restarted.listActiveCarryExposureReservationPositionIds(), [fixture.position_id]);
+      assert.equal((await auditCarryPositionsAfterRestart({ state: restarted, preflight, now_ms: fixture.now() })).checked, 0);
+    } else {
+      assert.equal(repaired.position.status, "reconciled");
+      assert.equal(repaired.final_reconciliation_evidence.venues.length, 2);
+      assert.equal(repaired.final_reconciliation_evidence.venues.every((venue) =>
+        venue.inventory.target_positions.length === 0 && venue.inventory.target_open_orders.length === 0), true);
+      assert.deepEqual(await restarted.listActiveCarryExposureReservationPositionIds(), []);
+    }
   });
 }
 

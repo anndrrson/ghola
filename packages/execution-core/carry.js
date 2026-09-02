@@ -27,6 +27,7 @@ const RECOVERABLE_MONITORING_FREEZE_REASONS = new Set([
 const EVENT_TYPES = new Set([
   "preflight_passed", "entry_reconciled", "entry_failed_no_fill", "observation", "manual_exit_requested",
   "observation_unavailable", "inventory_drift", "mandate_invalid", "submission_ambiguous", "restart_detected", "recovery_failed", "inventory_expectation_migrated", "inventory_expectation_migration_required", "reconciliation_complete", "exit_reconciled",
+  "legacy_reconciliation_refreshed", "legacy_reconciliation_recovery_required",
 ]);
 const VALUE_ENTRY_TYPES = new Set([
   "funding", "trading_fee", "slippage", "gas", "capital_cost", "transfer_fee", "rebate", "settlement_adjustment",
@@ -2120,7 +2121,11 @@ export function advanceCarryPosition({ position: positionInput, event: eventInpu
     }
     if (event.sequence !== position.last_event_sequence + 1) fail("carry_event_sequence_invalid");
     if ((position.status === "reconciled" || position.status === "manual_intervention")
-      && !(position.status === "reconciled" && event.type === "inventory_expectation_migrated")) {
+      && !(position.status === "reconciled" && new Set([
+        "inventory_expectation_migrated",
+        "legacy_reconciliation_refreshed",
+        "legacy_reconciliation_recovery_required",
+      ]).has(event.type))) {
       fail("carry_position_terminal");
     }
     applyEvent(position, event, nowMs);
@@ -2357,6 +2362,25 @@ export function finalizeCarryValueLedger({ ledger: ledgerInput, evidence: eviden
 }
 
 function applyEvent(position, event, nowMs) {
+  if (event.type === "legacy_reconciliation_refreshed") {
+    requireStatus(position, new Set(["reconciled"]));
+    if (event.known_flat !== true
+      || nonNegativeInteger(event.gross_exposure_micro_usdc, "carry_legacy_reconcile_exposure") !== 0
+      || nonNegativeInteger(event.open_order_count, "carry_legacy_reconcile_open_orders") !== 0) {
+      fail("carry_legacy_reconciliation_not_flat");
+    }
+    position.next_actions = [];
+    position.terminal_reason = "reconciled_flat";
+    return;
+  }
+  if (event.type === "legacy_reconciliation_recovery_required") {
+    requireStatus(position, new Set(["reconciled"]));
+    position.status = "manual_intervention";
+    position.next_actions = ["reconcile_only", "manual_exit_required"];
+    position.retry_permitted = false;
+    position.terminal_reason = "legacy_reconciliation_state_unproven";
+    return;
+  }
   if (event.type === "inventory_expectation_migrated") {
     requireStatus(position, new Set(["active", "rebalancing", "frozen", "exiting", "reconciled"]));
     position.inventory_expectation_by_venue = normalizeCarryInventoryExpectations(

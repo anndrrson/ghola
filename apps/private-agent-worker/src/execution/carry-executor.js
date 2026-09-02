@@ -694,7 +694,9 @@ export async function runCarryExecutionTick({
   const tasks = [
     ...migrationRecords.map((record) => ({
       position_id: record.position?.position_id,
-      run: () => backfillCarryInventoryExpectations({ state, record, env, nowMs: now() }),
+      run: () => backfillCarryInventoryExpectations({
+        state, record, recipient, verifyOrder, preflight, env, nowMs: now(),
+      }),
     })),
     ...records.filter((record) => !migrationPositionIds.has(record.position.position_id)).map((record) => ({
       position_id: record.position?.position_id,
@@ -983,13 +985,18 @@ export async function auditCarryPositionsAfterRestart({
       && saga.execution_context?.owner_commitment === record.owner_commitment;
     if (Number.isFinite(updatedAt) && updatedAt > cutoff && !reconciledEntryPredatesCutoff) continue;
     if (inventoryExpectationMigrationEligible(record) && inventoryExpectationBackfillRequired(record)) {
-      const migrated = await backfillCarryInventoryExpectations({ state, record, env, nowMs });
+      const migrated = await backfillCarryInventoryExpectations({
+        state, record, recipient, verifyOrder, preflight, env, nowMs,
+      });
       if (!migrated.ok || migrated.migration_required === true) {
         results.push(migrated);
         continue;
       }
       record = await state.getCarryPositionRecord(record.position.position_id);
-      results.push({ ...migrated, restart_action: "inventory_expectations_backfilled" });
+      results.push({
+        ...migrated,
+        restart_action: migrated.restart_action || "inventory_expectations_backfilled",
+      });
       continue;
     }
     if (phase && provablyPreSubmitCarrySaga(saga, record, phase)) {
@@ -1142,7 +1149,15 @@ function inventoryExpectationBackfillRequired(record) {
     }));
 }
 
-async function backfillCarryInventoryExpectations({ state, record, env, nowMs }) {
+async function backfillCarryInventoryExpectations({
+  state,
+  record,
+  recipient,
+  verifyOrder,
+  preflight = preflightCarryPair,
+  env,
+  nowMs,
+}) {
   const current = await state.getCarryPositionRecord(record.position.position_id);
   if (!current || current.owner_commitment !== record.owner_commitment || !inventoryExpectationMigrationEligible(current)) {
     return denied("carry_inventory_expectation_migration_parent_changed");
@@ -1207,9 +1222,76 @@ async function backfillCarryInventoryExpectations({ state, record, env, nowMs })
       completed_at_ms: nowMs,
     },
   }, { expected_version: durable.record_version });
-  return stored.ok
-    ? { ok: true, record: publicCarryRecord(stored.record) }
-    : denied(stored.error || "carry_inventory_expectation_migration_record_conflict");
+  if (!stored.ok) return denied(stored.error || "carry_inventory_expectation_migration_record_conflict");
+  if (stored.record.position.status !== "reconciled") {
+    return { ok: true, record: publicCarryRecord(stored.record) };
+  }
+  return refreshLegacyReconciledReleaseEvidence({
+    state,
+    record: stored.record,
+    recipient,
+    verifyOrder,
+    preflight,
+    env,
+    nowMs,
+  });
+}
+
+async function refreshLegacyReconciledReleaseEvidence({
+  state,
+  record,
+  recipient,
+  verifyOrder,
+  preflight,
+  env,
+  nowMs,
+}) {
+  const sagaId = record.exit_saga_id || record.entry_saga_id;
+  const saga = sagaId ? await state.getMultiLegSaga(sagaId) : null;
+  const accountState = saga
+    ? await inspectCarryAccountState({
+      state, record, saga, recipient, verifyOrder, preflight, env, nowMs,
+    })
+    : denied("carry_legacy_reconciliation_saga_missing");
+  if (accountState.ok && accountState.known_flat) {
+    const refreshed = await advanceStoredCarryPosition({
+      state,
+      owner_commitment: record.owner_commitment,
+      position_id: record.position.position_id,
+      event: carryEvent(record.position, "legacy_reconciliation_refreshed", {
+        known_flat: true,
+        ...accountState.evidence,
+      }),
+      now_ms: nowMs,
+    });
+    if (!refreshed.ok) return refreshed;
+    const released = await releaseCarryExposureReservation({ state, record: refreshed.record });
+    return released.ok
+      ? {
+        ok: true,
+        record: publicCarryRecord(await state.getCarryPositionRecord(record.position.position_id)),
+        exposure_reservation_released: true,
+        restart_action: "legacy_reconciliation_refreshed_and_released",
+      }
+      : denied("carry_exposure_reservation_release_failed");
+  }
+  const manual = await advanceStoredCarryPosition({
+    state,
+    owner_commitment: record.owner_commitment,
+    position_id: record.position.position_id,
+    event: carryEvent(record.position, "legacy_reconciliation_recovery_required", {
+      recovery_error: accountState.error || "carry_legacy_reconciliation_not_flat",
+    }),
+    now_ms: nowMs,
+  });
+  return manual.ok
+    ? {
+      ok: true,
+      record: manual.record,
+      manual_intervention: true,
+      restart_action: "legacy_reconciliation_manual_intervention",
+    }
+    : manual;
 }
 
 function inventoryExpectationMigrationEligible(record) {

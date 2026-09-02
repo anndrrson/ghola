@@ -8,6 +8,12 @@ import {
   createSqliteWorkerState,
   createWorkerState,
 } from "../src/state/private-state.js";
+import {
+  buildCarryInventoryEvidence,
+  carryInventoryExpectation,
+  carryInventoryPositionIdentityCommitment,
+} from "../src/execution/carry-inventory.js";
+import { carryReconciliationCommitment } from "../src/execution/carry-reconciliation.js";
 
 function attempt(status) {
   return { status, submit_count: status === "armed" ? 1 : 0 };
@@ -161,19 +167,50 @@ test("Carry exposure reservations are atomic, durable, replay-safe, and reusable
     winner.reservations.map((item) => item.reservation_key), { owner_commitment: "wrong" },
   )).ok, false);
   const state = readJsonState(dir);
+  const inventoryExpectations = Object.fromEntries(["hyperliquid", "lighter"].map((venueId) => [
+    venueId,
+    carryInventoryExpectation({
+      venue_id: venueId,
+      account_commitment: `account:${venueId}:test`,
+      market: "BTC-PERP",
+      side: venueId === "hyperliquid" ? "long" : "short",
+      base_size: "0.001",
+      entry_work_order_commitment: `work:carry:${venueId}:reservation:test`,
+      entry_provider_ref_commitment: `provider:carry:${venueId}:reservation:test`,
+    }),
+  ]));
+  const finalReconciliation = {
+    account_state_checked: true, transaction_broadcast: false, gross_exposure_micro_usdc: 0, open_order_count: 0,
+    owner_commitment: winner.record.owner_commitment, carry_position_id: winner.positionId,
+    checked_at_ms: 1_800_000_000_001,
+    venues: ["hyperliquid", "lighter"].map((venue_id) => ({
+      venue_id, account_commitment: `account:${venue_id}:test`, authorized: true,
+      account_state_checked: true, flat_zero_orders: true, position_count: 0, open_order_count: 0,
+      position_identity_commitment: carryInventoryPositionIdentityCommitment({
+        venue_id,
+        account_commitment: `account:${venue_id}:test`,
+        market: "BTC-PERP",
+      }),
+      inventory: buildCarryInventoryEvidence({
+        venue_id,
+        account_commitment: `account:${venue_id}:test`,
+        target_market: "BTC-PERP",
+        positions: [],
+        open_orders: [],
+        position_inventory_verified: true,
+        open_order_inventory_verified: true,
+      }),
+    })),
+  };
+  finalReconciliation.reconciliation_commitment = carryReconciliationCommitment(finalReconciliation);
   state.carry_positions[winner.positionId] = {
     ...state.carry_positions[winner.positionId],
-    position: { ...state.carry_positions[winner.positionId].position, status: "reconciled" },
-    final_reconciliation_evidence: {
-      account_state_checked: true, transaction_broadcast: false, gross_exposure_micro_usdc: 0, open_order_count: 0,
-      owner_commitment: winner.record.owner_commitment, carry_position_id: winner.positionId,
-      checked_at_ms: 1_800_000_000_001,
-      reconciliation_commitment: "carry:reconciliation:reservation-test-0001",
-      venues: ["hyperliquid", "lighter"].map((venue_id) => ({
-        venue_id, account_commitment: `account:${venue_id}:test`, authorized: true,
-        account_state_checked: true, flat_zero_orders: true, position_count: 0, open_order_count: 0,
-      })),
+    position: {
+      ...state.carry_positions[winner.positionId].position,
+      status: "reconciled",
+      inventory_expectation_by_venue: inventoryExpectations,
     },
+    final_reconciliation_evidence: finalReconciliation,
   };
   writeFileSync(join(dir, "private-agent-execution-state-v1.json"), JSON.stringify(state));
   const afterFlat = createWorkerState(dir);
@@ -184,6 +221,7 @@ test("Carry exposure reservations are atomic, durable, replay-safe, and reusable
     {
       owner_commitment: winner.record.owner_commitment, position_id: winner.positionId, venue_ids: ["hyperliquid", "lighter"],
       account_commitments: { hyperliquid: "account:hyperliquid:test", lighter: "account:lighter:test" },
+      inventory_expectations: inventoryExpectations,
     },
   )).ok, true);
   assert.equal((await afterFlat.claimCarryExposureReservations(

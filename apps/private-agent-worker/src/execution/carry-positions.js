@@ -371,6 +371,10 @@ export async function advanceStoredCarryPosition({ state, position_id: positionI
     lifecycle_events: [...record.record.lifecycle_events, recordedEvent].slice(-256),
     ...(event.type === "observation" ? { latest_observation: publicObservation(recordedEvent) } : {}),
     ...((event.type === "exit_reconciled" || (
+      event.type === "legacy_reconciliation_refreshed"
+      && event.known_flat === true
+      && event.open_order_count === 0
+    ) || (
       event.type === "reconciliation_complete"
       && event.known_flat === true
       && event.open_order_count === 0
