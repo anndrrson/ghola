@@ -79,7 +79,21 @@ const specs = [
     carry_execution: adapter("hyperliquid_v1", "proven", {
       liquidation_distance_source: "hyperliquid_clearinghouse_state_asset_positions_v1",
     }),
-    no_submit_reconciliation: adapter("hyperliquid_v1", "proven"),
+    no_submit_reconciliation: adapter("hyperliquid_v1", "proven", {
+      mandatory_no_submit_checks: Object.freeze([
+        "sealed_vault_opened",
+        "sealed_instruction_opened",
+        "authority_derived",
+        "policy_enforced",
+        "live_gate_enforced",
+        "api_wallet_loaded",
+        "hyperliquid_api_reachable",
+        "hyperliquid_sdk_ready",
+        "account_read_checked",
+        "order_request_built",
+        "live_venue_checked",
+      ]),
+    }),
     exact_quantity_recovery: adapter("hyperliquid_v1", "proven", CARRY_RECOVERY_POLICY),
     credential_onboarding: adapter("hyperliquid_turnkey_onboarding_v1", "implemented_unproven", {
       highest_proven_mode: "wallet_authorized_auto_provisioning",
@@ -107,7 +121,16 @@ const specs = [
     carry_execution: adapter("lighter_v1", "implemented_unproven", {
       liquidation_distance_source: "lighter_account_positions_position_value_v1",
     }),
-    no_submit_reconciliation: adapter("lighter_v1", "implemented_unproven"),
+    no_submit_reconciliation: adapter("lighter_v1", "implemented_unproven", {
+      mandatory_no_submit_checks: Object.freeze([
+        "sdk_checked",
+        "signer_matches_key",
+        "market_data_checked",
+        "account_state_checked",
+        "margin_state_checked",
+        "order_request_checked",
+      ]),
+    }),
     exact_quantity_recovery: adapter("lighter_v1", "implemented_unproven", CARRY_RECOVERY_POLICY),
     credential_onboarding: adapter("lighter_turnkey_change_pubkey_v1", "implemented_unproven", {
       highest_proven_mode: "programmatic_key_one_owner_signature",
@@ -135,7 +158,15 @@ const specs = [
     carry_execution: adapter("aster_v1", "implemented_unproven", {
       liquidation_distance_source: "aster_fapi_v3_position_risk_v1",
     }),
-    no_submit_reconciliation: adapter("aster_v1", "implemented_unproven"),
+    no_submit_reconciliation: adapter("aster_v1", "implemented_unproven", {
+      mandatory_no_submit_checks: Object.freeze([
+        "sdk_checked",
+        "signer_matches_key",
+        "market_data_checked",
+        "account_state_checked",
+        "order_request_checked",
+      ]),
+    }),
     exact_quantity_recovery: adapter("aster_v1", "implemented_unproven", CARRY_RECOVERY_POLICY),
     credential_onboarding: adapter("aster_v3_agent_onboarding_v1", "implemented_unproven", {
       highest_proven_mode: "programmatic_key_one_owner_signature",
@@ -251,6 +282,11 @@ export function supportsExactQuantityRecovery(venueId) {
 export function venueAdapterCapability(venueId, capability) {
   if (typeof capability !== "string" || !/^[a-z][a-z0-9_]{2,63}$/.test(capability)) return null;
   return executionVenueSpec(venueId)?.adapter_capabilities?.[capability] || null;
+}
+
+export function mandatoryNoSubmitChecks(venueId) {
+  const checks = venueAdapterCapability(venueId, "no_submit_reconciliation")?.mandatory_no_submit_checks;
+  return Array.isArray(checks) && checks.length > 0 ? checks : null;
 }
 
 export function venuesWithAdapterCapability(capability, {

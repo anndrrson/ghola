@@ -13,6 +13,7 @@ import {
   assessVenueReadiness,
   carryExecutionQualification,
   executionVenueLabel,
+  mandatoryNoSubmitChecks,
   normalizeCarryShadowAssets,
   requiredVenueCapabilities,
   supportsExactQuantityRecovery,
@@ -79,6 +80,35 @@ test("registry centralizes five core perp candidates without claiming qualificat
     assert.notEqual(shadow.liquidation_model, "unavailable");
   }
   assert.equal(venueAdapterCapability("dydx", "carry_execution"), null);
+  assert.deepEqual(mandatoryNoSubmitChecks("hyperliquid"), [
+    "sealed_vault_opened",
+    "sealed_instruction_opened",
+    "authority_derived",
+    "policy_enforced",
+    "live_gate_enforced",
+    "api_wallet_loaded",
+    "hyperliquid_api_reachable",
+    "hyperliquid_sdk_ready",
+    "account_read_checked",
+    "order_request_built",
+    "live_venue_checked",
+  ]);
+  assert.deepEqual(mandatoryNoSubmitChecks("lighter"), [
+    "sdk_checked",
+    "signer_matches_key",
+    "market_data_checked",
+    "account_state_checked",
+    "margin_state_checked",
+    "order_request_checked",
+  ]);
+  assert.deepEqual(mandatoryNoSubmitChecks("aster"), [
+    "sdk_checked",
+    "signer_matches_key",
+    "market_data_checked",
+    "account_state_checked",
+    "order_request_checked",
+  ]);
+  assert.equal(mandatoryNoSubmitChecks("dydx"), null);
   assert.deepEqual(
     Object.fromEntries(CARRY_EXECUTION_VENUES.map((venueId) => {
       const onboarding = venueAdapterCapability(venueId, "credential_onboarding");

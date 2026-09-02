@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cashflowValuationEvidenceMessage, executionVenueSpec } from "@ghola/execution-core";
+import {
+  cashflowValuationEvidenceMessage,
+  executionVenueSpec,
+  mandatoryNoSubmitChecks,
+} from "@ghola/execution-core";
 import {
   modelCarryPairPreflight,
   preflightCarryExecutionMatrix,
@@ -10,6 +14,14 @@ import { storeCarryVenueQualification } from "../src/execution/carry-qualificati
 import { liquidationDistanceSourceForVenue } from "../src/venues/liquidation-distance.js";
 
 const NOW = 1_800_000_000_000;
+
+function noSubmitChecks(venueId, overrides = {}) {
+  return {
+    ...Object.fromEntries((mandatoryNoSubmitChecks(venueId) || []).map((check) => [check, true])),
+    transaction_broadcast: false,
+    ...overrides,
+  };
+}
 
 function snapshot(venueId) {
   const shadow = executionVenueSpec(venueId).adapter_capabilities.perp_shadow;
@@ -216,7 +228,7 @@ test("verifies the exact reduce-only exit sides and filled base quantities", asy
         work_order_commitment,
         account_commitment: access().account_commitment,
         verification_commitment: `verification_exit_${venue_id}`,
-        checks: { order_request_checked: true, transaction_broadcast: false },
+        checks: noSubmitChecks(venue_id),
         order_shape: {
           market: venue_id === "aster" ? "BTCUSDT" : "BTC",
           side: order.side,
@@ -918,7 +930,7 @@ test("rejects no-submit evidence returned for a different sealed account", async
         work_order_commitment,
         account_commitment: venue_id === "aster" ? "account_commitment_wrong_0001" : access().account_commitment,
         verification_commitment: `verification_${venue_id}`,
-        checks: { order_request_checked: true, transaction_broadcast: false },
+        checks: noSubmitChecks(venue_id),
         order_shape: { notional_micro_usdc: 100_000_000 },
         account,
       }),
@@ -974,7 +986,7 @@ test("monitoring measures a signed basis breach without submitting or hiding it 
         work_order_commitment,
         account_commitment: access().account_commitment,
         verification_commitment: `verification_${venue_id}`,
-        checks: { order_request_checked: true, transaction_broadcast: false },
+        checks: noSubmitChecks(venue_id),
         order_shape: { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
         account,
         authority_boundary: { venue_native_trade_only: true },
@@ -1196,7 +1208,7 @@ test("verifies all three execution venues through one no-broadcast matrix", asyn
         work_order_commitment,
         account_commitment: access().account_commitment,
         verification_commitment: `verification_matrix_${venue_id}_${calls.length}`,
-        checks: { order_request_checked: true, transaction_broadcast: false },
+        checks: noSubmitChecks(venue_id),
         order_shape: { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
         account,
         ...(venue_id === "lighter" ? {
@@ -1269,6 +1281,99 @@ test("verifies all three execution venues through one no-broadcast matrix", asyn
   assert.equal(nowCalls, 1);
 });
 
+test("fails the matrix closed when any venue-specific no-submit proof is incomplete or false", async () => {
+  const account = {
+    can_trade: true,
+    available_balance: 500,
+    margin_balance: 500,
+    initial_margin: 0,
+    maintenance_margin: 0,
+    maker_fee_bps: 0,
+    taker_fee_bps: 1,
+    ...exactFeeEvidence(),
+    position_count: 0,
+    open_order_count: 0,
+    ...flatInventory(),
+  };
+  const cases = [
+    { venue_id: "hyperliquid", check: "live_venue_checked", value: false, reason: "failed" },
+    { venue_id: "lighter", check: "margin_state_checked", value: undefined, reason: "incomplete" },
+    { venue_id: "aster", check: "signer_matches_key", value: false, reason: "failed" },
+  ];
+
+  for (const [index, tamper] of cases.entries()) {
+    const ownerCommitment = `owner_commitment_mandatory_${index + 1}`;
+    const result = await preflightCarryExecutionMatrix({
+      body: {
+        version: 1,
+        owner_commitment: ownerCommitment,
+        operation_class: "matrix_no_submit",
+        work_order_commitment: `carry_matrix_mandatory_${index + 1}`,
+        asset: "BTC",
+        notional_usd: 100,
+        horizon_days: 30,
+        venue_access: {
+          hyperliquid: access(ownerCommitment),
+          aster: access(ownerCommitment),
+          lighter: access(ownerCommitment),
+        },
+      },
+      recipient: {},
+      state: {},
+      env: { PHALA_CVM_IMAGE_DIGEST: "sha256:abcdef123456" },
+      now: () => NOW,
+      fetchVenue: async ({ venue_id }) => [snapshot(venue_id)],
+      verifyOrder: async ({ venue_id, work_order_commitment }) => {
+        const checks = noSubmitChecks(venue_id);
+        if (venue_id === tamper.venue_id) {
+          if (tamper.value === undefined) delete checks[tamper.check];
+          else checks[tamper.check] = tamper.value;
+        }
+        return {
+          status: "verified_ready",
+          work_order_commitment,
+          account_commitment: access().account_commitment,
+          verification_commitment: `verification_mandatory_${index + 1}_${venue_id}_${work_order_commitment}`,
+          checks,
+          order_shape: { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
+          account,
+          ...(venue_id === "lighter" ? {
+            authority_boundary: {
+              venue_native_trade_only: false,
+              withdrawal_request_permitted: false,
+              secure_withdrawal_destination: "owner_l1_only",
+              owner_wallet_key_present: false,
+              non_owner_fund_movement_possible: false,
+            },
+          } : { authority_boundary: { venue_native_trade_only: true } }),
+        };
+      },
+      readHyperliquidSnapshot: async () => ({
+        status: "ready_to_trade",
+        trading_enabled: true,
+        position_count: 0,
+        open_order_count: 0,
+        ...flatInventory(),
+      }),
+      readHyperliquidCarryMetrics: async () => account,
+    });
+
+    assert.equal(result.no_submit_ready, false, tamper.venue_id);
+    assert.equal(result.transaction_broadcast, false, tamper.venue_id);
+    assert.equal(result.readiness, undefined, tamper.venue_id);
+    assert.ok(
+      result.failures.includes(`venue_no_submit_checks_${tamper.reason}:${tamper.venue_id}`),
+      `${tamper.venue_id}:${tamper.check}`,
+    );
+    assert.equal(
+      result.venues.find((venue) => venue.venue_id === tamper.venue_id)
+        ?.checks.mandatory_no_submit_checks_passed,
+      false,
+      tamper.venue_id,
+    );
+  }
+});
+
 test("isolates failed pairs without discarding successful no-submit evidence or retrying, including ambiguous venue failures", async () => {
   const calls = [];
   const account = {
@@ -1316,7 +1421,7 @@ test("isolates failed pairs without discarding successful no-submit evidence or 
         work_order_commitment,
         account_commitment: access().account_commitment,
         verification_commitment: `verification_partial_${work_order_commitment}`,
-        checks: { order_request_checked: true, transaction_broadcast: false },
+        checks: noSubmitChecks(venue_id),
         order_shape: { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
         account,
         ...(venue_id === "lighter" ? {
@@ -1396,7 +1501,7 @@ test("persists the exact venue when a completed pair reports authorization unava
         work_order_commitment,
         account_commitment: access().account_commitment,
         verification_commitment: `verification_unready_${work_order_commitment}`,
-        checks: { order_request_checked: true, transaction_broadcast: false },
+        checks: noSubmitChecks(venue_id),
         order_shape: { notional_micro_usdc: 100_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000_000 },
         account,
         ...(venue_id === "lighter" ? {

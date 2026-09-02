@@ -11,6 +11,7 @@ import {
   CARRY_EXECUTION_VENUES,
   CORE_PERP_VENUES,
   cashflowValuationEvidenceMessage,
+  mandatoryNoSubmitChecks,
   venueAdapterCapability,
 } from "@ghola/execution-core";
 import {
@@ -71,6 +72,14 @@ const JUPITER_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const JUPITER_FEE_OWNER = "Fbw73e5YfhivsTeFud97CFBZc5bZ2PbdDVgcgfYRSgwJ";
 const LIGHTER_PRIVATE_KEY = "11".repeat(32);
 const LIGHTER_PUBLIC_KEY = "22".repeat(40);
+
+function noSubmitChecks(venueId, overrides = {}) {
+  return {
+    ...Object.fromEntries((mandatoryNoSubmitChecks(venueId) || []).map((check) => [check, true])),
+    transaction_broadcast: false,
+    ...overrides,
+  };
+}
 
 function shadowSnapshot(venueId, asset, observedAt) {
   const declared = venueAdapterCapability(venueId, "perp_shadow");
@@ -902,6 +911,7 @@ describe("private agent worker", () => {
       open_order_inventory_has_more: false,
     };
     let verificationCount = 0;
+    let hyperliquidLiveVenueChecked = true;
     server = createPrivateAgentWorkerServer({
       carryFetchVenue: async ({ venue_id, assets, now_ms }) => assets.map((asset) => ({
         ...shadowSnapshot(venue_id, asset, now_ms),
@@ -916,7 +926,9 @@ describe("private agent worker", () => {
           work_order_commitment,
           account_commitment: execution.account_commitment,
           verification_commitment: `verification_http_${venue_id}_${verificationCount}`,
-          checks: { order_request_checked: true, transaction_broadcast: false },
+          checks: noSubmitChecks(venue_id, venue_id === "hyperliquid"
+            ? { live_venue_checked: hyperliquidLiveVenueChecked }
+            : {}),
           order_shape: { notional_micro_usdc: 11_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000 },
           account,
           authority_boundary: venue_id === "lighter" ? {
@@ -1076,6 +1088,34 @@ describe("private agent worker", () => {
       && item.account_state_commitment.startsWith("carry:account-state:")
     ), true);
     assert.equal(verificationCount, 6);
+
+    hyperliquidLiveVenueChecked = false;
+    const rejectedResponse = await fetch(`${baseUrl}/carry/preflight-matrix`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-ghola-sealed-execution-required": "true",
+        "x-ghola-no-submit-verify": "true",
+      },
+      body: JSON.stringify({
+        ...common,
+        operation_class: "matrix_no_submit",
+        work_order_commitment: "carry_matrix_http_missing_hl_check_0001",
+      }),
+    });
+    const rejected = await rejectedResponse.json();
+    assert.equal(rejectedResponse.status, 200, JSON.stringify(rejected));
+    assert.equal(rejected.no_submit_ready, false);
+    assert.equal(rejected.transaction_broadcast, false);
+    assert.equal(rejected.failures.includes("venue_no_submit_checks_failed:hyperliquid"), true);
+    assert.equal(rejected.venues.find((venue) => venue.venue_id === "hyperliquid")
+      ?.checks.mandatory_no_submit_checks_passed, false);
+    assert.equal(rejected.pairs
+      .flatMap((pair) => pair.leg_evidence)
+      .filter((leg) => leg.venue_id === "hyperliquid")
+      .every((leg) => leg.mandatory_no_submit_checks_passed === false), true);
+    assert.equal(verificationCount, 12);
   });
 
   it("returns ready-pair evidence when a matrix venue has a sanitized not-ready marker", async () => {
@@ -1115,7 +1155,7 @@ describe("private agent worker", () => {
         work_order_commitment,
         account_commitment: execution.account_commitment,
         verification_commitment: `verification_http_partial_${venue_id}`,
-        checks: { order_request_checked: true, transaction_broadcast: false },
+        checks: noSubmitChecks(venue_id),
         order_shape: { notional_micro_usdc: 11_000_000, quantity_step_e8: 1_000, price_tick_e8: 1_000 },
         account,
         authority_boundary: venue_id === "lighter" ? {

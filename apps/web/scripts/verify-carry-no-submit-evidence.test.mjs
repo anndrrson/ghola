@@ -10,6 +10,7 @@ import test from "node:test";
 import {
   cashflowValuationEvidenceMessage,
   executionVenueSpec,
+  mandatoryNoSubmitChecks,
 } from "@ghola/execution-core";
 import { authenticateCarryPrivatePrimeReadiness } from "../../private-agent-worker/src/execution/carry-private-prime-authentication.js";
 import { buildCarryPrivatePrimeReadiness } from "../../private-agent-worker/src/execution/carry-private-prime-readiness.js";
@@ -27,6 +28,13 @@ const WORKER_IMAGE_DIGEST = `sha256:${"b".repeat(64)}`;
 const SOURCE_TREE_DIGEST = `sha256:${"c".repeat(64)}`;
 const SIGNER = generateKeyPairSync("ed25519");
 const SIGNER_PUBLIC_KEY_B64 = SIGNER.publicKey.export({ format: "der", type: "spki" }).toString("base64");
+
+function noSubmitChecks(venueId) {
+  return {
+    ...Object.fromEntries(mandatoryNoSubmitChecks(venueId).map((check) => [check, true])),
+    transaction_broadcast: false,
+  };
+}
 
 test("independently verifies exact signed three-venue no-submit evidence", async () => {
   const proof = await evidence();
@@ -176,7 +184,7 @@ async function evidence({ readinessWorkOrderCommitment = null } = {}) {
         work_order_commitment: workOrderCommitment,
         account_commitment: venueAccess[venueId].account_commitment,
         verification_commitment: `verification_matrix_${venueId}_${verificationIndex}`,
-        checks: { order_request_checked: true, transaction_broadcast: false },
+        checks: noSubmitChecks(venueId),
         order_shape: {
           notional_micro_usdc: 100_000_000,
           quantity_step_e8: 1_000,

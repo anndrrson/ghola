@@ -51,6 +51,7 @@ function matrix(workOrderCommitment = request().work_order_commitment) {
       transaction_broadcast: false,
       account_state_checked: true,
       order_request_checked: true,
+      mandatory_no_submit_checks_passed: true,
     },
   }));
   const pairs = CARRY_EXECUTION_VENUES.flatMap((left, leftIndex) =>
@@ -95,6 +96,7 @@ function matrix(workOrderCommitment = request().work_order_commitment) {
           transaction_broadcast: false,
           account_state_checked: true,
           order_request_checked: true,
+          mandatory_no_submit_checks_passed: true,
         };
       });
       return {
@@ -489,6 +491,31 @@ test("binds every pair to both exact no-submit leg receipts", async () => {
       env: ENV,
     });
     assert.equal(stored.ok, false);
+  }
+});
+
+test("rejects readiness when mandatory venue or leg no-submit checks are unproven", async () => {
+  for (const [mutate, expectedReason] of [
+    [
+      (value) => { value.venues[0].checks.mandatory_no_submit_checks_passed = false; },
+      "carry_readiness_mandatory_checks_unproven:hyperliquid",
+    ],
+    [
+      (value) => { value.pairs[0].leg_evidence[0].mandatory_no_submit_checks_passed = false; },
+      "carry_readiness_leg_unproven:hyperliquid:lighter:hyperliquid",
+    ],
+  ]) {
+    const candidate = matrix();
+    mutate(candidate);
+    const stored = await storeCarryExecutionReadiness({
+      state: memoryState(),
+      request: request(),
+      matrix: candidate,
+      now_ms: NOW,
+      env: ENV,
+    });
+    assert.equal(stored.ok, false);
+    assert.ok(stored.readiness.reasons.includes(expectedReason));
   }
 });
 

@@ -1,3 +1,4 @@
+import { mandatoryNoSubmitChecks as registeredMandatoryNoSubmitChecks } from "@ghola/execution-core";
 import {
   DEFAULT_ANONYMITY_SET_POLICY,
   containsForbiddenPublicPrivateAccountField,
@@ -2324,40 +2325,8 @@ function mandatoryNoSubmitChecksFailure(venueId: GholaVenueId, value: unknown): 
 }
 
 function mandatoryNoSubmitChecks(venueId: GholaVenueId): readonly string[] | null {
-  if (venueId === "aster") {
-    return [
-      "sdk_checked",
-      "signer_matches_key",
-      "market_data_checked",
-      "account_state_checked",
-      "order_request_checked",
-    ];
-  }
-  if (venueId === "lighter") {
-    return [
-      "sdk_checked",
-      "signer_matches_key",
-      "market_data_checked",
-      "account_state_checked",
-      "margin_state_checked",
-      "order_request_checked",
-    ];
-  }
-  if (venueId === "hyperliquid") {
-    return [
-      "sealed_vault_opened",
-      "sealed_instruction_opened",
-      "authority_derived",
-      "policy_enforced",
-      "live_gate_enforced",
-      "api_wallet_loaded",
-      "hyperliquid_api_reachable",
-      "hyperliquid_sdk_ready",
-      "account_read_checked",
-      "order_request_built",
-      "live_venue_checked",
-    ];
-  }
+  const registered = registeredMandatoryNoSubmitChecks(venueId);
+  if (registered) return registered;
   if (venueId === "phoenix" || venueId === "drift") {
     return [
       "sealed_vault_opened",

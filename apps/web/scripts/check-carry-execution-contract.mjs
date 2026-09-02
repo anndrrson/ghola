@@ -538,42 +538,34 @@ export function checkCarryExecutionContract(sources) {
   )) {
     failures.push("connector_no_submit_mandatory_truth_gate_missing");
   }
+  requireText(
+    "webConnectorReconciliation",
+    'import { mandatoryNoSubmitChecks as registeredMandatoryNoSubmitChecks } from "@ghola/execution-core";',
+    "connector_no_submit_registry_import_missing",
+  );
   const mandatoryNoSubmitChecksSection = sourceSection(
     "webConnectorReconciliation",
     "function mandatoryNoSubmitChecks(",
     "function provenNoSubmitClaims(",
   );
+  requireSectionText(
+    mandatoryNoSubmitChecksSection,
+    "const registered = registeredMandatoryNoSubmitChecks(venueId);",
+    "connector_no_submit_registry_delegate_missing",
+  );
+  requireSectionText(
+    mandatoryNoSubmitChecksSection,
+    "if (registered) return registered;",
+    "connector_no_submit_registry_result_gate_missing",
+  );
+  for (const venueId of ["hyperliquid", "lighter", "aster"]) {
+    forbidSectionText(
+      mandatoryNoSubmitChecksSection,
+      `if (venueId === "${venueId}")`,
+      `connector_no_submit_carry_registry_duplicated:${venueId}`,
+    );
+  }
   const mandatoryNoSubmitVenueChecks = [
-    {
-      id: "aster",
-      start: 'if (venueId === "aster") {',
-      end: 'if (venueId === "lighter") {',
-      checks: ["sdk_checked", "signer_matches_key", "market_data_checked", "account_state_checked", "order_request_checked"],
-    },
-    {
-      id: "lighter",
-      start: 'if (venueId === "lighter") {',
-      end: 'if (venueId === "hyperliquid") {',
-      checks: ["sdk_checked", "signer_matches_key", "market_data_checked", "account_state_checked", "margin_state_checked", "order_request_checked"],
-    },
-    {
-      id: "hyperliquid",
-      start: 'if (venueId === "hyperliquid") {',
-      end: 'if (venueId === "phoenix" || venueId === "drift") {',
-      checks: [
-        "sealed_vault_opened",
-        "sealed_instruction_opened",
-        "authority_derived",
-        "policy_enforced",
-        "live_gate_enforced",
-        "api_wallet_loaded",
-        "hyperliquid_api_reachable",
-        "hyperliquid_sdk_ready",
-        "account_read_checked",
-        "order_request_built",
-        "live_venue_checked",
-      ],
-    },
     {
       id: "phoenix_drift",
       start: 'if (venueId === "phoenix" || venueId === "drift") {',
@@ -841,6 +833,83 @@ export function checkCarryExecutionContract(sources) {
   }
   requireText("registry", "export const CARRY_EXECUTION_VENUES", "capability_registry_missing");
   requireText("registry", "export const CARRY_SHADOW_ASSETS", "carry_shadow_asset_registry_missing");
+  requireText("coreIndex", "mandatoryNoSubmitChecks,", "carry_no_submit_registry_export_missing");
+  requireText("registry", "export function mandatoryNoSubmitChecks(venueId)", "carry_no_submit_registry_helper_missing");
+  requireText(
+    "registry",
+    'venueAdapterCapability(venueId, "no_submit_reconciliation")?.mandatory_no_submit_checks',
+    "carry_no_submit_registry_helper_binding_missing",
+  );
+  requireText(
+    "registry",
+    "return Array.isArray(checks) && checks.length > 0 ? checks : null;",
+    "carry_no_submit_registry_helper_fail_closed_missing",
+  );
+  const carryMandatoryNoSubmitChecks = [
+    {
+      id: "hyperliquid",
+      start: 'venue("hyperliquid"',
+      end: 'venue("lighter"',
+      checks: [
+        "sealed_vault_opened",
+        "sealed_instruction_opened",
+        "authority_derived",
+        "policy_enforced",
+        "live_gate_enforced",
+        "api_wallet_loaded",
+        "hyperliquid_api_reachable",
+        "hyperliquid_sdk_ready",
+        "account_read_checked",
+        "order_request_built",
+        "live_venue_checked",
+      ],
+    },
+    {
+      id: "lighter",
+      start: 'venue("lighter"',
+      end: 'venue("aster"',
+      checks: [
+        "sdk_checked",
+        "signer_matches_key",
+        "market_data_checked",
+        "account_state_checked",
+        "margin_state_checked",
+        "order_request_checked",
+      ],
+    },
+    {
+      id: "aster",
+      start: 'venue("aster"',
+      end: 'venue("edgex"',
+      checks: [
+        "sdk_checked",
+        "signer_matches_key",
+        "market_data_checked",
+        "account_state_checked",
+        "order_request_checked",
+      ],
+    },
+  ];
+  for (const venue of carryMandatoryNoSubmitChecks) {
+    const venueSection = sourceSection("registry", venue.start, venue.end);
+    requireSectionText(
+      venueSection,
+      "mandatory_no_submit_checks: Object.freeze([",
+      `carry_no_submit_registry_declaration_missing:${venue.id}`,
+    );
+    for (const check of venue.checks) {
+      requireSectionText(
+        venueSection,
+        `"${check}"`,
+        `carry_no_submit_registry_check_missing:${venue.id}:${check}`,
+      );
+    }
+    requireText(
+      "registryTest",
+      `mandatoryNoSubmitChecks("${venue.id}")`,
+      `carry_no_submit_registry_test_missing:${venue.id}`,
+    );
+  }
   for (const adapterId of [
     "hyperliquid_arbitrum_usdc_v1",
     "lighter_arbitrum_usdc_v1",
@@ -1201,6 +1270,57 @@ export function checkCarryExecutionContract(sources) {
   requireText("preflight", "selected_pair:", "carry_matrix_selected_pair_proof_missing");
   requireText("preflight", "allVenuePairs(orderedVenues)", "carry_all_pair_no_submit_matrix_missing");
   requireText("preflight", "Promise.allSettled(pairs.map", "carry_no_submit_pair_fault_isolation_missing");
+  requireText("preflight", "  mandatoryNoSubmitChecks,", "carry_matrix_mandatory_registry_import_missing");
+  const matrixMandatoryChecksSection = sourceSection(
+    "preflight",
+    "function mandatoryCarryNoSubmitChecksFailure(",
+    "function carryPairFailureCode(",
+  );
+  requireSectionText(
+    matrixMandatoryChecksSection,
+    "const required = mandatoryNoSubmitChecks(venueId);",
+    "carry_matrix_mandatory_registry_binding_missing",
+  );
+  requireSectionText(
+    matrixMandatoryChecksSection,
+    'if (!required) return "unsupported";',
+    "carry_matrix_mandatory_registry_fail_closed_missing",
+  );
+  requireSectionText(
+    matrixMandatoryChecksSection,
+    'if (checks.transaction_broadcast !== false) return "broadcast_unsafe";',
+    "carry_matrix_mandatory_broadcast_gate_missing",
+  );
+  requireSectionText(
+    matrixMandatoryChecksSection,
+    'if (required.some((check) => !Object.hasOwn(checks, check))) return "incomplete";',
+    "carry_matrix_mandatory_presence_gate_missing",
+  );
+  requireSectionText(
+    matrixMandatoryChecksSection,
+    'if (required.some((check) => checks[check] !== true)) return "failed";',
+    "carry_matrix_mandatory_truth_gate_missing",
+  );
+  requireText(
+    "preflight",
+    "const mandatoryFailure = mandatoryCarryNoSubmitChecksFailure(venueId, item.checks);",
+    "carry_matrix_mandatory_venue_validation_missing",
+  );
+  requireText(
+    "preflight",
+    "if (mandatoryFailure) failures.push(`venue_no_submit_checks_${mandatoryFailure}:${venueId}`);",
+    "carry_matrix_mandatory_failure_missing",
+  );
+  requireText(
+    "preflight",
+    "items.every((item) => mandatoryCarryNoSubmitChecksFailure(venueId, item.checks) === null)",
+    "carry_matrix_mandatory_venue_boolean_missing",
+  );
+  requireText(
+    "preflight",
+    "mandatory_no_submit_checks_passed: mandatoryCarryNoSubmitChecksFailure(item.venue_id, item.checks) === null",
+    "carry_matrix_mandatory_leg_boolean_missing",
+  );
   requireText("server", 'access.status === "not_ready"', "carry_matrix_not_ready_marker_validation_missing");
   requireText("server", "non-ready venue access must be sanitized", "carry_matrix_not_ready_marker_sanitization_missing");
   requireText("preflight", "storeCarryExecutionDiagnostic", "carry_partial_matrix_diagnostic_store_missing");
@@ -1249,6 +1369,26 @@ export function checkCarryExecutionContract(sources) {
   requireText("readinessTest", "rejects readiness after any sealed venue binding rotates", "carry_readiness_rotation_test_missing");
   requireText("readinessTest", "requires every unique venue pair before three-venue readiness passes", "carry_all_pair_readiness_test_missing");
   requireText("readiness", "carry_readiness_leg_venue_binding_mismatch", "carry_pair_leg_receipt_binding_missing");
+  requireText(
+    "readiness",
+    "if (venue.mandatory_no_submit_checks_passed !== true) reasons.push(`carry_readiness_mandatory_checks_unproven:${venueId}`);",
+    "carry_readiness_mandatory_venue_gate_missing",
+  );
+  requireText(
+    "readiness",
+    "|| leg.mandatory_no_submit_checks_passed !== true) {",
+    "carry_readiness_mandatory_leg_gate_missing",
+  );
+  requireText(
+    "readiness",
+    "mandatory_no_submit_checks_passed: item.checks?.mandatory_no_submit_checks_passed === true,",
+    "carry_readiness_mandatory_venue_output_missing",
+  );
+  requireText(
+    "readiness",
+    "mandatory_no_submit_checks_passed: leg?.mandatory_no_submit_checks_passed === true,",
+    "carry_readiness_mandatory_leg_output_missing",
+  );
   requireText("readinessTest", "binds every pair to both exact no-submit leg receipts", "carry_pair_leg_receipt_binding_test_missing");
   requireText("readinessTest", "rejects readiness detached from exact no-submit and recovery adapters", "carry_readiness_recovery_binding_test_missing");
   requireText("readiness", "carryAccountStateCommitment", "carry_no_submit_account_state_commitment_missing");
@@ -1852,7 +1992,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterialTest", "carryPositionLegId({ position_id: positionId", "carry_release_canonical_funding_leg_test_missing");
   requireText("evidenceVerifier", "realized_funding_evidence_mismatch", "carry_release_funding_reconciliation_missing");
   requireText("evidenceVerifier", "shadow_qualification_image_mismatch", "carry_release_shadow_image_verifier_missing");
-  requireText("evidenceVerifier", "shadow_qualification_samples_incomplete", "carry_release_shadow_soak_verifier_missing");
+  requireText("evidenceVerifier", "shadow_qualification_sample_count_mismatch", "carry_release_shadow_soak_verifier_missing");
   requireText("evidenceVerifier", "shadow_qualification_source_observations_invalid", "carry_release_shadow_source_observation_verifier_missing");
   requireText("evidenceVerifier", "shadowMinimumSpanMs >= 120_000", "carry_release_shadow_duration_verifier_missing");
   requireText("evidenceVerifier", "shadowQualification.venues === CORE_PERP_VENUES.length", "carry_release_shadow_registry_coverage_missing");

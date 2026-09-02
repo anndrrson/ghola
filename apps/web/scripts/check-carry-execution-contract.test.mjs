@@ -6166,11 +6166,8 @@ test("rejects raw no-submit proof that can normalize or omit broadcast evidence"
   );
 });
 
-test("rejects an incomplete mandatory no-submit checklist for every venue family", () => {
+test("rejects an incomplete mandatory no-submit checklist for every non-Carry venue family", () => {
   const cases = [
-    ['if (venueId === "aster") {', 'if (venueId === "lighter") {', "signer_matches_key", "aster"],
-    ['if (venueId === "lighter") {', 'if (venueId === "hyperliquid") {', "margin_state_checked", "lighter"],
-    ['if (venueId === "hyperliquid") {', 'if (venueId === "phoenix" || venueId === "drift") {', "live_venue_checked", "hyperliquid"],
     ['if (venueId === "phoenix" || venueId === "drift") {', 'if (venueId === "backpack") {', "phoenix_sdk_ready", "phoenix_drift"],
     ['if (venueId === "backpack") {', 'if (venueId === "jupiter") {', "backpack_rest_ready", "backpack"],
     ['if (venueId === "jupiter") {', 'if (venueId === "coinbase_advanced") {', "jupiter_transaction_built", "jupiter"],
@@ -6193,6 +6190,221 @@ test("rejects an incomplete mandatory no-submit checklist for every venue family
         ),
       }),
       new RegExp(`connector_no_submit_mandatory_checks_missing:${venue}:${check}`),
+    );
+  }
+});
+
+test("rejects incomplete centralized mandatory no-submit checklists for every Carry venue", () => {
+  const cases = [
+    ['venue("hyperliquid"', 'venue("lighter"', "live_venue_checked", "hyperliquid"],
+    ['venue("lighter"', 'venue("aster"', "margin_state_checked", "lighter"],
+    ['venue("aster"', 'venue("edgex"', "signer_matches_key", "aster"],
+  ];
+  for (const [start, end, check, venue] of cases) {
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        registry: mutateSection(
+          sources.registry,
+          start,
+          end,
+          (venueSection) => venueSection.replace(`"${check}"`, '"tampered_check"'),
+        ),
+      }),
+      new RegExp(`carry_no_submit_registry_check_missing:${venue}:${check}`),
+    );
+  }
+});
+
+test("rejects Carry mandatory no-submit consumers detached from the central registry", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webConnectorReconciliation: sources.webConnectorReconciliation.replace(
+        'import { mandatoryNoSubmitChecks as registeredMandatoryNoSubmitChecks } from "@ghola/execution-core";\n',
+        "",
+      ),
+    }),
+    /connector_no_submit_registry_import_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreIndex: sources.coreIndex.replace("  mandatoryNoSubmitChecks,\n", ""),
+    }),
+    /carry_no_submit_registry_export_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      registry: sources.registry.replace(
+        'venueAdapterCapability(venueId, "no_submit_reconciliation")?.mandatory_no_submit_checks',
+        'executionVenueSpec(venueId)?.mandatory_no_submit_checks',
+      ),
+    }),
+    /carry_no_submit_registry_helper_binding_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      registry: sources.registry.replace(
+        "return Array.isArray(checks) && checks.length > 0 ? checks : null;",
+        "return checks || null;",
+      ),
+    }),
+    /carry_no_submit_registry_helper_fail_closed_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      registryTest: sources.registryTest.replace('mandatoryNoSubmitChecks("lighter")', 'copiedNoSubmitChecks("lighter")'),
+    }),
+    /carry_no_submit_registry_test_missing:lighter/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webConnectorReconciliation: sources.webConnectorReconciliation.replace(
+        "const registered = registeredMandatoryNoSubmitChecks(venueId);",
+        "const registered = null;",
+      ),
+    }),
+    /connector_no_submit_registry_delegate_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webConnectorReconciliation: sources.webConnectorReconciliation.replace(
+        "if (registered) return registered;",
+        "if (Array.isArray(registered)) return registered;",
+      ),
+    }),
+    /connector_no_submit_registry_result_gate_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webConnectorReconciliation: sources.webConnectorReconciliation.replace(
+        "if (registered) return registered;",
+        'if (registered) return registered;\n  if (venueId === "hyperliquid") return [];',
+      ),
+    }),
+    /connector_no_submit_carry_registry_duplicated:hyperliquid/,
+  );
+});
+
+test("rejects matrix no-submit evidence that weakens mandatory registry checks", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replace("  mandatoryNoSubmitChecks,\n", ""),
+    }),
+    /carry_matrix_mandatory_registry_import_missing/,
+  );
+  const cases = [
+    {
+      from: "const required = mandatoryNoSubmitChecks(venueId);",
+      to: "const required = [];",
+      error: /carry_matrix_mandatory_registry_binding_missing/,
+    },
+    {
+      from: 'if (!required) return "unsupported";',
+      to: 'if (!required) return null;',
+      error: /carry_matrix_mandatory_registry_fail_closed_missing/,
+    },
+    {
+      from: 'if (checks.transaction_broadcast !== false) return "broadcast_unsafe";',
+      to: 'if (checks.transaction_broadcast === true) return "broadcast_unsafe";',
+      error: /carry_matrix_mandatory_broadcast_gate_missing/,
+    },
+    {
+      from: 'if (required.some((check) => !Object.hasOwn(checks, check))) return "incomplete";',
+      to: 'if (!required) return "incomplete";',
+      error: /carry_matrix_mandatory_presence_gate_missing/,
+    },
+    {
+      from: 'if (required.some((check) => checks[check] !== true)) return "failed";',
+      to: 'if (required.some((check) => Boolean(checks[check]) === false)) return "failed";',
+      error: /carry_matrix_mandatory_truth_gate_missing/,
+    },
+  ];
+  for (const mutation of cases) {
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        preflight: mutateSection(
+          sources.preflight,
+          "function mandatoryCarryNoSubmitChecksFailure(",
+          "function carryPairFailureCode(",
+          (section) => section.replace(mutation.from, mutation.to),
+        ),
+      }),
+      mutation.error,
+    );
+  }
+
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replace(
+        "if (mandatoryFailure) failures.push(`venue_no_submit_checks_${mandatoryFailure}:${venueId}`);",
+        "void mandatoryFailure;",
+      ),
+    }),
+    /carry_matrix_mandatory_failure_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replace(
+        "items.every((item) => mandatoryCarryNoSubmitChecksFailure(venueId, item.checks) === null)",
+        "items.every((item) => item.checks)",
+      ),
+    }),
+    /carry_matrix_mandatory_venue_boolean_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      preflight: sources.preflight.replace(
+        "mandatory_no_submit_checks_passed: mandatoryCarryNoSubmitChecksFailure(item.venue_id, item.checks) === null",
+        "mandatory_no_submit_checks_passed: true",
+      ),
+    }),
+    /carry_matrix_mandatory_leg_boolean_missing/,
+  );
+});
+
+test("rejects readiness that does not strictly preserve mandatory-check booleans", () => {
+  const cases = [
+    {
+      from: "if (venue.mandatory_no_submit_checks_passed !== true) reasons.push(`carry_readiness_mandatory_checks_unproven:${venueId}`);",
+      to: "if (!venue.mandatory_no_submit_checks_passed) reasons.push(`carry_readiness_mandatory_checks_unproven:${venueId}`);",
+      error: /carry_readiness_mandatory_venue_gate_missing/,
+    },
+    {
+      from: "|| leg.mandatory_no_submit_checks_passed !== true) {",
+      to: "|| !leg.mandatory_no_submit_checks_passed) {",
+      error: /carry_readiness_mandatory_leg_gate_missing/,
+    },
+    {
+      from: "mandatory_no_submit_checks_passed: item.checks?.mandatory_no_submit_checks_passed === true,",
+      to: "mandatory_no_submit_checks_passed: Boolean(item.checks?.mandatory_no_submit_checks_passed),",
+      error: /carry_readiness_mandatory_venue_output_missing/,
+    },
+    {
+      from: "mandatory_no_submit_checks_passed: leg?.mandatory_no_submit_checks_passed === true,",
+      to: "mandatory_no_submit_checks_passed: Boolean(leg?.mandatory_no_submit_checks_passed),",
+      error: /carry_readiness_mandatory_leg_output_missing/,
+    },
+  ];
+  for (const mutation of cases) {
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        readiness: sources.readiness.replace(mutation.from, mutation.to),
+      }),
+      mutation.error,
     );
   }
 });

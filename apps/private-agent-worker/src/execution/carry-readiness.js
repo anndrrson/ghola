@@ -239,6 +239,7 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
     if (venue.transaction_broadcast !== false) reasons.push(`carry_readiness_broadcast_unsafe:${venueId}`);
     if (venue.account_state_checked !== true) reasons.push(`carry_readiness_account_unchecked:${venueId}`);
     if (venue.order_request_checked !== true) reasons.push(`carry_readiness_order_unchecked:${venueId}`);
+    if (venue.mandatory_no_submit_checks_passed !== true) reasons.push(`carry_readiness_mandatory_checks_unproven:${venueId}`);
     const verificationCommitments = Array.isArray(venue.verification_commitments) ? venue.verification_commitments : [];
     const workOrderCommitments = Array.isArray(venue.work_order_commitments) ? venue.work_order_commitments : [];
     const accountStateCommitments = Array.isArray(venue.account_state_commitments) ? venue.account_state_commitments : [];
@@ -301,7 +302,8 @@ export function assessCarryExecutionReadiness({ evidence, owner_commitment: owne
         || leg.account_commitment !== venue?.account_commitment
         || leg.transaction_broadcast !== false
         || leg.account_state_checked !== true
-        || leg.order_request_checked !== true) {
+        || leg.order_request_checked !== true
+        || leg.mandatory_no_submit_checks_passed !== true) {
         reasons.push(`carry_readiness_leg_unproven:${left}:${right}:${venueId}`);
       }
       if (!validAccountStateEvidence(leg.account_state, {
@@ -470,6 +472,7 @@ function buildCarryExecutionReadiness({ request, matrix, now_ms: nowMs, env }) {
         transaction_broadcast: item.transaction_broadcast === false && item.checks?.transaction_broadcast === false ? false : null,
         account_state_checked: item.checks?.account_state_checked === true,
         order_request_checked: item.checks?.order_request_checked === true || item.checks?.order_request_built === true,
+        mandatory_no_submit_checks_passed: item.checks?.mandatory_no_submit_checks_passed === true,
         verification_commitments: (Array.isArray(item.verification_commitments) ? item.verification_commitments : []).map(String),
         work_order_commitments: (Array.isArray(item.work_order_commitments) ? item.work_order_commitments : []).map(String),
         account_state_commitments: (Array.isArray(item.account_state_commitments) ? item.account_state_commitments : []).map(String),
@@ -496,6 +499,7 @@ function buildCarryExecutionReadiness({ request, matrix, now_ms: nowMs, env }) {
         transaction_broadcast: leg?.transaction_broadcast === false ? false : null,
         account_state_checked: leg?.account_state_checked === true,
         order_request_checked: leg?.order_request_checked === true,
+        mandatory_no_submit_checks_passed: leg?.mandatory_no_submit_checks_passed === true,
       })),
     })),
   };

@@ -7,6 +7,7 @@ import {
   evaluatePerpContractPairBasis,
   exactQuantityRecoveryAdapter,
   isCarryExecutionVenue,
+  mandatoryNoSubmitChecks,
   normalizeCarryRiskMandate,
   venueAdapterCapability,
 } from "@ghola/execution-core";
@@ -351,6 +352,8 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
       if (!validCommitment(item.verification_commitment)) failures.push(`venue_verification_unbound:${venueId}`);
       if (item.account_commitment !== body.venue_access?.[venueId]?.account_commitment) failures.push(`venue_account_binding_mismatch:${venueId}`);
       if (!validAccountStateEvidence(item.account_state, item)) failures.push(`venue_account_state_unbound:${venueId}`);
+      const mandatoryFailure = mandatoryCarryNoSubmitChecksFailure(venueId, item.checks);
+      if (mandatoryFailure) failures.push(`venue_no_submit_checks_${mandatoryFailure}:${venueId}`);
     }
     const first = items[0] || { venue_id: venueId };
     return {
@@ -372,6 +375,8 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
           && items.every((item) => item.checks?.account_state_checked === true),
         order_request_checked: items.length === venues.length - 1
           && items.every((item) => item.checks?.order_request_built === true || item.checks?.order_request_checked === true),
+        mandatory_no_submit_checks_passed: items.length === venues.length - 1
+          && items.every((item) => mandatoryCarryNoSubmitChecksFailure(venueId, item.checks) === null),
       },
     };
   });
@@ -402,6 +407,7 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
           transaction_broadcast: item.transaction_broadcast === false && item.checks?.transaction_broadcast === false ? false : null,
           account_state_checked: item.checks?.account_state_checked === true,
           order_request_checked: item.checks?.order_request_built === true || item.checks?.order_request_checked === true,
+          mandatory_no_submit_checks_passed: mandatoryCarryNoSubmitChecksFailure(item.venue_id, item.checks) === null,
         })),
       };
     }),
@@ -446,6 +452,16 @@ export async function preflightCarryExecutionMatrix({ body, ...dependencies }) {
   matrix.readiness = stored.readiness;
   matrix.readiness_evidence = stored.evidence;
   return matrix;
+}
+
+function mandatoryCarryNoSubmitChecksFailure(venueId, checks) {
+  const required = mandatoryNoSubmitChecks(venueId);
+  if (!required) return "unsupported";
+  if (!checks || typeof checks !== "object" || Array.isArray(checks)) return "incomplete";
+  if (checks.transaction_broadcast !== false) return "broadcast_unsafe";
+  if (required.some((check) => !Object.hasOwn(checks, check))) return "incomplete";
+  if (required.some((check) => checks[check] !== true)) return "failed";
+  return null;
 }
 
 function carryPairFailureCode(reason) {

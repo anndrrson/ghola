@@ -29,6 +29,7 @@ export declare function carryExecutionQualification(venueId: string): Readonly<{
 export declare function exactQuantityRecoveryAdapter(venueId: string): string | null;
 export declare function isExecutionVenue(venueId: string): boolean;
 export declare function isCarryExecutionVenue(venueId: string): boolean;
+export declare function mandatoryNoSubmitChecks(venueId: string): readonly string[] | null;
 export declare function supportsExactQuantityRecovery(venueId: string): boolean;
 export declare function venueAdapterCapability(venueId: string, capability: string): Readonly<Record<string, unknown>> | null;
 export declare function venuesWithAdapterCapability(capability: string, options?: { cohort?: string | null; product?: string | null; statuses?: readonly string[] }): readonly VenueId[];

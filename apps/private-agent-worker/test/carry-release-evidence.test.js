@@ -2081,6 +2081,7 @@ function releaseReadinessMatrix(request, checkedAtMs) {
       transaction_broadcast: false,
       account_state_checked: true,
       order_request_checked: true,
+      mandatory_no_submit_checks_passed: true,
     },
   }));
   const pairs = CARRY_EXECUTION_VENUES.flatMap((left, leftIndex) =>
@@ -2117,6 +2118,7 @@ function releaseReadinessMatrix(request, checkedAtMs) {
           transaction_broadcast: false,
           account_state_checked: true,
           order_request_checked: true,
+          mandatory_no_submit_checks_passed: true,
         };
       });
       return {
