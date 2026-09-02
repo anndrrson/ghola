@@ -29,6 +29,7 @@ export interface PerpsTurnkeySessionSnapshot {
 
 export type PerpsTurnkeyAttemptReconciliation =
   | { kind: "matched"; session: PerpsTurnkeySessionSnapshot }
+  | { kind: "cancelled" }
   | { kind: "timed_out" };
 
 interface PerpsTurnkeySessionReader {
@@ -82,6 +83,7 @@ export async function reconcileExactPerpsTurnkeySessionAttempt(input: {
   attemptId: string;
   readExactSession: () => Promise<PerpsTurnkeySessionSnapshot | null>;
   wait?: (durationMs: number) => Promise<void>;
+  isCancelled?: () => boolean;
   pollIntervalMs?: number;
   maxWaitMs?: number;
 }): Promise<PerpsTurnkeyAttemptReconciliation> {
@@ -92,12 +94,14 @@ export async function reconcileExactPerpsTurnkeySessionAttempt(input: {
     new Promise<void>((resolve) => setTimeout(resolve, durationMs)));
 
   for (let poll = 0; poll < pollCount; poll += 1) {
+    if (input.isCancelled?.()) return { kind: "cancelled" };
     let session: PerpsTurnkeySessionSnapshot | null = null;
     try {
       session = await input.readExactSession();
     } catch {
       // A transient storage/client read must not discard the owned attempt.
     }
+    if (input.isCancelled?.()) return { kind: "cancelled" };
     if (session?.sessionKey === input.attemptId) return { kind: "matched", session };
     if (poll + 1 < pollCount) await wait(pollIntervalMs);
   }

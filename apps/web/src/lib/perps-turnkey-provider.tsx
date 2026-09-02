@@ -510,13 +510,20 @@ function PerpsTurnkeySession({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let reconcileTimer: number | null = null;
+    let reconciliationInFlight = false;
+    let disposed = false;
     const release = () => {
+      if (disposed || reconciliationInFlight) return;
       if (reconcileTimer !== null) window.clearTimeout(reconcileTimer);
       reconcileTimer = window.setTimeout(() => {
+        reconcileTimer = null;
+        if (disposed || reconciliationInFlight) return;
+        reconciliationInFlight = true;
         void (async () => {
           let attemptId: string | null = null;
           let current: PerpsTurnkeyPendingBinding | null = null;
           try {
+            if (disposed) return;
             attemptId = localAttemptId.current;
             if (!attemptId) return;
             current = parsePerpsTurnkeyPendingBinding(
@@ -526,7 +533,9 @@ function PerpsTurnkeySession({ children }: { children: ReactNode }) {
             const reconciliation = await reconcileExactPerpsTurnkeySessionAttempt({
               attemptId,
               readExactSession: readExactTurnkeySession,
+              isCancelled: () => disposed,
             });
+            if (disposed || reconciliation.kind === "cancelled") return;
             if (reconciliation.kind === "matched") {
               if (!isExactLocallyOwnedPerpsTurnkeyPendingBinding({
                 storage: localStorage,
@@ -549,16 +558,19 @@ function PerpsTurnkeySession({ children }: { children: ReactNode }) {
             if (localAttemptId.current === attemptId) localAttemptId.current = null;
             setRequireFreshAuthentication(true);
           } catch {
+            if (disposed) return;
             setRequireFreshAuthentication(true);
             await syncResolvedTurnkeySession();
           } finally {
-            authModalLock.release();
+            reconciliationInFlight = false;
+            if (!disposed) authModalLock.release();
           }
         })().catch(() => {});
       }, 250);
     };
     window.addEventListener(TURNKEY_AUTH_MODAL_CLOSED_EVENT, release);
     return () => {
+      disposed = true;
       window.removeEventListener(TURNKEY_AUTH_MODAL_CLOSED_EVENT, release);
       if (reconcileTimer !== null) window.clearTimeout(reconcileTimer);
       authModalLock.release();
@@ -568,7 +580,6 @@ function PerpsTurnkeySession({ children }: { children: ReactNode }) {
     authModalLock,
     readExactTurnkeySession,
     syncResolvedTurnkeySession,
-    turnkey,
   ]);
 
   const boundary = useMemo(() => decidePerpsTurnkeyBoundary({

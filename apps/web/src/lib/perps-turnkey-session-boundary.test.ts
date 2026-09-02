@@ -366,6 +366,49 @@ describe("cross-tab Turnkey authentication", () => {
     expect(reads).toBe(3);
   });
 
+  it("stops reconciliation immediately when its component lifecycle is cancelled", async () => {
+    let cancelled = false;
+    let reads = 0;
+    let waits = 0;
+    await expect(reconcileExactPerpsTurnkeySessionAttempt({
+      attemptId: pending.attemptId,
+      readExactSession: async () => {
+        reads += 1;
+        return null;
+      },
+      wait: async () => {
+        waits += 1;
+        cancelled = true;
+      },
+      isCancelled: () => cancelled,
+      pollIntervalMs: 100,
+      maxWaitMs: 200,
+    })).resolves.toEqual({ kind: "cancelled" });
+    expect(reads).toBe(1);
+    expect(waits).toBe(1);
+  });
+
+  it("does not adopt a session that resolves after lifecycle cancellation", async () => {
+    let cancelled = false;
+    const exactSession = {
+      sessionKey: pending.attemptId,
+      sessionType: "SESSION_TYPE_READ_WRITE" as const,
+      userId: "turnkey-user-a",
+      organizationId: "org-a",
+      expiry: 2_000,
+      token: "header.payload.signature",
+      publicKey: "public-key-a",
+    };
+    await expect(reconcileExactPerpsTurnkeySessionAttempt({
+      attemptId: pending.attemptId,
+      readExactSession: async () => {
+        cancelled = true;
+        return exactSession;
+      },
+      isCancelled: () => cancelled,
+    })).resolves.toEqual({ kind: "cancelled" });
+  });
+
   it("keeps polling past a different session until the expected session appears", async () => {
     const differentSession = {
       sessionKey: "ghola-perps-00000000-0000-4000-8000-000000000002",
