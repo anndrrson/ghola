@@ -155,6 +155,7 @@ async function evidence({ readinessWorkOrderCommitment = null } = {}) {
     liquidation_distance_bps: null,
     liquidation_distance_verified: false,
     liquidation_distance_source: null,
+    ...flatInventory(),
   };
   const matrix = await preflightCarryExecutionMatrix({
     body: {
@@ -199,6 +200,7 @@ async function evidence({ readinessWorkOrderCommitment = null } = {}) {
       trading_enabled: true,
       position_count: 0,
       open_order_count: 0,
+      ...flatInventory(),
     }),
     readHyperliquidCarryMetrics: async () => account,
   });
@@ -270,6 +272,19 @@ function access(ownerCommitment, venueId) {
     vault_commitment: `vault_commitment_${venueId}`,
     policy_commitment: `policy_commitment_${venueId}`,
     encrypted_execution_vault: { ciphertext: "sealed" },
+  };
+}
+
+function flatInventory() {
+  return {
+    positions: [],
+    target_open_orders: [],
+    position_inventory_verified: true,
+    position_inventory_pagination_complete: true,
+    position_inventory_has_more: false,
+    open_order_inventory_verified: true,
+    open_order_inventory_pagination_complete: true,
+    open_order_inventory_has_more: false,
   };
 }
 
