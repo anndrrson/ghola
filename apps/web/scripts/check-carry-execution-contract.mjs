@@ -313,11 +313,16 @@ export function checkCarryExecutionContract(sources) {
   requireText("lighterRunner", "trades_with_http_info(**params)", "lighter_raw_trade_read_missing");
   requireText("lighterRunner", 'raw_data = getattr(response, "raw_data", None)', "lighter_raw_trade_evidence_missing");
   requireText("lighterRunner", "MAX_TRADE_PAGES = 8", "lighter_trade_pagination_bound_missing");
-  requireText("lighterRunner", "for _ in range(MAX_TRADE_PAGES):", "lighter_trade_pagination_loop_missing");
-  requireText("lighterRunner", "if next_cursor is None:", "lighter_trade_pagination_completion_missing");
-  requireText("lighterRunner", "if next_cursor == cursor or next_cursor in seen_cursors:", "lighter_trade_cursor_guard_missing");
-  requireText("lighterRunner", 'fail("lighter trade pagination exceeded the evidence bound")', "lighter_trade_pagination_fail_closed_missing");
-  requireText("lighterRunner", '"pagination_complete": True', "lighter_trade_pagination_proof_missing");
+  const lighterTradeReader = sourceSection(
+    "lighterRunner",
+    "async def exact_account_order_trades(",
+    "async def exact_account_order(",
+  );
+  requireSectionText(lighterTradeReader, "for _ in range(MAX_TRADE_PAGES):", "lighter_trade_pagination_loop_missing");
+  requireSectionText(lighterTradeReader, "if next_cursor is None:", "lighter_trade_pagination_completion_missing");
+  requireSectionText(lighterTradeReader, "if next_cursor == cursor or next_cursor in seen_cursors:", "lighter_trade_cursor_guard_missing");
+  requireSectionText(lighterTradeReader, 'fail("lighter trade pagination exceeded the evidence bound")', "lighter_trade_pagination_fail_closed_missing");
+  requireSectionText(lighterTradeReader, '"pagination_complete": True', "lighter_trade_pagination_proof_missing");
   requireText("lighterRunner", "if trade_id in seen_trade_ids:", "lighter_trade_duplicate_guard_missing");
   requireText("lighterRunner", 'if trade.get("type") != "trade":', "lighter_trade_type_binding_missing");
   requireText("lighterRunner", 'if exact_integer(trade.get("market_id"), "lighter trade market is invalid") != market_index:', "lighter_trade_market_binding_missing");
@@ -1279,7 +1284,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("readiness", "validVenueLiquidationBinding(value, positionCount)", "carry_readiness_liquidation_binding_missing");
   requireText("readiness", "validVenueLiquidationBinding(account, positionCount)", "carry_capital_plan_liquidation_validation_missing");
   requireText("readiness", "account?.liquidation_distance_bps === leg?.account_state?.liquidation_distance_bps", "carry_capital_plan_liquidation_binding_missing");
-  requireText("readiness", 'return `carry:account-state:${createHash("sha256").update(JSON.stringify(material)).digest("hex").slice(0, 40)}`;', "carry_account_state_commitment_width_missing");
+  requireText("readiness", 'return `carry:account-state:${createHash("sha256").update(stableJson(material)).digest("hex").slice(0, 40)}`;', "carry_account_state_commitment_width_missing");
   requireText("readinessTest", "binds verified liquidation provenance into no-submit account-state commitments", "carry_readiness_liquidation_commitment_test_missing");
   requireText("readinessTest", "rejects capital-plan liquidation evidence detached from committed venue account state", "carry_capital_plan_liquidation_binding_test_missing");
   requireText("releaseMaterial", "liquidation_distance_source: capitalByVenue.get(venueId)?.liquidation_distance_source ?? null", "carry_release_liquidation_provenance_missing");
@@ -3050,12 +3055,41 @@ export function checkCarryExecutionContract(sources) {
   requireCount("workerState", "async releaseCarryExposureReservations", 2, "carry_exposure_release_adapter_parity_missing");
   requireCount("workerState", "async releaseCarryExposureReservationsBeforeSubmit", 2, "carry_exposure_pre_submit_release_adapter_parity_missing");
   requireText("workerState", "exactFlatReservationRecord", "carry_exposure_exact_flat_release_missing");
-  requireText("workerState", 'evidence.transaction_broadcast !== false || evidence.gross_exposure_micro_usdc !== 0', "carry_exposure_zero_broadcast_gate_missing");
-  requireText("workerState", "evidence.open_order_count !== 0", "carry_exposure_zero_order_gate_missing");
-  requireText("workerState", "evidence.owner_commitment !== expected?.owner_commitment", "carry_exposure_owner_release_binding_missing");
-  requireText("workerState", "evidence.carry_position_id !== expected?.position_id", "carry_exposure_position_release_binding_missing");
-  requireText("workerState", "item.account_commitment === expected.account_commitments?.[venueId]", "carry_exposure_account_release_binding_missing");
-  requireText("workerState", "item.flat_zero_orders === true", "carry_exposure_venue_flat_release_missing");
+  const exactFlatReservation = sourceSection(
+    "workerState",
+    "function exactFlatReservationRecord(",
+    "function exactNoSubmitReservationRecord(",
+  );
+  requireSectionText(exactFlatReservation, 'record?.position?.status === "reconciled"', "carry_exposure_exact_flat_release_status_missing");
+  requireSectionText(exactFlatReservation, "hasExactCarryFlatReconciliation(", "carry_exposure_release_canonical_reconciliation_missing");
+  requireSectionText(exactFlatReservation, "record.final_reconciliation_evidence", "carry_exposure_release_durable_evidence_missing");
+  requireSectionText(exactFlatReservation, "expected?.venue_ids", "carry_exposure_release_venue_binding_missing");
+  requireSectionText(exactFlatReservation, "owner_commitment: expected?.owner_commitment", "carry_exposure_owner_release_binding_missing");
+  requireSectionText(exactFlatReservation, "carry_position_id: expected?.position_id", "carry_exposure_position_release_binding_missing");
+  requireSectionText(exactFlatReservation, "account_commitments: expected?.account_commitments", "carry_exposure_account_release_binding_missing");
+  requireSectionText(exactFlatReservation, "inventory_expectations: expected?.inventory_expectations", "carry_exposure_inventory_release_binding_missing");
+  const canonicalFlatReconciliation = sourceSection(
+    "reconciliation",
+    "export function assessCarryFlatReconciliation({",
+    "export function carryReconciliationCommitment(",
+  );
+  requireSectionText(canonicalFlatReconciliation, "if (evidence.transaction_broadcast !== false)", "carry_exposure_zero_broadcast_gate_missing");
+  requireSectionText(canonicalFlatReconciliation, "if (evidence.gross_exposure_micro_usdc !== 0)", "carry_exposure_zero_exposure_gate_missing");
+  requireSectionText(canonicalFlatReconciliation, "if (evidence.open_order_count !== 0)", "carry_exposure_zero_order_gate_missing");
+  requireSectionText(canonicalFlatReconciliation, "if (expectedOwnerCommitment && evidence.owner_commitment !== expectedOwnerCommitment)", "carry_exposure_owner_release_binding_missing");
+  requireSectionText(canonicalFlatReconciliation, "if (expectedPositionId && evidence.carry_position_id !== expectedPositionId)", "carry_exposure_position_release_binding_missing");
+  requireSectionText(canonicalFlatReconciliation, "if (expectedAccountCommitment && item.account_commitment !== expectedAccountCommitment)", "carry_exposure_account_release_binding_missing");
+  requireSectionText(canonicalFlatReconciliation, "if (item.flat_zero_orders !== true)", "carry_exposure_venue_flat_release_missing");
+  requireSectionText(canonicalFlatReconciliation, "if (item.position_count !== 0)", "carry_exposure_venue_position_zero_gate_missing");
+  requireSectionText(canonicalFlatReconciliation, "if (item.open_order_count !== 0)", "carry_exposure_zero_order_gate_missing");
+  requireSectionText(canonicalFlatReconciliation, "validCarryInventoryEvidence(inventory, {", "carry_exposure_inventory_validation_missing");
+  requireSectionText(canonicalFlatReconciliation, "inventory.position_inventory_verified !== true", "carry_exposure_position_inventory_gate_missing");
+  requireSectionText(canonicalFlatReconciliation, "inventory.open_order_inventory_verified !== true", "carry_exposure_order_inventory_gate_missing");
+  requireSectionText(canonicalFlatReconciliation, "inventory.target_positions.length !== 0", "carry_exposure_target_position_zero_gate_missing");
+  requireSectionText(canonicalFlatReconciliation, "inventory.target_open_orders.length !== 0", "carry_exposure_target_order_zero_gate_missing");
+  requireSectionText(canonicalFlatReconciliation, "item.position_identity_commitment !== positionIdentity", "carry_exposure_inventory_identity_binding_missing");
+  requireSectionText(canonicalFlatReconciliation, "validCarryInventoryExpectation(expectedInventory, {", "carry_exposure_inventory_expectation_missing");
+  requireSectionText(canonicalFlatReconciliation, "expectedInventory.position_identity_commitment !== item.position_identity_commitment", "carry_exposure_inventory_release_binding_missing");
   const postgresReservationClaim = sourceOccurrenceSection(
     "workerState",
     "async claimCarryExposureReservations(",
@@ -3226,6 +3260,11 @@ export function checkCarryExecutionContract(sources) {
   requireSectionText(carryReservationBinding, "carry:exposure:account:", "carry_exposure_account_key_missing");
   const carryReservationRelease = sourceSection("executor", "async function releaseCarryExposureReservation({", "async function reconciledCarryEntryMaterial({");
   requireSectionText(carryReservationRelease, "hasExactCarryFlatReconciliation(", "carry_exposure_release_binding_missing");
+  requireSectionCount(carryReservationRelease, "owner_commitment: durable.owner_commitment", 2, "carry_exposure_owner_release_binding_missing");
+  requireSectionText(carryReservationRelease, "carry_position_id: durable.position.position_id", "carry_exposure_position_release_binding_missing");
+  requireSectionText(carryReservationRelease, "position_id: durable.position.position_id", "carry_exposure_position_release_binding_missing");
+  requireSectionCount(carryReservationRelease, "account_commitments: accountCommitments", 2, "carry_exposure_account_release_binding_missing");
+  requireSectionCount(carryReservationRelease, "inventory_expectations: carryReconciliationInventoryExpectations(durable)", 2, "carry_exposure_inventory_release_binding_missing");
   requireSectionText(carryReservationRelease, "state.releaseCarryExposureReservations(", "carry_exposure_release_call_missing");
   requireOrdered(carryReservationRelease, "hasExactCarryFlatReconciliation(", "state.releaseCarryExposureReservations(", "carry_exposure_flat_before_release_missing");
   const carryPreSubmitReservationRelease = sourceSection(
