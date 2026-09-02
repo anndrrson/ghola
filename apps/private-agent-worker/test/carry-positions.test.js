@@ -20,7 +20,7 @@ import {
   runCarryMonitoringTick,
   verifyStoredCarryOpportunityBinding,
 } from "../src/execution/carry-positions.js";
-import { storeCarryTransferRouteEvidence } from "../src/execution/carry-transfer-routes.js";
+import { observeCarryTransferRoutes } from "../src/execution/carry-transfer-routes.js";
 import { authenticateCarryCreationOpportunity } from "../src/execution/carry-opportunity-authentication.js";
 import { carryAccountStateCommitment } from "../src/execution/carry-readiness.js";
 import {
@@ -1414,6 +1414,7 @@ test("worker monitoring refreshes owner-scoped collateral routes from exact acco
         automatic_transfer_permitted: false,
       };
     },
+    attestAccountState: routeAccountObservation,
     now_ms: NOW + 100,
   });
   assert.equal(tick.ok, true, JSON.stringify(tick));
@@ -1919,13 +1920,26 @@ test("compiles an owner-only portfolio capital plan from stored monitoring evide
   assert.equal(unrouted.plan.net_new_owner_capital_requested_micro_usdc, 10_000_003);
   assert.ok(unrouted.plan.transfer_route_failures.some((reason) => reason.startsWith("transfer_route_missing:")));
   assert.equal(unrouted.transfer_route_evidence_status, "unavailable");
-  await storeCarryTransferRouteEvidence({
+  const routeAccounts = ["lighter", "hyperliquid"].map((venueId) => {
+    const row = monitoringAccountState({ ...monitoringRunway(venueId), as_of_ms: NOW + 100 });
+    return { ...row, account_state_checked_at_ms: row.checked_at_ms };
+  });
+  await observeCarryTransferRoutes({
     state,
     owner_commitment: OWNER,
     worker_image_digest: ROUTE_ENV.PRIVATE_AGENT_IMAGE_DIGEST,
-    routes: [transferRoute()],
+    accounts: routeAccounts,
+    attest_account_state: routeAccountObservation,
+    probe_route: async () => ({
+      ...transferRoute(),
+      route_id: undefined,
+      source_adapter_id: undefined,
+      destination_adapter_id: undefined,
+      source_account_state_commitment: undefined,
+      destination_account_state_commitment: undefined,
+      quote_commitment: undefined,
+    }),
     checked_at_ms: NOW + 100,
-    expires_at_ms: NOW + 30_000,
     now_ms: NOW + 100,
   });
   const result = await compileStoredCarryPortfolioCapitalPlan({
@@ -2355,6 +2369,39 @@ function monitoringInventory(venueId, positionOpen = true) {
       }),
     }] : [],
     target_open_orders: [],
+  };
+}
+
+async function routeAccountObservation(account) {
+  return {
+    version: 1,
+    kind: "ghola_carry_route_account_observation",
+    venue_id: account.venue_id,
+    account_commitment: account.account_commitment,
+    observed_at_ms: account.account_state_checked_at_ms,
+    positions: account.inventory.target_positions,
+    open_orders: account.inventory.target_open_orders,
+    position_count: account.position_count,
+    open_order_count: account.open_order_count,
+    flat_zero_orders: account.flat_zero_orders,
+    liquidation_distance_bps: account.liquidation_distance_bps,
+    liquidation_distance_verified: account.liquidation_distance_verified,
+    liquidation_distance_source: account.liquidation_distance_source,
+    position_inventory_verified: true,
+    position_inventory_pagination_complete: true,
+    position_inventory_has_more: false,
+    open_order_inventory_verified: true,
+    open_order_inventory_pagination_complete: true,
+    open_order_inventory_has_more: false,
+    available_balance_micro_usdc: 100_000_000,
+    margin_balance_micro_usdc: 100_000_000,
+    initial_margin_micro_usdc: 10_000_000,
+    maintenance_margin_micro_usdc: 5_000_000,
+    withdrawal_quote: null,
+    read_only: true,
+    owner_approval_required: true,
+    fund_movement_authorized: false,
+    transaction_broadcast: false,
   };
 }
 

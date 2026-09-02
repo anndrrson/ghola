@@ -573,6 +573,7 @@ export async function refreshStoredCarryTransferRoutes({
   state,
   owner_commitment: ownerCommitment,
   probe_transfer_route: probeTransferRoute,
+  attest_account_state: attestAccountState,
   max_account_state_age_ms: maxAccountStateAgeMs = 30_000,
   env = process.env,
   now_ms: nowMs = Date.now(),
@@ -584,6 +585,19 @@ export async function refreshStoredCarryTransferRoutes({
   const unique = [...new Map(records.map((record) => [record.position?.position_id, record])).values()];
   const plans = unique.map((record) => record.latest_observation?.capital_action_plan);
   if (plans.some((plan) => !plan)) return denied("carry_portfolio_capital_evidence_incomplete");
+  const evidenceRows = unique.flatMap((record) =>
+    Array.isArray(record.latest_observation?.account_state_evidence)
+      ? record.latest_observation.account_state_evidence
+      : []);
+  const evidenceByBinding = new Map();
+  for (const row of evidenceRows) {
+    const key = `${row?.venue_id}:${row?.account_commitment}:${row?.account_state_commitment}:${row?.checked_at_ms}`;
+    const prior = evidenceByBinding.get(key);
+    if (prior && JSON.stringify(prior) !== JSON.stringify(row)) {
+      return denied("carry_portfolio_capital_account_state_evidence_ambiguous");
+    }
+    evidenceByBinding.set(key, row);
+  }
   const accounts = new Map();
   const venueAccessByAccount = new Map();
   try {
@@ -600,6 +614,11 @@ export async function refreshStoredCarryTransferRoutes({
     }
     for (const plan of plans) {
       for (const leg of plan.legs) {
+        const evidenceKey = `${leg.venue_id}:${leg.account_commitment}:${leg.account_state_commitment}:${plan.checked_at_ms}`;
+        const observedState = evidenceByBinding.get(evidenceKey);
+        if (!observedState) {
+          return denied("carry_portfolio_capital_account_state_evidence_ambiguous");
+        }
         const current = accounts.get(leg.account_commitment);
         if (current && current.venue_id !== leg.venue_id) {
           return denied("carry_portfolio_capital_account_venue_mismatch");
@@ -615,6 +634,13 @@ export async function refreshStoredCarryTransferRoutes({
             account_commitment: leg.account_commitment,
             account_state_commitment: leg.account_state_commitment,
             account_state_checked_at_ms: plan.checked_at_ms,
+            position_count: observedState.position_count,
+            open_order_count: observedState.open_order_count,
+            flat_zero_orders: observedState.flat_zero_orders,
+            liquidation_distance_bps: observedState.liquidation_distance_bps,
+            liquidation_distance_verified: observedState.liquidation_distance_verified,
+            liquidation_distance_source: observedState.liquidation_distance_source,
+            inventory: observedState.inventory,
           });
         }
       }
@@ -624,6 +650,7 @@ export async function refreshStoredCarryTransferRoutes({
       owner_commitment: ownerCommitment,
       worker_image_digest: runtimeCarryQualificationImageDigest(env),
       accounts: [...accounts.values()],
+      attest_account_state: attestAccountState,
       probe_route: probeTransferRoute,
       probe_context: Object.freeze({
         owner_commitment: ownerCommitment,
@@ -976,6 +1003,7 @@ export async function runCarryMonitoringTick({
   readHyperliquidCarryMetrics,
   readFundingSettlements,
   probeTransferRoute,
+  attestAccountState,
   preflight = preflightCarryPair,
   env = process.env,
   now_ms: nowMs = Date.now(),
@@ -1018,6 +1046,7 @@ export async function runCarryMonitoringTick({
         state,
         owner_commitment: ownerCommitment,
         probe_transfer_route: probeTransferRoute,
+        attest_account_state: attestAccountState,
         env,
         now_ms: nowMs,
       })))
@@ -1038,6 +1067,7 @@ export function startCarryMonitoringLoop({
   readHyperliquidCarryMetrics,
   readFundingSettlements,
   probeTransferRoute,
+  attestAccountState,
   preflight = preflightCarryPair,
   env = process.env,
   now = () => Date.now(),
@@ -1068,6 +1098,7 @@ export function startCarryMonitoringLoop({
       readHyperliquidCarryMetrics,
       readFundingSettlements,
       probeTransferRoute,
+      attestAccountState,
       preflight,
       now_ms: now(),
     }),

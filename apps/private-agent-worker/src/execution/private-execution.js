@@ -2119,6 +2119,109 @@ export async function readLighterCarryWithdrawalRoute({
   });
 }
 
+export async function readPrivateCarryRouteAccountState({
+  account,
+  probe_context: probeContext,
+  recipient,
+  now = () => Date.now(),
+  openExecutionVault = openAccountBoundExecutionVault,
+  openLighterCredential = openLighterExecutionCredential,
+  readHyperliquidState = readHyperliquidAccountSnapshot,
+  readAsterState = readAsterAccountState,
+  readLighterState = readLighterWithdrawalRouteQuote,
+}) {
+  const venueId = String(account?.venue_id || "");
+  const accountCommitment = String(account?.account_commitment || "");
+  const access = probeContext?.venue_access_by_account?.[accountCommitment];
+  if (probeContext?.owner_commitment !== access?.owner_commitment
+    || access?.status !== "ready"
+    || access?.account_commitment !== accountCommitment
+    || (access?.venue_id && access.venue_id !== venueId)
+    || !access?.encrypted_execution_vault) {
+    throw new PrivateExecutionError(`${venueId || "carry"} route account access is unavailable`, 409);
+  }
+  let state;
+  let withdrawalQuote = null;
+  if (venueId === "lighter") {
+    const credential = await openLighterCredential({
+      bundle: access.encrypted_execution_vault,
+      recipient,
+      accountCommitment,
+    });
+    const quote = await readLighterState({
+      credential,
+      account_state_commitment: account.account_state_commitment,
+      target_market: account.inventory?.target_market,
+      now,
+    });
+    state = quote.account_state;
+    const { account_state: _ignored, ...publicQuote } = quote;
+    withdrawalQuote = publicQuote;
+  } else {
+    const venue = venueId === "hyperliquid"
+      ? { expectedKind: "ghola_hyperliquid_execution_vault", allowedNetworks: ["mainnet", "testnet"] }
+      : venueId === "aster"
+        ? { expectedKind: "ghola_aster_execution_vault", allowedNetworks: ["mainnet"] }
+        : null;
+    if (!venue) throw new PrivateExecutionError("carry route account venue is unsupported", 400);
+    const opened = await openExecutionVault({
+      body: {
+        account_commitment: accountCommitment,
+        encrypted_execution_vault: access.encrypted_execution_vault,
+      },
+      recipient,
+      venueId,
+      expectedKind: venue.expectedKind,
+      allowedNetworks: venue.allowedNetworks,
+    });
+    state = venueId === "hyperliquid"
+      ? await readHyperliquidState({ credential: hyperliquidCredentialFromVault(opened.json) })
+      : await readAsterState({
+          credential: asterCredentialFromVault(opened.json),
+          symbol: asterRouteSymbol(account.inventory?.target_market),
+        });
+  }
+  const positions = state?.positions;
+  const openOrders = state?.target_open_orders ?? state?.open_orders;
+  return Object.freeze({
+    version: 1,
+    kind: "ghola_carry_route_account_observation",
+    venue_id: venueId,
+    account_commitment: accountCommitment,
+    observed_at_ms: positiveSafeInteger(now(), "carry route account observation time is invalid"),
+    position_count: state?.position_count,
+    open_order_count: state?.open_order_count,
+    flat_zero_orders: state?.flat_zero_orders === true,
+    liquidation_distance_bps: state?.liquidation_distance_bps ?? null,
+    liquidation_distance_verified: state?.liquidation_distance_verified === true,
+    liquidation_distance_source: state?.liquidation_distance_source ?? null,
+    positions,
+    open_orders: openOrders,
+    position_inventory_verified: state?.position_inventory_verified === true,
+    position_inventory_pagination_complete: state?.position_inventory_pagination_complete === true,
+    position_inventory_has_more: state?.position_inventory_has_more === true,
+    open_order_inventory_verified: state?.open_order_inventory_verified === true,
+    open_order_inventory_pagination_complete: state?.open_order_inventory_pagination_complete === true,
+    open_order_inventory_has_more: state?.open_order_inventory_has_more === true,
+    available_balance_micro_usdc: decimalNumberToMicroFloor(state?.available_balance),
+    margin_balance_micro_usdc: decimalNumberToMicroFloor(state?.margin_balance),
+    initial_margin_micro_usdc: decimalNumberToMicroFloor(state?.initial_margin),
+    maintenance_margin_micro_usdc: decimalNumberToMicroFloor(state?.maintenance_margin),
+    withdrawal_quote: withdrawalQuote,
+    read_only: true,
+    owner_approval_required: true,
+    fund_movement_authorized: false,
+    transaction_broadcast: false,
+  });
+}
+
+function asterRouteSymbol(value) {
+  const market = String(value || "").toUpperCase();
+  if (/^[A-Z0-9]{2,16}-PERP$/.test(market)) return `${market.slice(0, -5)}USDT`;
+  if (/^[A-Z0-9]{2,16}$/.test(market)) return market.endsWith("USDT") ? market : `${market}USDT`;
+  throw new PrivateExecutionError("carry route target market is invalid", 400);
+}
+
 export async function readPrivateCarryAccountCapacity({
   request,
   probe_context: probeContext,

@@ -98,6 +98,7 @@ import {
   readHyperliquidSnapshot,
   readLighterCarryWithdrawalRoute,
   readPrivateCarryAccountCapacity,
+  readPrivateCarryRouteAccountState,
   reconcileAsterOrder,
   reconcileCoinbaseOrder,
   reconcileHyperliquidOrder,
@@ -2763,6 +2764,12 @@ export function createPrivateAgentWorkerServer(options = {}) {
           fetchImpl: options.fetchImpl || fetch,
         })
       : undefined);
+  const attestCarryRouteAccountState = options.attestCarryRouteAccountState
+    || ((account, probeContext) => readPrivateCarryRouteAccountState({
+      account,
+      probe_context: probeContext,
+      recipient,
+    }));
   const carryTransferRouteReaders = options.carryTransferRouteReaders
     || (readCarryDepositQuote
       ? createCarryTransferVenueReaders({
@@ -2827,6 +2834,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
           readHyperliquidCarryMetrics,
           readFundingSettlements: readCarryFundingSettlements,
           probeTransferRoute: probeCarryTransferRoute,
+          attestAccountState: attestCarryRouteAccountState,
         });
   const carryExecutionLoop = !stateMutationReady
     ? null
@@ -3116,6 +3124,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
             owner_commitment: body.owner_commitment,
             venue_access: body.venue_access,
             readiness: matrix.readiness,
+            attest_account_state: attestCarryRouteAccountState,
             probe_route: probeCarryTransferRoute,
             now_ms: nowMs,
           }),

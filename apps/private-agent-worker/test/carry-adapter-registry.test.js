@@ -10,6 +10,7 @@ import {
   readCarryFundingSettlements,
   readLighterCarryWithdrawalRoute,
   readPrivateCarryAccountCapacity,
+  readPrivateCarryRouteAccountState,
   registeredCarryAdapterId,
 } from "../src/execution/private-execution.js";
 
@@ -28,6 +29,52 @@ test("worker Carry dispatch follows the execution-core capability registry", () 
       venueAdapterCapability(venueId, "exact_quantity_recovery").adapter_id,
     );
   }
+});
+
+test("Carry route state is a fresh owner-bound exact inventory read", async () => {
+  const ownerCommitment = "owner:carry:0001";
+  const accountCommitment = "account:hyperliquid:route:0001";
+  let reads = 0;
+  const observation = await readPrivateCarryRouteAccountState({
+    account: {
+      venue_id: "hyperliquid",
+      account_commitment: accountCommitment,
+      account_state_commitment: "carry:account-state:hyperliquid:route:0001",
+      inventory: { target_market: "BTC-PERP" },
+    },
+    probe_context: {
+      owner_commitment: ownerCommitment,
+      venue_access_by_account: { [accountCommitment]: {
+        status: "ready",
+        owner_commitment: ownerCommitment,
+        account_commitment: accountCommitment,
+        encrypted_execution_vault: { ciphertext: "sealed" },
+      } },
+    },
+    recipient: { recipient_id: "recipient:0001" },
+    now: () => 1_800_000_000_000,
+    openExecutionVault: async () => ({ json: {
+      kind: "ghola_hyperliquid_execution_vault",
+      network: "mainnet",
+      hyperliquid_account_address: `0x${"22".repeat(20)}`,
+      api_wallet_private_key: `0x${"11".repeat(32)}`,
+    } }),
+    readHyperliquidState: async () => {
+      reads += 1;
+      return {
+        positions: [], open_orders: [], position_count: 0, open_order_count: 0,
+        flat_zero_orders: true, position_inventory_verified: true,
+        position_inventory_pagination_complete: true, position_inventory_has_more: false,
+        open_order_inventory_verified: true, open_order_inventory_pagination_complete: true,
+        open_order_inventory_has_more: false, available_balance: 12, margin_balance: 12,
+        initial_margin: 0, maintenance_margin: 0,
+      };
+    },
+  });
+  assert.equal(reads, 1);
+  assert.equal(observation.position_count, 0);
+  assert.equal(observation.available_balance_micro_usdc, 12_000_000);
+  assert.equal(observation.transaction_broadcast, false);
 });
 
 test("Carry route capacity opens only the exact sealed venue account", async () => {

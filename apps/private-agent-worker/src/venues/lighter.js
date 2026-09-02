@@ -195,6 +195,7 @@ export async function verifyLighterCredential({ credential, runner = defaultRunn
 export async function readLighterWithdrawalRouteQuote({
   credential,
   account_state_commitment: accountStateCommitment,
+  target_market: targetMarket = null,
   runner = defaultRunner,
   now = () => Date.now(),
 }) {
@@ -213,6 +214,9 @@ export async function readLighterWithdrawalRouteQuote({
   }
   const minimum = decimalToMicro(result.minimum_withdrawal_usdc, "ceiling");
   const maximum = decimalToMicro(result.maximum_withdrawal_usdc, "floor");
+  const account = sanitizeAccount(result.account, targetMarket ? { symbol: targetMarket } : {}, {
+    expectedAccountIndex: credential.account_index,
+  });
   const delaySeconds = integer(result.withdrawal_delay_seconds, "lighter withdrawal delay is invalid");
   if (maximum < minimum || delaySeconds * 1_000 > 7 * 86_400_000) {
     throw new LighterExecutionError("lighter withdrawal route is unavailable", 422, "venue_rejected");
@@ -236,6 +240,7 @@ export async function readLighterWithdrawalRouteQuote({
     fee_upper_bound_micro_usdc: 0,
     latency_upper_bound_ms: delaySeconds * 1_000,
     as_of_ms: now(),
+    account_state: account,
   });
 }
 

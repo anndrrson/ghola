@@ -74,6 +74,11 @@ test("reads exact Lighter withdrawal capacity and delay without broadcasting", a
           minimum_withdrawal_usdc: "3.0000001",
           maximum_withdrawal_usdc: "50.1234569",
           withdrawal_delay_seconds: 1069,
+          account: detailedAccount({
+            available_balance: "50.1234569",
+            total_asset_value: "50.1234569",
+            collateral: "50.1234569",
+          }),
           transaction_broadcast: false,
         };
       },
@@ -84,6 +89,7 @@ test("reads exact Lighter withdrawal capacity and delay without broadcasting", a
     assert.equal(quote.latency_upper_bound_ms, 1_069_000);
     assert.equal(quote.fund_movement_authorized, false);
     assert.equal(quote.transaction_broadcast, false);
+    assert.equal(quote.account_state.position_inventory_verified, true);
   } finally {
     if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
     else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;

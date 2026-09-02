@@ -682,6 +682,7 @@ async def run(payload):
                 "minimum_withdrawal_usdc": str(getattr(usdc, "min_withdrawal_amount", "")),
                 "maximum_withdrawal_usdc": str(account.get("available_balance", "")),
                 "withdrawal_delay_seconds": delay_seconds,
+                "account": account,
                 "transaction_broadcast": False,
             }
         if action in ("verify", "submit"):

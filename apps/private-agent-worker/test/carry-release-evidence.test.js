@@ -20,7 +20,7 @@ import {
   carryAccountStateCommitment,
   storeCarryExecutionReadiness,
 } from "../src/execution/carry-readiness.js";
-import { storeCarryTransferRouteEvidence } from "../src/execution/carry-transfer-routes.js";
+import { observeCarryTransferRoutes } from "../src/execution/carry-transfer-routes.js";
 import { carryShadowFixture } from "./carry-shadow-fixture.js";
 import { finalizeCarryLifecycleEventRecord } from "../src/state/private-state.js";
 import {
@@ -1901,16 +1901,54 @@ async function stateFixture() {
     env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
   });
   assert.equal(readiness.ok, true, JSON.stringify(readiness));
-  await storeCarryTransferRouteEvidence({
+  await observeCarryTransferRoutes({
     state,
     owner_commitment: OWNER,
     worker_image_digest: IMAGE,
-    routes: releaseTransferRoutes(readiness.readiness),
+    accounts: readiness.readiness.capital_plan.map((plan) => ({
+      ...plan,
+      account_commitment: releaseVenueAccess(plan.venue_id).account_commitment,
+    })),
+    attest_account_state: releaseRouteAccountObservation,
+    probe_route: async (request) => releaseTransferRoutes(readiness.readiness).find((route) =>
+      route.from_venue_id === request.from_venue_id && route.to_venue_id === request.to_venue_id),
     checked_at_ms: NOW,
-    expires_at_ms: NOW + 30_000,
     now_ms: NOW,
   });
   return { state, record, attempts, receipts, lifecycle };
+}
+
+async function releaseRouteAccountObservation(account) {
+  return {
+    version: 1,
+    kind: "ghola_carry_route_account_observation",
+    venue_id: account.venue_id,
+    account_commitment: account.account_commitment,
+    observed_at_ms: NOW,
+    positions: account.inventory.target_positions,
+    open_orders: account.inventory.target_open_orders,
+    position_count: account.position_count,
+    open_order_count: account.open_order_count,
+    flat_zero_orders: account.flat_zero_orders,
+    liquidation_distance_bps: account.liquidation_distance_bps,
+    liquidation_distance_verified: account.liquidation_distance_verified,
+    liquidation_distance_source: account.liquidation_distance_source,
+    position_inventory_verified: true,
+    position_inventory_pagination_complete: true,
+    position_inventory_has_more: false,
+    open_order_inventory_verified: true,
+    open_order_inventory_pagination_complete: true,
+    open_order_inventory_has_more: false,
+    available_balance_micro_usdc: 11_000_000,
+    margin_balance_micro_usdc: 11_000_000,
+    initial_margin_micro_usdc: 0,
+    maintenance_margin_micro_usdc: 0,
+    withdrawal_quote: null,
+    read_only: true,
+    owner_approval_required: true,
+    fund_movement_authorized: false,
+    transaction_broadcast: false,
+  };
 }
 
 function releaseTransferRoutes(readiness) {

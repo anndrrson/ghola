@@ -994,6 +994,10 @@ export async function readHyperliquidAccountSnapshot({
       status: "ready_to_trade",
       account_source: accountSource,
       trading_enabled: true,
+      available_balance: 100,
+      margin_balance: 100,
+      initial_margin: 0,
+      maintenance_margin: 0,
       equity_bucket: "ready",
       position_count: 0,
       liquidation_distance_bps: null,
@@ -1392,6 +1396,7 @@ function hyperliquidAccountStateFromParts({
     ? availableSpotUsdc(spotState)
     : 0;
   const accountValue = Math.max(perpAccountValue, unifiedUsdc);
+  const margin = state?.marginSummary || state?.crossMarginSummary || {};
   const liquidation = hyperliquidLiquidationDistance(state);
   const positionInventory = sanitizePositions(state?.assetPositions);
   const openOrderInventory = sanitizeOpenOrders(openOrders);
@@ -1412,6 +1417,10 @@ function hyperliquidAccountStateFromParts({
     status,
     account_source: accountSource,
     trading_enabled: status === "ready_to_trade",
+    available_balance: decimalNumber(state?.withdrawable),
+    margin_balance: accountValue,
+    initial_margin: decimalNumber(margin.totalMarginUsed),
+    maintenance_margin: decimalNumber(state?.crossMaintenanceMarginUsed),
     equity_bucket: accountValue <= 0
       ? "none"
       : accountValue < 10

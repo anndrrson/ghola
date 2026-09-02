@@ -10,6 +10,7 @@ import {
   storeCarryTransferRouteEvidence,
   verifyCarryTransferRouteEvidence,
 } from "../src/execution/carry-transfer-routes.js";
+import { buildCarryInventoryEvidence } from "../src/execution/carry-inventory.js";
 import { createWorkerState } from "../src/state/private-state.js";
 
 const NOW = 1_800_000_000_000;
@@ -19,11 +20,16 @@ test("observes owner-bound capital routes before any position is opened", async 
   const dir = mkdtempSync(join(tmpdir(), "ghola-preopen-transfer-routes-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const contexts = [];
+  const attestations = [];
   const result = await observePreopenCarryTransferRoutes({
     state: createWorkerState(dir),
     owner_commitment: OWNER,
     venue_access: preopenAccess(),
     readiness: preopenReadiness(),
+    attest_account_state: async (account, context) => {
+      attestations.push({ account, context });
+      return observeAccount(account, context);
+    },
     env: { PRIVATE_AGENT_IMAGE_DIGEST: `sha256:${"9".repeat(64)}` },
     probe_route: async (request, context) => {
       contexts.push(context);
@@ -40,11 +46,42 @@ test("observes owner-bound capital routes before any position is opened", async 
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(result.observed_route_count, 6);
   assert.equal(result.available_route_count, 6);
+  assert.equal(attestations.length, 3);
+  assert.equal(result.evidence.account_state_attestations.length, 3);
+  assert.equal(result.evidence.routes.every((route) =>
+    route.source_account_state_attestation_commitment
+    && route.destination_account_state_attestation_commitment), true);
   assert.equal(result.transaction_broadcast, false);
   assert.equal(result.fund_movement_authorized, false);
   assert.equal(result.automatic_transfer_permitted, false);
   assert.equal(contexts.every((context) => context.owner_commitment === OWNER), true);
   assert.equal(contexts.every((context) => Object.keys(context.venue_access_by_account).length === 2), true);
+});
+
+test("fails closed on fresh account position, order, or liquidation drift", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-transfer-route-drift-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const mutations = [
+    { position_count: 1, positions: [{ market: "BTC-PERP", size: "1" }] },
+    { open_order_count: 1, open_orders: [{ market: "BTC-PERP", order_id: "1" }] },
+    {
+      liquidation_distance_bps: 1_000,
+      liquidation_distance_verified: true,
+      liquidation_distance_source: "venue_account_state",
+    },
+  ];
+  for (const mutation of mutations) {
+    await assert.rejects(() => observeCarryTransferRoutes({
+      state: createWorkerState(dir),
+      owner_commitment: OWNER,
+      worker_image_digest: `sha256:${"7".repeat(64)}`,
+      accounts: observerAccounts(),
+      attest_account_state: (account, context) => observeAccount(account, context, mutation),
+      probe_route: async () => observedQuote(),
+      checked_at_ms: NOW,
+      now_ms: NOW,
+    }), /carry_transfer_route_account_(state_drift|observation_inventory_ambiguous)/);
+  }
 });
 
 test("fails closed when pre-open venue access is ambiguous", async (t) => {
@@ -57,6 +94,7 @@ test("fails closed when pre-open venue access is ambiguous", async (t) => {
     owner_commitment: OWNER,
     venue_access: venueAccess,
     readiness: preopenReadiness(),
+    attest_account_state: observeAccount,
     env: { PRIVATE_AGENT_IMAGE_DIGEST: `sha256:${"9".repeat(64)}` },
     probe_route: async () => observedQuote(),
     now_ms: NOW,
@@ -76,6 +114,7 @@ test("observes all-in collateral routes internally without authorizing movement"
     owner_commitment: OWNER,
     worker_image_digest: `sha256:${"d".repeat(64)}`,
     accounts: observerAccounts(),
+    attest_account_state: observeAccount,
     probe_route: async (request) => {
       requests.push(request);
       return observedQuote();
@@ -102,6 +141,7 @@ test("keeps incomplete or missing route probes unavailable", async (t) => {
     owner_commitment: OWNER,
     worker_image_digest: `sha256:${"e".repeat(64)}`,
     accounts: observerAccounts(),
+    attest_account_state: observeAccount,
     probe_route: async () => observedQuote({ all_in_fee_verified: false }),
     checked_at_ms: NOW,
     now_ms: NOW,
@@ -119,6 +159,7 @@ test("keeps incomplete or missing route probes unavailable", async (t) => {
       ...account,
       account_state_checked_at_ms: NOW - 30_001,
     })),
+    attest_account_state: observeAccount,
     checked_at_ms: NOW,
     now_ms: NOW,
   }), /carry_transfer_route_account_state_stale/);
@@ -129,18 +170,14 @@ test("requires explicit USDC-USDT conversion economics for Aster routes", async 
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const accounts = [
     observerAccounts()[1],
-    {
-      venue_id: "aster",
-      account_commitment: "account:aster:0001",
-      account_state_commitment: "carry:account-state:aster:0001",
-      account_state_checked_at_ms: NOW,
-    },
+    stateAccount("aster", "account:aster:0001", "carry:account-state:aster:0001"),
   ];
   const incomplete = await observeCarryTransferRoutes({
     state: createWorkerState(dir),
     owner_commitment: OWNER,
     worker_image_digest: `sha256:${"f".repeat(64)}`,
     accounts,
+    attest_account_state: observeAccount,
     probe_route: async (request) => observedQuote({
       source_collateral_asset: request.source_collateral_asset,
       destination_collateral_asset: request.destination_collateral_asset,
@@ -159,6 +196,7 @@ test("requires explicit USDC-USDT conversion economics for Aster routes", async 
     owner_commitment: OWNER,
     worker_image_digest: `sha256:${"f".repeat(64)}`,
     accounts,
+    attest_account_state: observeAccount,
     probe_route: async (request) => observedQuote({
       source_collateral_asset: request.source_collateral_asset,
       destination_collateral_asset: request.destination_collateral_asset,
@@ -177,6 +215,7 @@ test("requires explicit USDC-USDT conversion economics for Aster routes", async 
     owner_commitment: OWNER,
     worker_image_digest: `sha256:${"f".repeat(64)}`,
     accounts,
+    attest_account_state: observeAccount,
     probe_route: async (request) => observedQuote({
       source_collateral_asset: request.source_collateral_asset,
       destination_collateral_asset: request.destination_collateral_asset,
@@ -199,15 +238,16 @@ test("stores only commitment-backed worker transfer-route evidence", async (t) =
   const dir = mkdtempSync(join(tmpdir(), "ghola-transfer-routes-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const state = createWorkerState(dir);
-  const evidence = await storeCarryTransferRouteEvidence({
+  const evidence = (await observeCarryTransferRoutes({
     state,
     owner_commitment: OWNER,
     worker_image_digest: `sha256:${"a".repeat(64)}`,
-    routes: [route()],
+    accounts: observerAccounts(),
+    attest_account_state: observeAccount,
+    probe_route: async () => observedQuote(),
     checked_at_ms: NOW,
-    expires_at_ms: NOW + 30_000,
     now_ms: NOW,
-  });
+  })).evidence;
   assert.match(evidence.evidence_commitment, /^carry:transfer-routes:evidence:/);
   assert.equal(evidence.transaction_broadcast, false);
   assert.equal(evidence.fund_movement_authorized, false);
@@ -220,7 +260,7 @@ test("stores only commitment-backed worker transfer-route evidence", async (t) =
     expected_worker_image_digest: evidence.worker_image_digest,
   });
   assert.equal(loaded.ok, true, JSON.stringify(loaded));
-  assert.equal(loaded.routes.length, 1);
+  assert.equal(loaded.routes.length, 2);
   assert.equal(loaded.routes[0].evidence_source, "attested_worker");
   assert.equal(loaded.routes[0].evidence_commitment, evidence.evidence_commitment);
   assert.equal(loaded.routes[0].worker_image_digest, evidence.worker_image_digest);
@@ -230,15 +270,16 @@ test("rejects tampered, stale, and registry-mismatched transfer routes", async (
   const dir = mkdtempSync(join(tmpdir(), "ghola-transfer-routes-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const state = createWorkerState(dir);
-  const evidence = await storeCarryTransferRouteEvidence({
+  const evidence = (await observeCarryTransferRoutes({
     state,
     owner_commitment: OWNER,
     worker_image_digest: `sha256:${"b".repeat(64)}`,
-    routes: [route()],
+    accounts: observerAccounts(),
+    attest_account_state: observeAccount,
+    probe_route: async () => observedQuote(),
     checked_at_ms: NOW,
-    expires_at_ms: NOW + 30_000,
     now_ms: NOW,
-  });
+  })).evidence;
   assert.deepEqual(verifyCarryTransferRouteEvidence({
     ...evidence,
     routes: [{
@@ -274,7 +315,10 @@ test("rejects tampered, stale, and registry-mismatched transfer routes", async (
     state,
     owner_commitment: OWNER,
     worker_image_digest: `sha256:${"c".repeat(64)}`,
-    routes: [route({ source_adapter_id: "spoofed_adapter" })],
+    routes: evidence.routes.map((item, index) => index === 0
+      ? { ...item, source_adapter_id: "spoofed_adapter" }
+      : item),
+    account_state_attestations: evidence.account_state_attestations,
     checked_at_ms: NOW,
     expires_at_ms: NOW + 30_000,
     now_ms: NOW,
@@ -322,20 +366,69 @@ function route(overrides = {}) {
 }
 
 function observerAccounts() {
-  return [
-    {
-      venue_id: "lighter",
-      account_commitment: "account:lighter:0001",
-      account_state_commitment: "carry:account-state:lighter:0001",
-      account_state_checked_at_ms: NOW,
-    },
-    {
-      venue_id: "hyperliquid",
-      account_commitment: "account:hyperliquid:0001",
-      account_state_commitment: "carry:account-state:hyperliquid:0001",
-      account_state_checked_at_ms: NOW,
-    },
-  ];
+  return ["lighter", "hyperliquid"].map((venueId) => stateAccount(
+    venueId,
+    `account:${venueId}:0001`,
+    `carry:account-state:${venueId}:0001`,
+  ));
+}
+
+function stateAccount(venueId, accountCommitment, stateCommitment) {
+  return {
+    venue_id: venueId,
+    account_commitment: accountCommitment,
+    account_state_commitment: stateCommitment,
+    account_state_checked_at_ms: NOW,
+    position_count: 0,
+    open_order_count: 0,
+    flat_zero_orders: true,
+    liquidation_distance_bps: null,
+    liquidation_distance_verified: false,
+    liquidation_distance_source: null,
+    inventory: buildCarryInventoryEvidence({
+      venue_id: venueId,
+      account_commitment: accountCommitment,
+      target_market: "BTC-PERP",
+      positions: [],
+      open_orders: [],
+      position_inventory_verified: true,
+      open_order_inventory_verified: true,
+    }),
+  };
+}
+
+async function observeAccount(account, _context, overrides = {}) {
+  return {
+    version: 1,
+    kind: "ghola_carry_route_account_observation",
+    venue_id: account.venue_id,
+    account_commitment: account.account_commitment,
+    observed_at_ms: NOW,
+    positions: account.inventory.target_positions,
+    open_orders: account.inventory.target_open_orders,
+    position_count: account.position_count,
+    open_order_count: account.open_order_count,
+    flat_zero_orders: account.flat_zero_orders,
+    liquidation_distance_bps: account.liquidation_distance_bps,
+    liquidation_distance_verified: account.liquidation_distance_verified,
+    liquidation_distance_source: account.liquidation_distance_source,
+    position_inventory_verified: true,
+    position_inventory_pagination_complete: true,
+    position_inventory_has_more: false,
+    open_order_inventory_verified: true,
+    open_order_inventory_pagination_complete: true,
+    open_order_inventory_has_more: false,
+    available_balance_micro_usdc: 100_000_000,
+    margin_balance_micro_usdc: 100_000_000,
+    initial_margin_micro_usdc: 0,
+    maintenance_margin_micro_usdc: 0,
+    withdrawal_quote: null,
+    read_only: true,
+    owner_approval_required: true,
+    fund_movement_authorized: false,
+    transaction_broadcast: false,
+    ...overrides,
+  };
 }
 
 function observedQuote(overrides = {}) {
@@ -383,10 +476,10 @@ function preopenReadiness() {
     image_digest: `sha256:${"9".repeat(64)}`,
     registry_venue_ids: ["hyperliquid", "lighter", "aster"],
     checked_at_ms: NOW,
-    capital_plan: ["hyperliquid", "lighter", "aster"].map((venueId) => ({
-      venue_id: venueId,
-      account_state_commitment: `carry:account-state:${venueId}:preopen`,
-      account_state_checked_at_ms: NOW,
-    })),
+    capital_plan: ["hyperliquid", "lighter", "aster"].map((venueId) => stateAccount(
+      venueId,
+      `account:${venueId}:preopen`,
+      `carry:account-state:${venueId}:preopen`,
+    )),
   };
 }

@@ -8,7 +8,7 @@ export function createCarryTransferVenueReaders({
   fetchImpl = fetch,
   now = () => Date.now(),
 }) {
-  if (typeof readAccountCapacity !== "function" || typeof readDepositQuote !== "function") {
+  if (typeof readDepositQuote !== "function") {
     fail("carry_transfer_venue_reader_dependency_missing");
   }
   const deposit = (venueId) => async (request, probeContext) => {
@@ -28,10 +28,13 @@ export function createCarryTransferVenueReaders({
     }),
     lighter: Object.freeze({
       read_withdrawal_quote: async (request, probeContext) => {
-        if (typeof readLighterWithdrawalQuote !== "function") {
-          fail("carry_transfer_lighter_withdrawal_reader_missing");
-        }
-        return readLighterWithdrawalQuote(request, probeContext);
+        const observed = observedAccountState(request, probeContext, "lighter", "USDC", now());
+        if (!observed.withdrawal_quote) fail("carry_transfer_lighter_withdrawal_reader_missing");
+        return Object.freeze({
+          ...observed.withdrawal_quote,
+          account_state_commitment: request.source_account_state_commitment,
+          as_of_ms: Math.min(observed.observed_at_ms, observed.withdrawal_quote.as_of_ms),
+        });
       },
       read_deposit_quote: deposit("lighter"),
     }),
@@ -55,11 +58,7 @@ function policyWithdrawalReader({ venueId, asset, readAccountCapacity, policy, n
       collateral_asset: asset,
       checked_at_ms: observedAtMs,
     }), venueId, asset, observedAtMs);
-    const capacity = await accountCapacity(await readAccountCapacity(Object.freeze({
-      ...request,
-      venue_id: venueId,
-      collateral_asset: asset,
-    }), probeContext), request, venueId, asset, observedAtMs);
+    const capacity = accountCapacityFromObservation(request, probeContext, venueId, asset, observedAtMs);
     return withdrawalComponent({
       venueId,
       asset,
@@ -80,12 +79,7 @@ function asterWithdrawalReader({ readAccountCapacity, policy, fetchImpl, now }) 
       collateral_asset: "USDT",
       checked_at_ms: observedAtMs,
     }), "aster", "USDT", observedAtMs);
-    const [capacityValue, response] = await Promise.all([
-      readAccountCapacity(Object.freeze({
-        ...request,
-        venue_id: "aster",
-        collateral_asset: "USDT",
-      }), probeContext),
+    const [response] = await Promise.all([
       fetchImpl(ASTER_WITHDRAWAL_FEE_URL, {
         method: "GET",
         headers: { accept: "application/json" },
@@ -98,7 +92,7 @@ function asterWithdrawalReader({ readAccountCapacity, policy, fetchImpl, now }) 
     if (liveFee > normalizedPolicy.fee_ceiling_micro_usdc) {
       fail("carry_transfer_aster_fee_above_policy");
     }
-    const capacity = accountCapacity(capacityValue, request, "aster", "USDT", observedAtMs);
+    const capacity = accountCapacityFromObservation(request, probeContext, "aster", "USDT", observedAtMs);
     return withdrawalComponent({
       venueId: "aster",
       asset: "USDT",
@@ -164,6 +158,34 @@ function accountCapacity(value, request, venueId, asset, nowMs) {
     maximum_transfer_micro_usdc: maximum,
     as_of_ms: asOfMs,
   });
+}
+
+function accountCapacityFromObservation(request, probeContext, venueId, asset, nowMs) {
+  const observed = observedAccountState(request, probeContext, venueId, asset, nowMs);
+  return Object.freeze({
+    minimum_transfer_micro_usdc: 0,
+    maximum_transfer_micro_usdc: observed.available_balance_micro_usdc,
+    as_of_ms: observed.observed_at_ms,
+  });
+}
+
+function observedAccountState(request, probeContext, venueId, asset, nowMs) {
+  const value = probeContext?.observed_account_state_by_account?.[request.from_account_commitment];
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || value.venue_id !== venueId
+    || value.account_commitment !== request.from_account_commitment
+    || value.expected_account_state_commitment !== request.source_account_state_commitment
+    || value.attestation_commitment !== request.source_account_state_attestation_commitment
+    || value.read_only !== true
+    || value.owner_approval_required !== true
+    || value.fund_movement_authorized !== false
+    || value.transaction_broadcast !== false) {
+    fail("carry_transfer_account_observation_invalid");
+  }
+  const asOfMs = positiveInteger(value.observed_at_ms, "carry_transfer_account_observation_time_invalid");
+  if (asOfMs > nowMs + 5_000 || nowMs - asOfMs > 30_000) fail("carry_transfer_account_observation_stale");
+  nonnegativeInteger(value.available_balance_micro_usdc, "carry_transfer_account_observation_capacity_invalid");
+  return value;
 }
 
 function withdrawalComponent({ venueId, asset, request, capacity, feeMicroUsdc, latencyMs, asOfMs }) {

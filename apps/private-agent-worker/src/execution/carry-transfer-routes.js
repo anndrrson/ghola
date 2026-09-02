@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { CARRY_EXECUTION_VENUES, venueAdapterCapability } from "@ghola/execution-core";
+import { buildCarryInventoryEvidence, validCarryInventoryEvidence } from "./carry-inventory.js";
 
 const OWNER = /^[A-Za-z0-9_.:-]{8,240}$/;
 const COMMITMENT = /^[A-Za-z0-9_.:-]{8,240}$/;
@@ -12,6 +13,7 @@ export async function observePreopenCarryTransferRoutes({
   owner_commitment: ownerCommitment,
   venue_access: venueAccess,
   readiness,
+  attest_account_state: attestAccountState,
   probe_route: probeRoute,
   env = process.env,
   now_ms: nowMs = Date.now(),
@@ -62,6 +64,13 @@ export async function observePreopenCarryTransferRoutes({
           `carry_preopen_route_state_invalid:${venueId}`,
         ),
         account_state_checked_at_ms: plan.account_state_checked_at_ms,
+        position_count: plan.position_count,
+        open_order_count: plan.open_order_count,
+        flat_zero_orders: plan.flat_zero_orders,
+        liquidation_distance_bps: plan.liquidation_distance_bps,
+        liquidation_distance_verified: plan.liquidation_distance_verified,
+        liquidation_distance_source: plan.liquidation_distance_source,
+        inventory: plan.inventory,
       });
       accessByAccount.set(accountCommitment, Object.freeze({ ...access, venue_id: venueId }));
     }
@@ -70,6 +79,7 @@ export async function observePreopenCarryTransferRoutes({
       owner_commitment: owner,
       worker_image_digest: workerImageDigest,
       accounts,
+      attest_account_state: attestAccountState,
       probe_route: probeRoute,
       probe_context: Object.freeze({
         owner_commitment: owner,
@@ -94,6 +104,7 @@ export async function observeCarryTransferRoutes({
   owner_commitment: ownerCommitment,
   worker_image_digest: workerImageDigest,
   accounts,
+  attest_account_state: attestAccountState,
   probe_route: probeRoute,
   probe_context: probeContext,
   checked_at_ms: checkedAtMs = Date.now(),
@@ -102,18 +113,34 @@ export async function observeCarryTransferRoutes({
   now_ms: nowMs = checkedAtMs,
 }) {
   const normalizedAccounts = normalizeObserverAccounts(accounts, checkedAtMs, maxAccountStateAgeMs);
+  if (typeof attestAccountState !== "function") fail("carry_transfer_route_account_attester_unavailable");
+  const accountStateAttestations = await Promise.all(normalizedAccounts.map(async (account) =>
+    normalizeObservedAccountState(
+      await attestAccountState(account, accountScopedProbeContext(probeContext, account)),
+      account,
+      checkedAtMs,
+    )
+  ));
+  const attestationByAccount = new Map(accountStateAttestations
+    .map((attestation) => [attestation.account_commitment, attestation]));
   const routes = [];
   const failures = [];
   for (const source of normalizedAccounts) {
     for (const destination of normalizedAccounts) {
       if (source.venue_id === destination.venue_id
         || source.account_commitment === destination.account_commitment) continue;
-      const request = observerRequest(source, destination, checkedAtMs);
+      const request = observerRequest(
+        source,
+        destination,
+        attestationByAccount.get(source.account_commitment),
+        attestationByAccount.get(destination.account_commitment),
+        checkedAtMs,
+      );
       let quote;
       try {
         if (typeof probeRoute !== "function") fail("carry_transfer_route_probe_unavailable");
         quote = normalizeObservedQuote(
-          await probeRoute(request, routeScopedProbeContext(probeContext, request)),
+          await probeRoute(request, routeScopedProbeContext(probeContext, request, attestationByAccount)),
           request,
           checkedAtMs,
         );
@@ -133,6 +160,7 @@ export async function observeCarryTransferRoutes({
     state,
     owner_commitment: ownerCommitment,
     worker_image_digest: workerImageDigest,
+    account_state_attestations: accountStateAttestations,
     routes,
     checked_at_ms: checkedAtMs,
     expires_at_ms: expiresAtMs,
@@ -154,6 +182,7 @@ export async function storeCarryTransferRouteEvidence({
   state,
   owner_commitment: ownerCommitment,
   worker_image_digest: workerImageDigest,
+  account_state_attestations: accountStateAttestations,
   routes,
   checked_at_ms: checkedAtMs,
   expires_at_ms: expiresAtMs,
@@ -167,6 +196,7 @@ export async function storeCarryTransferRouteEvidence({
     kind: "ghola_carry_transfer_route_evidence",
     owner_commitment: ownerCommitment,
     worker_image_digest: workerImageDigest,
+    account_state_attestations: accountStateAttestations,
     routes,
     checked_at_ms: checkedAtMs,
     expires_at_ms: expiresAtMs,
@@ -248,17 +278,34 @@ function normalizeEvidence(value, { requireCommitment }) {
     || value.automatic_transfer_permitted !== false) {
     fail("carry_transfer_route_authority_boundary");
   }
+  const accountStateAttestations = normalizeAccountStateAttestations(value.account_state_attestations, checkedAtMs);
   if (!Array.isArray(value.routes) || value.routes.length > 1_000) fail("carry_transfer_routes_invalid");
   const routes = value.routes.map((route) => normalizeRoute(route, checkedAtMs));
   if (new Set(routes.map((route) => route.route_id)).size !== routes.length) {
     fail("carry_transfer_route_duplicate");
   }
   routes.sort((left, right) => left.route_id.localeCompare(right.route_id));
+  const attestationByAccount = new Map(accountStateAttestations
+    .map((attestation) => [attestation.account_commitment, attestation]));
+  for (const route of routes) {
+    const source = attestationByAccount.get(route.from_account_commitment);
+    const destination = attestationByAccount.get(route.to_account_commitment);
+    if (!source || !destination
+      || source.venue_id !== route.from_venue_id
+      || destination.venue_id !== route.to_venue_id
+      || source.expected_account_state_commitment !== route.source_account_state_commitment
+      || destination.expected_account_state_commitment !== route.destination_account_state_commitment
+      || source.attestation_commitment !== route.source_account_state_attestation_commitment
+      || destination.attestation_commitment !== route.destination_account_state_attestation_commitment) {
+      fail("carry_transfer_route_account_attestation_binding_invalid");
+    }
+  }
   const evidence = {
     version: 1,
     kind: "ghola_carry_transfer_route_evidence",
     owner_commitment: ownerCommitment,
     worker_image_digest: workerImageDigest,
+    account_state_attestations: Object.freeze(accountStateAttestations),
     routes: Object.freeze(routes),
     checked_at_ms: checkedAtMs,
     expires_at_ms: expiresAtMs,
@@ -340,6 +387,14 @@ function normalizeRoute(value, checkedAtMs) {
     destination_adapter_id: destinationAdapterId,
     source_account_state_commitment: requiredCommitment(value.source_account_state_commitment, "carry_transfer_route_source_state_invalid"),
     destination_account_state_commitment: requiredCommitment(value.destination_account_state_commitment, "carry_transfer_route_destination_state_invalid"),
+    source_account_state_attestation_commitment: requiredCommitment(
+      value.source_account_state_attestation_commitment,
+      "carry_transfer_route_source_attestation_invalid",
+    ),
+    destination_account_state_attestation_commitment: requiredCommitment(
+      value.destination_account_state_attestation_commitment,
+      "carry_transfer_route_destination_attestation_invalid",
+    ),
     quote_commitment: requiredCommitment(value.quote_commitment, "carry_transfer_route_quote_invalid"),
     valuation_asset: "USD",
     source_collateral_asset: sourceCollateralAsset,
@@ -399,6 +454,13 @@ function normalizeObserverAccounts(value, checkedAtMs, maxAccountStateAgeMs) {
         "carry_transfer_route_account_state_invalid",
       ),
       account_state_checked_at_ms: stateCheckedAtMs,
+      position_count: nonnegativeInteger(account.position_count, "carry_transfer_route_account_position_count_invalid"),
+      open_order_count: nonnegativeInteger(account.open_order_count, "carry_transfer_route_account_open_order_count_invalid"),
+      flat_zero_orders: account.flat_zero_orders === true,
+      liquidation_distance_bps: account.liquidation_distance_bps ?? null,
+      liquidation_distance_verified: account.liquidation_distance_verified === true,
+      liquidation_distance_source: account.liquidation_distance_source ?? null,
+      inventory: normalizedExpectedInventory(account, venueId),
       observer_adapter_id: capability.adapter_id,
       collateral_asset: collateralAsset(capability.collateral_asset),
     });
@@ -410,7 +472,8 @@ function normalizeObserverAccounts(value, checkedAtMs, maxAccountStateAgeMs) {
     || left.account_commitment.localeCompare(right.account_commitment));
 }
 
-function observerRequest(source, destination, checkedAtMs) {
+function observerRequest(source, destination, sourceAttestation, destinationAttestation, checkedAtMs) {
+  if (!sourceAttestation || !destinationAttestation) fail("carry_transfer_route_account_attestation_missing");
   const lineage = `${source.account_commitment}:${destination.account_commitment}`;
   return Object.freeze({
     version: 1,
@@ -423,6 +486,8 @@ function observerRequest(source, destination, checkedAtMs) {
     destination_adapter_id: destination.observer_adapter_id,
     source_account_state_commitment: source.account_state_commitment,
     destination_account_state_commitment: destination.account_state_commitment,
+    source_account_state_attestation_commitment: sourceAttestation.attestation_commitment,
+    destination_account_state_attestation_commitment: destinationAttestation.attestation_commitment,
     valuation_asset: "USD",
     source_collateral_asset: source.collateral_asset,
     destination_collateral_asset: destination.collateral_asset,
@@ -435,7 +500,7 @@ function observerRequest(source, destination, checkedAtMs) {
   });
 }
 
-function routeScopedProbeContext(value, request) {
+function routeScopedProbeContext(value, request, attestationByAccount) {
   if (!value) return undefined;
   const source = value.venue_access_by_account?.[request.from_account_commitment];
   const destination = value.venue_access_by_account?.[request.to_account_commitment];
@@ -445,7 +510,258 @@ function routeScopedProbeContext(value, request) {
       ...(source ? [[request.from_account_commitment, source]] : []),
       ...(destination ? [[request.to_account_commitment, destination]] : []),
     ])),
+    observed_account_state_by_account: Object.freeze(Object.fromEntries([
+      [request.from_account_commitment, attestationByAccount.get(request.from_account_commitment)],
+      [request.to_account_commitment, attestationByAccount.get(request.to_account_commitment)],
+    ])),
   });
+}
+
+function accountScopedProbeContext(value, account) {
+  const access = value?.venue_access_by_account?.[account.account_commitment];
+  return Object.freeze({
+    owner_commitment: value?.owner_commitment,
+    venue_access_by_account: Object.freeze(access
+      ? { [account.account_commitment]: access }
+      : {}),
+  });
+}
+
+function normalizedExpectedInventory(account, venueId) {
+  const inventory = account?.inventory;
+  if (!validCarryInventoryEvidence(inventory, {
+    venue_id: venueId,
+    account_commitment: account?.account_commitment,
+  }) || inventory.position_inventory_verified !== true
+    || inventory.open_order_inventory_verified !== true
+    || inventory.target_positions.length !== account?.position_count
+    || inventory.target_open_orders.length !== account?.open_order_count) {
+    fail("carry_transfer_route_account_inventory_incomplete");
+  }
+  if (account.flat_zero_orders !== (account.position_count === 0 && account.open_order_count === 0)
+    || !validLiquidationState(account, account.position_count)) {
+    fail("carry_transfer_route_account_risk_state_invalid");
+  }
+  return JSON.parse(JSON.stringify(inventory));
+}
+
+function normalizeObservedAccountState(value, expected, checkedAtMs) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || value.version !== 1
+    || value.kind !== "ghola_carry_route_account_observation"
+    || value.venue_id !== expected.venue_id
+    || value.account_commitment !== expected.account_commitment
+    || value.read_only !== true
+    || value.owner_approval_required !== true
+    || value.fund_movement_authorized !== false
+    || value.transaction_broadcast !== false) {
+    fail("carry_transfer_route_account_observation_invalid");
+  }
+  const observedAtMs = positiveInteger(value.observed_at_ms, "carry_transfer_route_account_observation_time_invalid");
+  if (observedAtMs > checkedAtMs + 5_000 || checkedAtMs - observedAtMs > 30_000) {
+    fail("carry_transfer_route_account_observation_stale");
+  }
+  const positionCount = nonnegativeInteger(value.position_count, "carry_transfer_route_account_observation_positions_invalid");
+  const openOrderCount = nonnegativeInteger(value.open_order_count, "carry_transfer_route_account_observation_orders_invalid");
+  if (!Array.isArray(value.positions) || !Array.isArray(value.open_orders)
+    || value.positions.length !== positionCount
+    || value.open_orders.length !== openOrderCount
+    || value.position_inventory_verified !== true
+    || value.position_inventory_pagination_complete !== true
+    || value.position_inventory_has_more !== false
+    || value.open_order_inventory_verified !== true
+    || value.open_order_inventory_pagination_complete !== true
+    || value.open_order_inventory_has_more !== false) {
+    fail("carry_transfer_route_account_observation_inventory_incomplete");
+  }
+  const inventory = buildCarryInventoryEvidence({
+    venue_id: expected.venue_id,
+    account_commitment: expected.account_commitment,
+    target_market: expected.inventory.target_market,
+    positions: value.positions,
+    open_orders: value.open_orders,
+    position_inventory_verified: true,
+    open_order_inventory_verified: true,
+  });
+  if (inventory.position_inventory_verified !== true
+    || inventory.open_order_inventory_verified !== true
+    || inventory.target_positions.length !== positionCount
+    || inventory.target_open_orders.length !== openOrderCount) {
+    fail("carry_transfer_route_account_observation_inventory_ambiguous");
+  }
+  const observedState = {
+    venue_id: expected.venue_id,
+    account_commitment: expected.account_commitment,
+    position_count: positionCount,
+    open_order_count: openOrderCount,
+    flat_zero_orders: value.flat_zero_orders === true,
+    liquidation_distance_bps: value.liquidation_distance_bps ?? null,
+    liquidation_distance_verified: value.liquidation_distance_verified === true,
+    liquidation_distance_source: value.liquidation_distance_source ?? null,
+    inventory,
+  };
+  const expectedState = accountStateProjection(expected);
+  if (observedState.flat_zero_orders !== (positionCount === 0 && openOrderCount === 0)
+    || !validLiquidationState(observedState, positionCount)
+    || stableJson(observedState) !== stableJson(expectedState)) {
+    fail("carry_transfer_route_account_state_drift");
+  }
+  const material = {
+    version: 1,
+    kind: "ghola_carry_route_account_state_attestation",
+    venue_id: expected.venue_id,
+    account_commitment: expected.account_commitment,
+    expected_account_state_commitment: expected.account_state_commitment,
+    observed_state_fingerprint: accountStateFingerprint(observedState),
+    observed_at_ms: observedAtMs,
+    ...observedState,
+    available_balance_micro_usdc: nonnegativeInteger(
+      value.available_balance_micro_usdc,
+      "carry_transfer_route_account_available_balance_invalid",
+    ),
+    margin_balance_micro_usdc: nonnegativeInteger(
+      value.margin_balance_micro_usdc,
+      "carry_transfer_route_account_margin_balance_invalid",
+    ),
+    initial_margin_micro_usdc: nonnegativeInteger(
+      value.initial_margin_micro_usdc,
+      "carry_transfer_route_account_initial_margin_invalid",
+    ),
+    maintenance_margin_micro_usdc: nonnegativeInteger(
+      value.maintenance_margin_micro_usdc,
+      "carry_transfer_route_account_maintenance_margin_invalid",
+    ),
+    withdrawal_quote: value.withdrawal_quote
+      ? JSON.parse(JSON.stringify(value.withdrawal_quote))
+      : null,
+    read_only: true,
+    owner_approval_required: true,
+    fund_movement_authorized: false,
+    transaction_broadcast: false,
+  };
+  return normalizeAccountStateAttestation({
+    ...material,
+    attestation_commitment: accountStateAttestationCommitment(material),
+  }, checkedAtMs);
+}
+
+function normalizeAccountStateAttestations(value, checkedAtMs) {
+  if (!Array.isArray(value) || value.length < 2 || value.length > 20) {
+    fail("carry_transfer_route_account_attestations_invalid");
+  }
+  const attestations = value.map((item) => normalizeAccountStateAttestation(item, checkedAtMs));
+  if (new Set(attestations.map((item) => item.account_commitment)).size !== attestations.length
+    || new Set(attestations.map((item) => item.venue_id)).size !== attestations.length) {
+    fail("carry_transfer_route_account_attestations_ambiguous");
+  }
+  return attestations.sort((left, right) => left.venue_id.localeCompare(right.venue_id));
+}
+
+function normalizeAccountStateAttestation(value, checkedAtMs) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || value.version !== 1
+    || value.kind !== "ghola_carry_route_account_state_attestation") {
+    fail("carry_transfer_route_account_attestation_invalid");
+  }
+  const venueId = String(value.venue_id || "");
+  const accountCommitment = requiredCommitment(value.account_commitment, "carry_transfer_route_account_attestation_account_invalid");
+  const positionCount = nonnegativeInteger(value.position_count, "carry_transfer_route_account_attestation_positions_invalid");
+  const openOrderCount = nonnegativeInteger(value.open_order_count, "carry_transfer_route_account_attestation_orders_invalid");
+  const inventory = JSON.parse(JSON.stringify(value.inventory));
+  if (!validCarryInventoryEvidence(inventory, { venue_id: venueId, account_commitment: accountCommitment })
+    || inventory.position_inventory_verified !== true
+    || inventory.open_order_inventory_verified !== true
+    || inventory.target_positions.length !== positionCount
+    || inventory.target_open_orders.length !== openOrderCount) {
+    fail("carry_transfer_route_account_attestation_inventory_invalid");
+  }
+  const observedAtMs = positiveInteger(value.observed_at_ms, "carry_transfer_route_account_attestation_time_invalid");
+  if (observedAtMs > checkedAtMs + 5_000 || checkedAtMs - observedAtMs > 30_000) {
+    fail("carry_transfer_route_account_attestation_stale");
+  }
+  const state = {
+    venue_id: venueId,
+    account_commitment: accountCommitment,
+    position_count: positionCount,
+    open_order_count: openOrderCount,
+    flat_zero_orders: value.flat_zero_orders === true,
+    liquidation_distance_bps: value.liquidation_distance_bps ?? null,
+    liquidation_distance_verified: value.liquidation_distance_verified === true,
+    liquidation_distance_source: value.liquidation_distance_source ?? null,
+    inventory,
+  };
+  if (state.flat_zero_orders !== (positionCount === 0 && openOrderCount === 0)
+    || !validLiquidationState(state, positionCount)
+    || value.observed_state_fingerprint !== accountStateFingerprint(state)
+    || value.read_only !== true
+    || value.owner_approval_required !== true
+    || value.fund_movement_authorized !== false
+    || value.transaction_broadcast !== false) {
+    fail("carry_transfer_route_account_attestation_state_invalid");
+  }
+  const material = {
+    version: 1,
+    kind: "ghola_carry_route_account_state_attestation",
+    venue_id: venueId,
+    account_commitment: accountCommitment,
+    expected_account_state_commitment: requiredCommitment(
+      value.expected_account_state_commitment,
+      "carry_transfer_route_account_attestation_expected_state_invalid",
+    ),
+    observed_state_fingerprint: value.observed_state_fingerprint,
+    observed_at_ms: observedAtMs,
+    ...state,
+    available_balance_micro_usdc: nonnegativeInteger(value.available_balance_micro_usdc, "carry_transfer_route_account_attestation_available_invalid"),
+    margin_balance_micro_usdc: nonnegativeInteger(value.margin_balance_micro_usdc, "carry_transfer_route_account_attestation_margin_invalid"),
+    initial_margin_micro_usdc: nonnegativeInteger(value.initial_margin_micro_usdc, "carry_transfer_route_account_attestation_initial_margin_invalid"),
+    maintenance_margin_micro_usdc: nonnegativeInteger(value.maintenance_margin_micro_usdc, "carry_transfer_route_account_attestation_maintenance_margin_invalid"),
+    withdrawal_quote: value.withdrawal_quote ? JSON.parse(JSON.stringify(value.withdrawal_quote)) : null,
+    read_only: true,
+    owner_approval_required: true,
+    fund_movement_authorized: false,
+    transaction_broadcast: false,
+  };
+  const commitment = requiredCommitment(value.attestation_commitment, "carry_transfer_route_account_attestation_commitment_invalid");
+  if (commitment !== accountStateAttestationCommitment(material)) {
+    fail("carry_transfer_route_account_attestation_commitment_invalid");
+  }
+  return Object.freeze({ ...material, attestation_commitment: commitment });
+}
+
+function accountStateProjection(value) {
+  return {
+    venue_id: value.venue_id,
+    account_commitment: value.account_commitment,
+    position_count: value.position_count,
+    open_order_count: value.open_order_count,
+    flat_zero_orders: value.flat_zero_orders === true,
+    liquidation_distance_bps: value.liquidation_distance_bps ?? null,
+    liquidation_distance_verified: value.liquidation_distance_verified === true,
+    liquidation_distance_source: value.liquidation_distance_source ?? null,
+    inventory: JSON.parse(JSON.stringify(value.inventory)),
+  };
+}
+
+function validLiquidationState(value, positionCount) {
+  if (positionCount === 0) {
+    return value.liquidation_distance_bps === null
+      && value.liquidation_distance_verified === false
+      && value.liquidation_distance_source === null;
+  }
+  return Number.isSafeInteger(value.liquidation_distance_bps)
+    && value.liquidation_distance_bps >= 0
+    && value.liquidation_distance_bps <= 100_000
+    && value.liquidation_distance_verified === true
+    && typeof value.liquidation_distance_source === "string"
+    && value.liquidation_distance_source.length > 0;
+}
+
+function accountStateFingerprint(value) {
+  return `carry:route-account-state:${createHash("sha256").update(stableJson(value)).digest("hex").slice(0, 40)}`;
+}
+
+function accountStateAttestationCommitment(value) {
+  return `carry:route-account-attestation:${createHash("sha256").update(stableJson(value)).digest("hex").slice(0, 40)}`;
 }
 
 function normalizeObservedQuote(value, request, checkedAtMs) {
@@ -511,7 +827,7 @@ function normalizeObservedQuote(value, request, checkedAtMs) {
       "carry_transfer_route_probe_latency_invalid",
     ),
     as_of_ms: asOfMs,
-    observation_binding: `${request.source_account_state_commitment}:${request.destination_account_state_commitment}`,
+    observation_binding: `${request.source_account_state_attestation_commitment}:${request.destination_account_state_attestation_commitment}`,
   });
 }
 
@@ -532,7 +848,7 @@ function unavailableObservedQuote(request, checkedAtMs, reason) {
     fee_micro_usdc: 0,
     estimated_latency_ms: 0,
     as_of_ms: checkedAtMs,
-    observation_binding: `${request.source_account_state_commitment}:${request.destination_account_state_commitment}:${reason}`,
+    observation_binding: `${request.source_account_state_attestation_commitment}:${request.destination_account_state_attestation_commitment}:${reason}`,
   });
 }
 
@@ -541,6 +857,8 @@ function quoteCommitment(request, quote) {
     route_id: request.route_id,
     source_account_state_commitment: request.source_account_state_commitment,
     destination_account_state_commitment: request.destination_account_state_commitment,
+    source_account_state_attestation_commitment: request.source_account_state_attestation_commitment,
+    destination_account_state_attestation_commitment: request.destination_account_state_attestation_commitment,
     status: quote.status,
     quote_verified: quote.quote_verified,
     all_in_fee_verified: quote.all_in_fee_verified,
@@ -570,6 +888,16 @@ function evidenceCommitment(value) {
 
 function evidenceKey(ownerCommitment) {
   return `carry:transfer-routes:latest:${ownerCommitment}`;
+}
+
+function stableJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  return `{${Object.entries(value)
+    .filter(([, child]) => child !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
+    .join(",")}}`;
 }
 
 function sameVenueSet(value, expected) {
