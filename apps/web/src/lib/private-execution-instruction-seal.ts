@@ -1,4 +1,8 @@
 import bs58 from "bs58";
+import {
+  PRIVATE_EXECUTION_INSTRUCTION_VENUES,
+  type PrivateExecutionInstructionVenueId,
+} from "@ghola/execution-core";
 import { didKeyFromVerifying, RecipientKind, seal } from "./envelope";
 import {
   chooseConfidentialComputeProvider,
@@ -8,7 +12,7 @@ import {
 } from "./private-agent-runtime";
 import { fetchPrivateAgentRuntimeStatus } from "./hyperliquid-vault-seal";
 
-export type PrivateExecutionVenueId = "hyperliquid" | "lighter" | "aster" | "coinbase_advanced" | "phoenix" | "jupiter";
+export type PrivateExecutionVenueId = PrivateExecutionInstructionVenueId;
 export type PrivateExecutionOperationClass =
   | "limit_order"
   | "perp_limit_order"
@@ -129,6 +133,7 @@ export interface BuildPrivateExecutionInstructionBundleResult {
 const MARKET_RE = /^[A-Za-z0-9/_:-]{2,32}$/;
 const DECIMAL_RE = /^\d+(?:\.\d+)?$/;
 const SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const PRIVATE_EXECUTION_INSTRUCTION_VENUE_SET = new Set<string>(PRIVATE_EXECUTION_INSTRUCTION_VENUES);
 const AGENT_STRATEGY_PROFILE_VALUES = new Set([
   "trend_following",
   "breakout",
@@ -172,12 +177,7 @@ const AGENT_TIME_HORIZON_VALUES = new Set([
 
 export function validatePrivateExecutionOrderDraft(draft: PrivateExecutionOrderDraft): string[] {
   const errors: string[] = [];
-  if (
-    draft.venue_id !== "hyperliquid" &&
-    draft.venue_id !== "coinbase_advanced" &&
-    draft.venue_id !== "phoenix" &&
-    draft.venue_id !== "jupiter"
-  ) {
+  if (!PRIVATE_EXECUTION_INSTRUCTION_VENUE_SET.has(draft.venue_id)) {
     errors.push("Select a supported venue.");
   }
   errors.push(...validatePrivateExecutionAgentMandate(draft));

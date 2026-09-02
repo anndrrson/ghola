@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import {
+  carryLifecycleProofKey,
+  carryLifecycleProofReferenceKey,
+  readCompletedCarryLifecycleProofs,
+} from "../src/execution/carry-release-evidence.js";
 import { carrySupervisionHealth } from "../src/execution/carry-loop-supervisor.js";
 import { buildCarryPrivatePrimeReadiness } from "../src/execution/carry-private-prime-readiness.js";
 
@@ -63,7 +68,12 @@ test("refuses private-prime readiness without exact three-venue recovery policy"
   assert.equal(result.failure_recovery.ready, false);
 });
 
-test("upgrades only matching durable paired lifecycle evidence to live-proven", () => {
+test("upgrades only release-equivalent lifecycle coverage to live-proven", () => {
+  const secondLifecycle = lifecycleProofForPair({
+    venueIds: ["hyperliquid", "lighter"],
+    positionId: "carry:position:live:0002",
+    expiresAtMs: NOW + 3_000,
+  });
   const result = buildCarryPrivatePrimeReadiness({
     readiness: {
       ...readinessProof(),
@@ -84,6 +94,7 @@ test("upgrades only matching durable paired lifecycle evidence to live-proven", 
     route_observation_configured: true,
     route_evidence: verifiedRouteEvidence(),
     lifecycle_proof: lifecycleProof(),
+    lifecycle_proofs: [secondLifecycle],
     now_ms: NOW,
   });
   assert.equal(result.ready, true);
@@ -101,6 +112,133 @@ test("upgrades only matching durable paired lifecycle evidence to live-proven", 
     hyperliquid: NOW - 10_000,
     aster: NOW - 9_000,
   });
+  assert.equal(result.release_equivalent_lifecycles.verified, true);
+  assert.equal(result.release_equivalent_lifecycles.lifecycle_count, 2);
+  assert.equal(result.release_equivalent_lifecycles.distinct_position_count, 2);
+  assert.equal(result.release_equivalent_lifecycles.distinct_venue_pair_count, 2);
+  assert.equal(result.release_equivalent_lifecycles.expires_at_ms, NOW + 3_000);
+  assert.equal(result.expires_at_ms, NOW + 3_000);
+  assert.deepEqual(result.release_equivalent_lifecycles.normalized_venue_pairs, [
+    "aster:hyperliquid",
+    "hyperliquid:lighter",
+  ]);
+});
+
+test("counts distinct positions and venue pairs independently without duplicate inflation", () => {
+  const second = lifecycleProofForPair({
+    venueIds: ["hyperliquid", "lighter"],
+    positionId: "carry:position:live:0002",
+  });
+  const third = lifecycleProofForPair({
+    venueIds: ["hyperliquid", "aster"],
+    positionId: "carry:position:live:0002",
+  });
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: readinessProof(),
+    shadow_qualification: shadowQualification(),
+    carry_supervision: healthySupervision(),
+    route_observation_configured: true,
+    route_evidence: verifiedRouteEvidence(),
+    lifecycle_proof: lifecycleProof(),
+    lifecycle_proofs: [second, third, second],
+    now_ms: NOW,
+  });
+  assert.equal(result.ready_for_live_users, true);
+  assert.equal(result.release_equivalent_lifecycles.lifecycle_count, 3);
+  assert.equal(result.release_equivalent_lifecycles.distinct_position_count, 2);
+  assert.equal(result.release_equivalent_lifecycles.distinct_venue_pair_count, 2);
+  assert.equal(result.release_equivalent_lifecycles.position_ids.length, 2);
+});
+
+test("aggregates only immutable persisted lifecycle proofs into live route readiness", async () => {
+  const first = lifecycleProof();
+  const second = lifecycleProofForPair({
+    venueIds: ["hyperliquid", "lighter"],
+    positionId: "carry:position:live:0002",
+    expiresAtMs: NOW + 3_000,
+  });
+  const persisted = await readCompletedCarryLifecycleProofs({
+    state: immutableLifecycleState([first, second]),
+    owner_commitment: "owner_commitment_0001",
+    asset: "BTC",
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(persisted.ok, true);
+  assert.equal(persisted.proof_count, 2);
+  assert.equal(persisted.proofs.every((item) => item.ok === true && item.proof), true);
+  const ready = buildCarryPrivatePrimeReadiness({
+    readiness: readinessProof(),
+    shadow_qualification: shadowQualification(),
+    carry_supervision: healthySupervision(),
+    route_observation_configured: true,
+    route_evidence: verifiedRouteEvidence(),
+    lifecycle_proof: persisted.proofs[0],
+    lifecycle_proofs: persisted.proofs,
+    now_ms: NOW,
+  });
+  assert.equal(ready.ready_for_live_users, true);
+
+  const legacyOnlySecond = await readCompletedCarryLifecycleProofs({
+    state: immutableLifecycleState([first], second),
+    owner_commitment: "owner_commitment_0001",
+    asset: "BTC",
+    env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+    now_ms: NOW,
+  });
+  assert.equal(legacyOnlySecond.scanned_position_count, 2);
+  assert.equal(legacyOnlySecond.proof_count, 1);
+  const blocked = buildCarryPrivatePrimeReadiness({
+    readiness: readinessProof(),
+    shadow_qualification: shadowQualification(),
+    carry_supervision: healthySupervision(),
+    route_observation_configured: true,
+    route_evidence: verifiedRouteEvidence(),
+    lifecycle_proof: legacyOnlySecond.proofs[0],
+    lifecycle_proofs: legacyOnlySecond.proofs,
+    now_ms: NOW,
+  });
+  assert.equal(blocked.ready_for_live_users, false);
+});
+
+test("keeps one completed paired lifecycle below the live-user release threshold", () => {
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: readinessProof(),
+    shadow_qualification: shadowQualification(),
+    carry_supervision: healthySupervision(),
+    route_observation_configured: true,
+    route_evidence: verifiedRouteEvidence(),
+    lifecycle_proof: lifecycleProof(),
+    now_ms: NOW,
+  });
+  assert.equal(result.live_paired_lifecycle_proven, true);
+  assert.equal(result.release_equivalent_lifecycles.lifecycle_count, 1);
+  assert.equal(result.release_equivalent_lifecycles.distinct_position_count, 1);
+  assert.equal(result.release_equivalent_lifecycles.distinct_venue_pair_count, 1);
+  assert.equal(result.release_equivalent_lifecycles.verified, false);
+  assert.equal(result.ready_for_live_users, false);
+  assert.deepEqual(result.live_launch_blockers, ["live_release_lifecycle_coverage_unproven"]);
+});
+
+test("normalizes venue direction before counting distinct release pairs", () => {
+  const result = buildCarryPrivatePrimeReadiness({
+    readiness: readinessProof(),
+    shadow_qualification: shadowQualification(),
+    carry_supervision: healthySupervision(),
+    route_observation_configured: true,
+    route_evidence: verifiedRouteEvidence(),
+    lifecycle_proof: lifecycleProof(),
+    lifecycle_proofs: [lifecycleProofForPair({
+      venueIds: ["aster", "hyperliquid"],
+      positionId: "carry:position:live:0002",
+    })],
+    now_ms: NOW,
+  });
+  assert.equal(result.release_equivalent_lifecycles.lifecycle_count, 2);
+  assert.equal(result.release_equivalent_lifecycles.distinct_venue_pair_count, 1);
+  assert.deepEqual(result.release_equivalent_lifecycles.normalized_venue_pairs, ["aster:hyperliquid"]);
+  assert.equal(result.release_equivalent_lifecycles.verified, false);
+  assert.equal(result.ready_for_live_users, false);
 });
 
 test("keeps live proof blocked without exact creation-input lineage", () => {
@@ -813,9 +951,88 @@ function lifecycleProof(overrides = {}) {
   };
 }
 
+function lifecycleProofForPair({ venueIds, positionId, expiresAtMs = NOW + 86_400_000 }) {
+  const [left, right] = venueIds;
+  return lifecycleProof({
+    position_id: positionId,
+    expires_at_ms: expiresAtMs,
+    venue_ids: venueIds,
+    account_commitments: {
+      [left]: `account:${left}:0001`,
+      [right]: `account:${right}:0001`,
+    },
+    first_exposure_observed_at_ms: NOW - 10_000,
+    first_exposure_observed_at_ms_by_venue: {
+      [left]: NOW - 10_000,
+      [right]: NOW - 9_000,
+    },
+    exposure_boundary_provenance_by_venue: {
+      [left]: "authoritative_exchange_fill_time",
+      [right]: "authoritative_exchange_fill_time",
+    },
+  });
+}
+
 function lifecycleProofCommitment(proof) {
   const { evidence_commitment: _ignored, ...material } = proof;
   return `carry:lifecycle-proof:evidence:${createHash("sha256").update(stableJson(material)).digest("hex")}`;
+}
+
+function immutableLifecycleState(proofWrappers, legacyProofWrapper = null) {
+  const rows = new Map();
+  const allWrappers = legacyProofWrapper ? [...proofWrappers, legacyProofWrapper] : proofWrappers;
+  for (const wrapper of proofWrappers) {
+    const proof = wrapper.proof;
+    const proofKey = carryLifecycleProofKey(
+      proof.owner_commitment,
+      proof.worker_image_digest,
+      proof.asset,
+      proof.position_id,
+      proof.venue_ids,
+    );
+    const reference = {
+      version: 1,
+      kind: "ghola_carry_lifecycle_proof_reference",
+      owner_commitment: proof.owner_commitment,
+      worker_image_digest: proof.worker_image_digest,
+      asset: proof.asset,
+      position_id: proof.position_id,
+      venue_ids: [...proof.venue_ids],
+      proof_key: proofKey,
+      proof_evidence_commitment: proof.evidence_commitment,
+      worker_material_commitment: proof.worker_material_commitment,
+      verified_at_ms: proof.verified_at_ms,
+      expires_at_ms: proof.expires_at_ms,
+    };
+    reference.evidence_commitment = `carry:lifecycle-proof-reference:evidence:${createHash("sha256")
+      .update(stableJson(reference))
+      .digest("hex")}`;
+    rows.set(proofKey, { receipt: structuredClone(proof) });
+    rows.set(carryLifecycleProofReferenceKey(
+      proof.owner_commitment,
+      proof.worker_image_digest,
+      proof.asset,
+      proof.position_id,
+    ), { receipt: reference });
+  }
+  if (legacyProofWrapper) {
+    const proof = legacyProofWrapper.proof;
+    rows.set(carryLifecycleProofKey(
+      proof.owner_commitment,
+      proof.worker_image_digest,
+      proof.asset,
+    ), { receipt: structuredClone(proof) });
+  }
+  return {
+    listCarryPositionRecords: async ({ owner_commitment: ownerCommitment }) => {
+      assert.equal(ownerCommitment, "owner_commitment_0001");
+      return allWrappers.map(({ proof }, index) => ({
+        updated_at: new Date(NOW - index).toISOString(),
+        position: { position_id: proof.position_id },
+      }));
+    },
+    getIdempotency: async (key) => rows.get(key) || null,
+  };
 }
 
 function stableJson(value) {

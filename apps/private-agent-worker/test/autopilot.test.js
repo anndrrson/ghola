@@ -4,6 +4,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  AUTOPILOT_WORKER_DEFAULT_VENUES,
+  AUTOPILOT_WORKER_VENUES,
+} from "@ghola/execution-core";
+import {
   controlAutopilotSession,
   createAutopilotSession,
   listAutopilotReplay,
@@ -45,6 +49,36 @@ describe("autonomous autopilot engine", () => {
   afterEach(() => {
     resetEnv();
     if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("derives worker venue filtering, defaults, and quarantine from the registry", async () => {
+    const state = createWorkerState(dir);
+    const recipient = { recipient_id: "did:key:test-autopilot-registry" };
+    const now = new Date(Date.now() + 60_000);
+    const defaults = await createAutopilotSession({
+      body: { owner_commitment: "owner_autopilot_registry_defaults", session_policy: {} },
+      recipient,
+      state,
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+    assert.deepEqual(defaults.session_policy.venue_allowlist, AUTOPILOT_WORKER_DEFAULT_VENUES);
+
+    const all = await createAutopilotSession({
+      body: {
+        owner_commitment: "owner_autopilot_registry_all",
+        session_policy: { venue_allowlist: [...AUTOPILOT_WORKER_VENUES, "unregistered"] },
+      },
+      recipient,
+      state,
+      provider: "test",
+      startLoop: false,
+      now,
+    });
+    assert.deepEqual(all.session_policy.venue_allowlist, AUTOPILOT_WORKER_VENUES);
+    assert.equal(all.venue_access.drift.status, "quarantined");
+    assert.equal(all.venue_access.drift.reason, "drift_runtime_quarantined");
   });
 
   it("creates a ready bounded session and submits one dry-run autonomous order", async () => {

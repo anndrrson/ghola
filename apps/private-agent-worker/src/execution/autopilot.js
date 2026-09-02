@@ -1,5 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  AUTOPILOT_WORKER_DEFAULT_VENUES,
+  AUTOPILOT_WORKER_VENUES,
+  venueAdapterCapability,
+} from "@ghola/execution-core";
+import {
   isArbitrageSession,
   isCarrySession,
   runGuardedArbitrageTick,
@@ -24,10 +29,10 @@ import {
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
-const SUPPORTED_VENUES = new Set(["jupiter", "phoenix", "backpack", "hyperliquid", "drift", "coinbase_advanced"]);
+const SUPPORTED_VENUES = new Set(AUTOPILOT_WORKER_VENUES);
 const SUPPORTED_MARKETS = new Set(["SOL-USD", "BTC-USD", "ETH-USD", "SOL/USDC", "SOL", "BTC", "ETH", "HYPE"]);
 const BOUNDED_INTENT_STRATEGY = "bounded_intent_executor_v1";
-const DEFAULT_VENUES = ["jupiter", "phoenix", "hyperliquid", "coinbase_advanced"];
+const DEFAULT_VENUES = [...AUTOPILOT_WORKER_DEFAULT_VENUES];
 const DEFAULT_MARKETS = ["SOL-USD", "BTC-USD", "ETH-USD"];
 const LOOP_TIMERS = new Map();
 
@@ -949,7 +954,7 @@ async function runAutopilotTickUnlocked({
     venue_id: proposal.venue_id,
     asset: baseMarket(proposal.market),
     market: proposal.market,
-    product_type: proposal.product_type || (proposal.venue_id === "hyperliquid" || proposal.venue_id === "drift" ? "perp" : "spot"),
+    product_type: proposal.product_type || autopilotVenueProfile(proposal.venue_id)?.default_product_type || "spot",
     side: signedNotionalMicro < 0 ? "sell" : "buy",
     signed_notional_micro_usdc: signedNotionalMicro,
     estimated_exposure_notional_usd: Math.abs(signedNotionalMicro) / 1_000_000,
@@ -1487,13 +1492,14 @@ function normalizeVenueAccess(raw, policy) {
     process.env.PRIVATE_AGENT_AUTOPILOT_ASSUME_FUNDED === "true";
   const out = {};
   for (const venue of policy.venue_allowlist) {
+    const quarantineReason = autopilotVenueProfile(venue)?.quarantine_reason || null;
     const value = raw?.[venue] || raw?.[venue.replace("_advanced", "")] || null;
     if (value && typeof value === "object") {
       const requestedStatus = value.status === "ready" || value.encrypted_execution_vault || value.execution_mode === "ghola_pooled"
         ? "ready"
         : value.status || "needs_funds";
       out[venue] = {
-        status: venue === "drift" ? "quarantined" : requestedStatus,
+        status: quarantineReason ? "quarantined" : requestedStatus,
         execution_mode: value.execution_mode || defaultExecutionMode(venue),
         vault_commitment: value.vault_commitment || null,
         encrypted_vault_commitment: value.encrypted_vault_commitment || null,
@@ -1507,14 +1513,14 @@ function normalizeVenueAccess(raw, policy) {
         latency_ms: Number.isInteger(value.latency_ms) && value.latency_ms >= 0 ? value.latency_ms : null,
         capabilities: normalizeCapabilityEvidence(value.capabilities),
         no_submit_proof: normalizeNoSubmitProof(value.no_submit_proof),
-        reason: venue === "drift" ? "drift_runtime_quarantined" : value.reason || null,
+        reason: quarantineReason || value.reason || null,
       };
     } else {
       out[venue] = {
-        status: venue === "drift" ? "quarantined" : dryRunReady ? "ready" : "needs_funds",
+        status: quarantineReason ? "quarantined" : dryRunReady ? "ready" : "needs_funds",
         execution_mode: dryRunReady ? defaultExecutionMode(venue) : null,
-        reason: venue === "drift"
-          ? "drift_runtime_quarantined"
+        reason: quarantineReason
+          ? quarantineReason
           : dryRunReady ? "dry_run_ready" : "isolated_vault_required",
       };
     }
@@ -1821,7 +1827,8 @@ function routeSummary(routing) {
 
 function instructionForVenue({ venue, market, side, price, notional, policy, env = process.env, now }) {
   const expiresAt = new Date(now.getTime() + Math.min(5 * 60_000, policy.ttl_ms)).toISOString();
-  if (venue === "jupiter") {
+  const profile = autopilotVenueProfile(venue);
+  if (profile?.instruction_profile === "swap") {
     const inputMint = side === "buy" ? USDC_MINT : SOL_MINT;
     const outputMint = side === "buy" ? SOL_MINT : USDC_MINT;
     const amount = side === "buy"
@@ -1830,8 +1837,8 @@ function instructionForVenue({ venue, market, side, price, notional, policy, env
     return {
       version: 1,
       kind: "ghola_private_execution_instruction",
-      venue_id: "jupiter",
-      operation_class: "swap",
+      venue_id: venue,
+      operation_class: profile.default_operation_class,
       expires_at: expiresAt,
       order: {
         input_mint: inputMint,
@@ -1843,7 +1850,7 @@ function instructionForVenue({ venue, market, side, price, notional, policy, env
       },
     };
   }
-  if (venue === "coinbase_advanced") {
+  if (profile?.instruction_profile === "spot") {
     return {
       version: 1,
       kind: "ghola_private_execution_instruction",
@@ -1867,7 +1874,7 @@ function instructionForVenue({ venue, market, side, price, notional, policy, env
     version: 1,
     kind: "ghola_private_execution_instruction",
     venue_id: venue,
-    operation_class: venue === "hyperliquid" ? "limit_order" : "perp_limit_order",
+    operation_class: profile?.default_operation_class || "perp_limit_order",
     expires_at: expiresAt,
     order: {
       market: venueMarketSymbol(venue, market.product_id),
@@ -1917,22 +1924,18 @@ async function marketSnapshotForSession(session, { fetchImpl, env, now }) {
 function selectVenue(session, market) {
   const product = market.product_id;
   const ready = readyVenues(session);
-  if (product === "SOL-USD" && ready.includes("jupiter")) return "jupiter";
-  if (ready.includes("coinbase_advanced")) return "coinbase_advanced";
-  if (ready.includes("phoenix") && product === "SOL-USD") return "phoenix";
-  if (ready.includes("backpack") && product === "SOL-USD") return "backpack";
-  if (ready.includes("hyperliquid")) return "hyperliquid";
+  const preferred = ready
+    .map((venue) => ({ venue, profile: autopilotVenueProfile(venue) }))
+    .filter(({ profile }) => Number.isSafeInteger(profile?.single_order_route_order))
+    .filter(({ profile }) => !Array.isArray(profile.single_order_markets) || profile.single_order_markets.includes(product))
+    .sort((left, right) => left.profile.single_order_route_order - right.profile.single_order_route_order);
+  if (preferred.length) return preferred[0].venue;
   return ready[0] || null;
 }
 
 function operationAllowedForVenue(venue, operationClass) {
-  if (venue === "jupiter") return operationClass === "swap";
-  if (venue === "coinbase_advanced") {
-    return operationClass === "spot_market_order" || operationClass === "spot_limit_order";
-  }
-  if (venue === "phoenix" || venue === "backpack") return operationClass === "perp_limit_order";
-  if (venue === "hyperliquid") return operationClass === "limit_order";
-  return false;
+  const operationClasses = autopilotVenueProfile(venue)?.operation_classes;
+  return Array.isArray(operationClasses) && operationClasses.includes(operationClass);
 }
 
 function positionExposureFor(positions, venue, market) {
@@ -2079,12 +2082,10 @@ function readyVenues(session) {
 }
 
 function selectMakerVenue(session) {
-  const ready = readyVenues(session);
-  if (ready.includes("phoenix")) return "phoenix";
-  if (ready.includes("backpack")) return "backpack";
-  if (ready.includes("hyperliquid")) return "hyperliquid";
-  if (ready.includes("coinbase_advanced")) return "coinbase_advanced";
-  return null;
+  return readyVenues(session)
+    .map((venue) => ({ venue, order: autopilotVenueProfile(venue)?.maker_order }))
+    .filter(({ order }) => Number.isSafeInteger(order))
+    .sort((left, right) => left.order - right.order)[0]?.venue || null;
 }
 
 function makerProposal({ session, venue, market, side, price, notional, quoteSpreadBps, now }) {
@@ -2133,9 +2134,7 @@ function makerProposal({ session, venue, market, side, price, notional, quoteSpr
 }
 
 function operationClassForMakerVenue(venue) {
-  if (venue === "coinbase_advanced") return "spot_limit_order";
-  if (venue === "hyperliquid") return "limit_order";
-  return "perp_limit_order";
+  return autopilotVenueProfile(venue)?.default_operation_class || "perp_limit_order";
 }
 
 function primaryProduct(session) {
@@ -2302,14 +2301,19 @@ function baseMarket(productId) {
 
 function venueMarketSymbol(venue, productId) {
   const base = baseMarket(productId);
-  if (venue === "phoenix") return `${base}-PERP`;
-  if (venue === "backpack") return `${base}_USDC_PERP`;
+  const profile = autopilotVenueProfile(venue)?.market_symbol_profile;
+  if (profile === "dash_perp") return `${base}-PERP`;
+  if (profile === "underscore_usdc_perp") return `${base}_USDC_PERP`;
+  if (profile === "product") return productId;
   return base;
 }
 
 function defaultExecutionMode(venue) {
-  if (venue === "jupiter") return "user_stealth";
-  return "byo_api_key";
+  return autopilotVenueProfile(venue)?.default_execution_mode || "byo_api_key";
+}
+
+function autopilotVenueProfile(venue) {
+  return venueAdapterCapability(String(venue || "").toLowerCase(), "autopilot");
 }
 
 function remainingDailyNotional(session) {

@@ -38,6 +38,7 @@ import {
   type VenueExecutionPermissionAttestation,
   type VenueOwnerAuthorizationSource,
 } from "./venue-execution-credential-capability";
+import { connectorSdkDefaultVenue } from "@ghola/execution-core";
 
 const ARB_MARKETS = ["SOL-USD"];
 
@@ -717,11 +718,7 @@ function workerConfig(env: Record<string, string | undefined>) {
 }
 
 function agentVenueForPlatform(value: unknown): PrivateAgentVenueId | null {
-  if (value === "hyperliquid_style_market") return "hyperliquid";
-  if (value === "coinbase_style_provider") return "coinbase_advanced";
-  if (value === "solana_perps_market") return "phoenix";
-  if (value === "solana_swap_aggregator") return "jupiter";
-  return null;
+  return typeof value === "string" ? agentVenueId(connectorSdkDefaultVenue(value)) : null;
 }
 
 function agentVenueId(value: unknown): PrivateAgentVenueId | null {

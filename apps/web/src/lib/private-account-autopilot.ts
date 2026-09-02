@@ -1,5 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  AUTOPILOT_ACCOUNT_DEFAULT_VENUES,
+  AUTOPILOT_ACCOUNT_READINESS_VENUES,
+  AUTOPILOT_ACCOUNT_VENUES,
+  venueAdapterCapability,
+  type AutopilotAccountVenueId,
+} from "@ghola/execution-core";
+import {
   workerAuthorizationHeader,
 } from "./private-agent-capability";
 import { agentPassportVenueAccessForWorker } from "./private-agent-passport";
@@ -20,7 +27,7 @@ import {
   type PrivateAutopilotSessionRecordV1,
 } from "./private-account-store";
 
-export type AutopilotVenueId = "jupiter" | "phoenix" | "backpack" | "hyperliquid" | "coinbase_advanced";
+export type AutopilotVenueId = AutopilotAccountVenueId;
 export type AutopilotStrategyId =
   | "bounded_intent_executor_v1"
   | "momentum_micro_trader"
@@ -212,14 +219,8 @@ export interface AutopilotReadiness {
   venue_readiness: AutopilotVenueReadiness[];
 }
 
-const DEFAULT_VENUES: AutopilotVenueId[] = ["jupiter", "phoenix", "backpack", "hyperliquid", "coinbase_advanced"];
-const SUPPORTED_VENUES = new Set<AutopilotVenueId>([
-  "jupiter",
-  "phoenix",
-  "backpack",
-  "hyperliquid",
-  "coinbase_advanced",
-]);
+const DEFAULT_VENUES: AutopilotVenueId[] = [...AUTOPILOT_ACCOUNT_DEFAULT_VENUES];
+const SUPPORTED_VENUES = new Set<AutopilotVenueId>(AUTOPILOT_ACCOUNT_VENUES);
 const DEFAULT_MARKETS = ["SOL-USD", "BTC-USD", "ETH-USD"];
 const SUPPORTED_MARKETS = new Set([
   "SOL-USD",
@@ -596,13 +597,8 @@ export function autopilotReadinessForOwner(
   const workerConfigured = Boolean(worker.url && workerAuthConfigured(env, worker.token));
   const seekerRequired = env.GHOLA_SEEKER_AUTOPILOT_REQUIRED !== "false";
   const walletBound = !seekerRequired || walletBindingStatus === "active";
-  const venueReadiness: AutopilotVenueReadiness[] = [
-    hyperliquidAutopilotReadiness(env, workerConfigured),
-    phoenixAutopilotReadiness(env, workerConfigured),
-    backpackAutopilotReadiness(env, workerConfigured),
-    jupiterAutopilotReadiness(env, workerConfigured),
-    coinbaseAutopilotReadiness(env, workerConfigured),
-  ];
+  const venueReadiness = AUTOPILOT_ACCOUNT_READINESS_VENUES.map((venueId) =>
+    autopilotReadinessForVenue(venueId, env, workerConfigured));
   const liveVenueReady = venueReadiness.some((venue) => venue.status === "ready");
   const canLiveSubmit = liveVenueReady && walletBound;
   const blockers = [
@@ -1155,7 +1151,7 @@ function venueAccessValue(value: unknown): AutopilotSession["venue_access"] | nu
   const raw = optionalRecord(value);
   if (!raw) return null;
   const entries: Array<[AutopilotVenueId, AutopilotSession["venue_access"][AutopilotVenueId]]> = [];
-  for (const venue of DEFAULT_VENUES) {
+  for (const venue of AUTOPILOT_ACCOUNT_VENUES) {
     const item = optionalRecord(raw[venue]);
     if (!item) continue;
     const status = venueAccessStatusValue(item.status) ??
@@ -1354,6 +1350,32 @@ function coinbaseAutopilotReadiness(
     status: reasonCodes.length ? "blocked" : "ready",
     live_mode: env.GHOLA_COINBASE_LIVE_MODE || "partner_omnibus",
     reason_codes: reasonCodes,
+  };
+}
+
+const AUTOPILOT_READINESS_ADAPTERS: Readonly<Record<
+  string,
+  (env: Record<string, string | undefined>, workerConfigured: boolean) => AutopilotVenueReadiness
+>> = Object.freeze({
+  hyperliquid: hyperliquidAutopilotReadiness,
+  phoenix: phoenixAutopilotReadiness,
+  backpack: backpackAutopilotReadiness,
+  jupiter: jupiterAutopilotReadiness,
+  coinbase_advanced: coinbaseAutopilotReadiness,
+});
+
+function autopilotReadinessForVenue(
+  venueId: AutopilotVenueId,
+  env: Record<string, string | undefined>,
+  workerConfigured: boolean,
+): AutopilotVenueReadiness {
+  const adapter = venueAdapterCapability(venueId, "autopilot")?.readiness_adapter;
+  const resolve = typeof adapter === "string" ? AUTOPILOT_READINESS_ADAPTERS[adapter] : null;
+  return resolve ? resolve(env, workerConfigured) : {
+    venue_id: venueId,
+    status: "blocked",
+    live_mode: null,
+    reason_codes: ["autopilot_readiness_adapter_unregistered"],
   };
 }
 

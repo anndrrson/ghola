@@ -3,6 +3,7 @@ import {
   CARRY_EXECUTION_VENUES,
   advanceCarryPosition,
   appendCarryValueLedgerEntry,
+  canonicalCarryCommitmentJson,
   cashflowValuationEvidenceMessage,
   carryCollateralReviewMessage,
   compileCarryCapitalActionPlan,
@@ -472,6 +473,8 @@ function durableFinalizationEvidence(record) {
     || valueEvidence?.costs_complete !== true) {
     return denied("carry_value_evidence_incomplete");
   }
+  const costManifest = verifyStoredCarryCostCompleteness(record);
+  if (!costManifest.ok) return costManifest;
   const reconciliation = record.final_reconciliation_evidence;
   if (reconciliation?.account_state_checked !== true
     || reconciliation.gross_exposure_micro_usdc !== 0
@@ -485,6 +488,7 @@ function durableFinalizationEvidence(record) {
       gross_exposure_micro_usdc: 0,
       open_order_count: 0,
       costs_complete: true,
+      cost_manifest: costManifest.manifest,
       reconciliation_commitment: reconciliation.reconciliation_commitment,
     }),
   };
@@ -494,7 +498,373 @@ function finalizationEvidenceMatches(claimed, durable) {
   return claimed?.gross_exposure_micro_usdc === durable.gross_exposure_micro_usdc
     && claimed?.open_order_count === durable.open_order_count
     && claimed?.costs_complete === durable.costs_complete
+    && canonicalCarryCommitmentJson(claimed?.cost_manifest)
+      === canonicalCarryCommitmentJson(durable.cost_manifest)
     && claimed?.reconciliation_commitment === durable.reconciliation_commitment;
+}
+
+export function buildStoredCarryCostManifest(record) {
+  try {
+    if (!record?.position?.position_id || !record?.value_ledger || !record?.value_evidence) {
+      return denied("carry_cost_manifest_record_invalid");
+    }
+    const venueIds = [record.position.long_venue_id, record.position.short_venue_id];
+    if (new Set(venueIds).size !== 2) return denied("carry_cost_manifest_venues_invalid");
+    let operations;
+    let lifecycleKind;
+    if (record.value_evidence.aborted_entry_recovery?.status === "complete") {
+      lifecycleKind = "aborted_entry_recovery";
+      operations = abortedCostOperations(record, venueIds);
+    } else {
+      lifecycleKind = "normal";
+      operations = regularCostOperations(record, venueIds);
+    }
+    if (!operations || operations.length === 0) return denied("carry_cost_manifest_evidence_incomplete");
+    operations.sort((left, right) => left.operation_id.localeCompare(right.operation_id));
+    const material = {
+      version: 1,
+      position_id: record.position.position_id,
+      status: "complete",
+      lifecycle_kind: lifecycleKind,
+      operations,
+    };
+    return {
+      ok: true,
+      manifest: Object.freeze({
+        ...material,
+        manifest_commitment: `carry:cost-manifest:${digest(canonicalCarryCommitmentJson(material))}`,
+      }),
+    };
+  } catch {
+    return denied("carry_cost_manifest_evidence_incomplete");
+  }
+}
+
+export function verifyStoredCarryCostCompleteness(record) {
+  if (record?.value_evidence?.costs_complete !== true) return denied("carry_cost_manifest_incomplete");
+  const built = buildStoredCarryCostManifest(record);
+  if (!built.ok) return built;
+  if (canonicalCarryCommitmentJson(record.value_evidence.cost_manifest)
+    !== canonicalCarryCommitmentJson(built.manifest)) {
+    return denied("carry_cost_manifest_commitment_mismatch");
+  }
+  if (record.value_ledger?.status === "finalized"
+    && (record.value_ledger.finalization_evidence?.costs_complete !== true
+      || canonicalCarryCommitmentJson(record.value_ledger.finalization_evidence?.cost_manifest)
+        !== canonicalCarryCommitmentJson(built.manifest))) {
+    return denied("carry_cost_manifest_finalization_binding_mismatch");
+  }
+  return built;
+}
+
+function regularCostOperations(record, venueIds) {
+  const operations = [];
+  for (const phase of ["entry", "exit"]) {
+    const phaseEvidence = record.value_evidence?.[phase];
+    if (phaseEvidence?.status !== "complete") return null;
+    for (const venueId of venueIds) {
+      const evidence = phaseEvidence.venues?.[venueId];
+      if (evidence?.fee_exact !== true || evidence?.slippage_exact !== true
+        || evidence?.fill_exact !== true || !OWNER.test(String(evidence.evidence_commitment || ""))) return null;
+      const feeEntry = costLedgerEntry(record, `carry:value:${phase}:${venueId}:fee`);
+      const slippageEntry = costLedgerEntry(record, `carry:value:${phase}:${venueId}:slippage`);
+      if (!feeEntry || !slippageEntry || feeEntry.leg_id !== slippageEntry.leg_id
+        || feeEntry.evidence_commitment !== evidence.evidence_commitment
+        || slippageEntry.evidence_commitment !== evidence.evidence_commitment) return null;
+      const gasEntry = costLedgerEntry(record, `carry:value:${phase}:${venueId}:gas`);
+      const transferEntry = costLedgerEntry(record, `carry:value:${phase}:${venueId}:transfer-fee`);
+      operations.push(costOperation({
+        record,
+        phase,
+        venueId,
+        legId: feeEntry.leg_id,
+        operationEvidence: evidence.cost_operation_evidence,
+        sourceEvidence: [evidence.evidence_commitment],
+        feeEntries: [feeEntry],
+        slippageEntries: [slippageEntry],
+        gasEntries: gasEntry ? [gasEntry] : [],
+        transferEntries: transferEntry ? [transferEntry] : [],
+      }));
+    }
+  }
+  return operations.every(Boolean) ? operations : null;
+}
+
+function abortedCostOperations(record, venueIds) {
+  const recovery = record.value_evidence.aborted_entry_recovery;
+  const descriptors = Array.isArray(recovery.cost_operations) ? recovery.cost_operations : [];
+  const operations = descriptors.map((descriptor) => {
+    if (!venueIds.includes(descriptor?.venue_id)
+      || !["entry", "recovery_exit"].includes(descriptor?.phase)
+      || !OWNER.test(String(descriptor?.operation_id || ""))
+      || !OWNER.test(String(descriptor?.leg_id || ""))) return null;
+    const feeEntries = (descriptor.fee_entry_ids || []).map((entryId) => costLedgerEntry(record, entryId));
+    const slippageEntries = (descriptor.slippage_entry_ids || []).map((entryId) => costLedgerEntry(record, entryId));
+    const gasEntries = (descriptor.gas_entry_ids || []).map((entryId) => costLedgerEntry(record, entryId));
+    const transferEntries = (descriptor.transfer_entry_ids || []).map((entryId) => costLedgerEntry(record, entryId));
+    if ([feeEntries, slippageEntries, gasEntries, transferEntries]
+      .some((entries) => entries.some((entry) => !entry))) return null;
+    return costOperation({
+      record,
+      phase: descriptor.phase,
+      venueId: descriptor.venue_id,
+      legId: descriptor.leg_id,
+      operationId: descriptor.operation_id,
+      operationEvidence: descriptor.operation_evidence,
+      sourceEvidence: descriptor.source_evidence_commitments,
+      feeEntries,
+      slippageEntries,
+      gasEntries,
+      transferEntries,
+      noFill: descriptor.no_fill === true,
+    });
+  });
+  for (const venueId of venueIds) {
+    if (operations.filter((operation) => operation?.phase === "entry" && operation.venue_id === venueId).length !== 1) return null;
+  }
+  return operations.every(Boolean) ? operations : null;
+}
+
+function costOperation({
+  phase,
+  venueId,
+  legId,
+  operationId = null,
+  operationEvidence: operationEvidenceInput,
+  sourceEvidence,
+  feeEntries,
+  slippageEntries,
+  gasEntries,
+  transferEntries,
+  noFill = false,
+}) {
+  if (!OWNER.test(String(legId || "")) || !Array.isArray(sourceEvidence) || sourceEvidence.length === 0) return null;
+  if (!CARRY_EXECUTION_VENUES.includes(venueId)) return null;
+  const operationEvidence = verifyCarryCostOperationEvidence(operationEvidenceInput, {
+    phase,
+    venueId,
+    legId,
+    terminalNoFill: noFill,
+  });
+  if (!operationEvidence) return null;
+  const normalizedSources = [...new Set(sourceEvidence)].sort();
+  if (normalizedSources.some((source) => !operationEvidence.source_evidence_commitments.includes(source))) return null;
+  const costs = {
+    trading_fee: noFill
+      ? verifiedZeroCostProof("terminal_no_fill_zero_cost_v1", operationEvidence, phase, venueId, legId, "trading_fee")
+      : exactCostProof("trading_fee", feeEntries, sourceEvidence, phase, venueId, legId),
+    slippage: noFill
+      ? verifiedZeroCostProof("terminal_no_fill_zero_cost_v1", operationEvidence, phase, venueId, legId, "slippage")
+      : exactCostProof("slippage", slippageEntries, sourceEvidence, phase, venueId, legId),
+    gas: gasEntries.length > 0
+      ? exactCostProof("gas", gasEntries, gasEntries.map((entry) => entry.evidence_commitment), phase, venueId, legId)
+      : verifiedZeroCostProof("venue_order_api_no_network_transaction_v1", operationEvidence, phase, venueId, legId, "gas"),
+    transfer_fee: transferEntries.length > 0
+      ? exactCostProof("transfer_fee", transferEntries, transferEntries.map((entry) => entry.evidence_commitment), phase, venueId, legId)
+      : verifiedZeroCostProof("carry_execution_no_transfer_operation_v1", operationEvidence, phase, venueId, legId, "transfer_fee"),
+  };
+  if (Object.values(costs).some((proof) => !proof)) return null;
+  return {
+    operation_id: operationId || `carry:cost:${phase}:${venueId}`,
+    phase,
+    venue_id: venueId,
+    leg_id: legId,
+    operation_evidence: operationEvidence,
+    costs,
+  };
+}
+
+function exactCostProof(category, entries, sourceEvidence, phase, venueId, legId) {
+  if (!Array.isArray(entries) || entries.length === 0
+    || entries.some((entry) => entry.venue_id !== venueId || entry.leg_id !== legId
+      || !sourceEvidence.includes(entry.evidence_commitment))) return null;
+  let amount = 0;
+  for (const entry of entries) {
+    if (category === "trading_fee") {
+      if (entry.entry_type === "trading_fee" && entry.direction === "debit") amount += entry.amount_micro_usdc;
+      else if (entry.entry_type === "rebate" && entry.direction === "credit") amount -= entry.amount_micro_usdc;
+      else return null;
+    } else if (entry.entry_type === category && entry.direction === "debit") amount += entry.amount_micro_usdc;
+    else return null;
+    if (!Number.isSafeInteger(amount)) return null;
+  }
+  const material = {
+    version: 1,
+    phase,
+    venue_id: venueId,
+    leg_id: legId,
+    category,
+    status: "exact",
+    amount_micro_usdc: amount,
+    proof_kind: "terminal_execution_exact_v1",
+    ledger_entry_ids: entries.map((entry) => entry.entry_id),
+    source_evidence_commitments: [...new Set(sourceEvidence)].sort(),
+    zero_invariant: null,
+  };
+  return { ...material, evidence_commitment: `carry:cost-proof:${digest(canonicalCarryCommitmentJson(material))}` };
+}
+
+function verifiedZeroCostProof(proofKind, operationEvidence, phase, venueId, legId, category) {
+  const sources = [operationEvidence.evidence_commitment];
+  const zeroInvariant = (category === "trading_fee" || category === "slippage")
+    ? { kind: "terminal_no_fill", terminal_order_status: "no_fill", filled_quantity_e8: 0 }
+    : category === "gas"
+      ? { kind: "venue_order_api", network_transaction_submitted: false }
+      : { kind: "no_transfer_operation", transfer_operation_requested: false };
+  const material = {
+    version: 1,
+    phase,
+    venue_id: venueId,
+    leg_id: legId,
+    category,
+    status: "verified_zero",
+    amount_micro_usdc: 0,
+    proof_kind: proofKind,
+    ledger_entry_ids: [],
+    source_evidence_commitments: sources,
+    zero_invariant: zeroInvariant,
+  };
+  return { ...material, evidence_commitment: `carry:cost-proof:${digest(canonicalCarryCommitmentJson(material))}` };
+}
+
+export function buildCarryCostOperationEvidence({
+  evidence_kind: evidenceKind,
+  phase,
+  venue_id: venueId,
+  leg_id: legId,
+  source_evidence_commitments: sourceEvidence,
+  work_order_commitment: workOrderCommitment,
+  provider_ref_commitment: providerRefCommitment = null,
+  result_commitment: resultCommitment = null,
+  terminal_evidence_commitment: terminalEvidenceCommitment,
+  execution_evidence_commitment: executionEvidenceCommitment = null,
+  saga_id: sagaId = null,
+  saga_status: sagaStatus = null,
+  saga_terminal_reason: sagaTerminalReason = null,
+  submission_status: submissionStatus = null,
+  cancel_confirmed: cancelConfirmed = false,
+  terminal_no_fill: terminalNoFill,
+}) {
+  if (!["terminal_provider_order_cost_scope_v1", "terminal_saga_no_fill_cost_scope_v1"].includes(evidenceKind)
+    || !["entry", "exit", "recovery_exit"].includes(phase)
+    || !CARRY_EXECUTION_VENUES.includes(venueId)
+    || !OWNER.test(String(legId || ""))
+    || !Array.isArray(sourceEvidence)
+    || sourceEvidence.length === 0
+    || sourceEvidence.some((value) => !OWNER.test(String(value || "")))
+    || !OWNER.test(String(workOrderCommitment || ""))
+    || !OWNER.test(String(terminalEvidenceCommitment || ""))
+    || !sourceEvidence.includes(terminalEvidenceCommitment)
+    || terminalNoFill !== (evidenceKind === "terminal_saga_no_fill_cost_scope_v1")) return null;
+  if (evidenceKind === "terminal_provider_order_cost_scope_v1") {
+    if (!OWNER.test(String(providerRefCommitment || ""))
+      || !OWNER.test(String(resultCommitment || ""))
+      || !OWNER.test(String(executionEvidenceCommitment || ""))
+      || sagaId !== null || sagaStatus !== null || submissionStatus !== null || cancelConfirmed !== false) return null;
+  } else if (!OWNER.test(String(sagaId || ""))
+    || !["failed_no_submit", "failed_no_fill", "unwound"].includes(sagaStatus)
+    || !["pending", "submitted", "acknowledged", "failed", "finalized"].includes(submissionStatus)
+    || (!(sagaStatus === "failed_no_submit" && submissionStatus === "pending")
+      && !["failed", "finalized"].includes(submissionStatus)
+      && cancelConfirmed !== true)
+    || (providerRefCommitment !== null && !OWNER.test(String(providerRefCommitment || "")))
+    || resultCommitment !== null || executionEvidenceCommitment !== null) return null;
+  const terminalMaterial = evidenceKind === "terminal_provider_order_cost_scope_v1"
+    ? {
+      version: 1,
+      evidence_kind: "provider_terminal_execution_v1",
+      phase,
+      venue_id: venueId,
+      leg_id: legId,
+      work_order_commitment: workOrderCommitment,
+      provider_ref_commitment: providerRefCommitment,
+      result_commitment: resultCommitment,
+      execution_evidence_commitment: executionEvidenceCommitment,
+      terminal_status: "filled",
+      network_transaction_submitted: false,
+      transfer_operation_requested: false,
+    }
+    : {
+      version: 1,
+      evidence_kind: "saga_terminal_no_fill_v1",
+      phase,
+      venue_id: venueId,
+      leg_id: legId,
+      work_order_commitment: workOrderCommitment,
+      provider_ref_commitment: providerRefCommitment,
+      saga_id: sagaId,
+      saga_status: sagaStatus,
+      saga_terminal_reason: sagaTerminalReason,
+      submission_status: submissionStatus,
+      cancel_confirmed: cancelConfirmed,
+      terminal: true,
+      filled_micro_usdc: 0,
+      network_transaction_submitted: false,
+      transfer_operation_requested: false,
+    };
+  const rebuiltTerminalCommitment = `carry:cost-terminal-evidence:${digest(canonicalCarryCommitmentJson(terminalMaterial))}`;
+  if (terminalEvidenceCommitment !== rebuiltTerminalCommitment) return null;
+  const sources = [...new Set(sourceEvidence)].sort();
+  if (!sources.includes(rebuiltTerminalCommitment)
+    || (executionEvidenceCommitment !== null && !sources.includes(executionEvidenceCommitment))) return null;
+  const material = {
+    version: 1,
+    evidence_kind: evidenceKind,
+    phase,
+    venue_id: venueId,
+    leg_id: legId,
+    source_evidence_commitments: sources,
+    work_order_commitment: workOrderCommitment,
+    provider_ref_commitment: providerRefCommitment,
+    result_commitment: resultCommitment,
+    terminal_evidence_commitment: terminalEvidenceCommitment,
+    terminal_evidence: { ...terminalMaterial, evidence_commitment: rebuiltTerminalCommitment },
+    saga_id: sagaId,
+    saga_status: sagaStatus,
+    submission_status: submissionStatus,
+    cancel_confirmed: cancelConfirmed,
+    terminal_no_fill: terminalNoFill,
+    separate_network_fee_charged: false,
+    transfer_operation_requested: false,
+  };
+  return Object.freeze({
+    ...material,
+    evidence_commitment: `carry:cost-operation-evidence:${digest(canonicalCarryCommitmentJson(material))}`,
+  });
+}
+
+function verifyCarryCostOperationEvidence(value, { phase, venueId, legId, terminalNoFill }) {
+  const rebuilt = buildCarryCostOperationEvidence({
+    evidence_kind: value?.evidence_kind,
+    phase: value?.phase,
+    venue_id: value?.venue_id,
+    leg_id: value?.leg_id,
+    source_evidence_commitments: value?.source_evidence_commitments,
+    work_order_commitment: value?.work_order_commitment,
+    provider_ref_commitment: value?.provider_ref_commitment,
+    result_commitment: value?.result_commitment,
+    terminal_evidence_commitment: value?.terminal_evidence_commitment,
+    execution_evidence_commitment: value?.terminal_evidence?.execution_evidence_commitment,
+    saga_id: value?.saga_id,
+    saga_status: value?.saga_status,
+    saga_terminal_reason: value?.terminal_evidence?.saga_terminal_reason,
+    submission_status: value?.submission_status,
+    cancel_confirmed: value?.cancel_confirmed,
+    terminal_no_fill: value?.terminal_no_fill,
+  });
+  return rebuilt
+    && rebuilt.phase === phase
+    && rebuilt.venue_id === venueId
+    && rebuilt.leg_id === legId
+    && rebuilt.terminal_no_fill === terminalNoFill
+    && rebuilt.evidence_commitment === value?.evidence_commitment
+    && canonicalCarryCommitmentJson(rebuilt) === canonicalCarryCommitmentJson(value)
+    ? rebuilt
+    : null;
+}
+
+function costLedgerEntry(record, entryId) {
+  return record.value_ledger?.entries?.find((entry) => entry.entry_id === entryId) || null;
 }
 
 export async function getStoredCarryPosition({ state, position_id: positionId, owner_commitment: ownerCommitment }) {

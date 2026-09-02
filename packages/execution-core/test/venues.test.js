@@ -2,16 +2,24 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  AUTOPILOT_ACCOUNT_DEFAULT_VENUES,
+  AUTOPILOT_ACCOUNT_READINESS_VENUES,
+  AUTOPILOT_ACCOUNT_VENUES,
+  AUTOPILOT_WORKER_DEFAULT_VENUES,
+  AUTOPILOT_WORKER_VENUES,
   CARRY_BROWSER_STREAM_VENUES,
   CARRY_EXECUTION_VENUES,
   CARRY_EXECUTION_REQUIRED_ADAPTER_CAPABILITIES,
   CARRY_RECOVERY_POLICY,
   CARRY_SHADOW_ASSETS,
+  CONNECTOR_SDK_VENUES,
   CORE_PERP_VENUES,
   EXECUTION_VENUE_SPECS,
   SUPPORTED_EXECUTION_VENUES,
+  PRIVATE_EXECUTION_INSTRUCTION_VENUES,
   assessVenueReadiness,
   carryExecutionQualification,
+  connectorSdkDefaultVenue,
   executionVenueLabel,
   mandatoryNoSubmitChecks,
   normalizeCarryShadowAssets,
@@ -172,6 +180,36 @@ test("registry centralizes five core perp candidates without claiming qualificat
   }), CORE_PERP_VENUES);
 });
 
+test("registry preserves legacy autopilot, sealing, and connector surface ordering", () => {
+  assert.deepEqual(AUTOPILOT_WORKER_VENUES, [
+    "jupiter", "phoenix", "backpack", "hyperliquid", "drift", "coinbase_advanced",
+  ]);
+  assert.deepEqual(AUTOPILOT_WORKER_DEFAULT_VENUES, [
+    "jupiter", "phoenix", "hyperliquid", "coinbase_advanced",
+  ]);
+  assert.deepEqual(AUTOPILOT_ACCOUNT_VENUES, [
+    "jupiter", "phoenix", "backpack", "hyperliquid", "coinbase_advanced",
+  ]);
+  assert.deepEqual(AUTOPILOT_ACCOUNT_DEFAULT_VENUES, AUTOPILOT_ACCOUNT_VENUES);
+  assert.deepEqual(AUTOPILOT_ACCOUNT_READINESS_VENUES, [
+    "hyperliquid", "phoenix", "backpack", "jupiter", "coinbase_advanced",
+  ]);
+  assert.deepEqual(PRIVATE_EXECUTION_INSTRUCTION_VENUES, [
+    "hyperliquid", "coinbase_advanced", "phoenix", "jupiter",
+  ]);
+  assert.deepEqual(CONNECTOR_SDK_VENUES, [
+    "phoenix", "jupiter", "hyperliquid", "coinbase_advanced",
+  ]);
+  assert.equal(connectorSdkDefaultVenue("solana_perps_market"), "phoenix");
+  assert.equal(connectorSdkDefaultVenue("solana_swap_aggregator"), "jupiter");
+  assert.equal(connectorSdkDefaultVenue("hyperliquid_style_market"), "hyperliquid");
+  assert.equal(connectorSdkDefaultVenue("coinbase_style_provider"), "coinbase_advanced");
+  assert.equal(connectorSdkDefaultVenue("rfq_solver_network"), null);
+  assert.equal(AUTOPILOT_ACCOUNT_VENUES.includes("drift"), false);
+  assert.equal(PRIVATE_EXECUTION_INSTRUCTION_VENUES.includes("lighter"), false);
+  assert.equal(PRIVATE_EXECUTION_INSTRUCTION_VENUES.includes("aster"), false);
+});
+
 test("Carry shadow asset selections are canonical and registry-bound", () => {
   assert.deepEqual(normalizeCarryShadowAssets(undefined, { default_to_all: true }), CARRY_SHADOW_ASSETS);
   assert.deepEqual(normalizeCarryShadowAssets("sol,btc,BTC"), ["BTC", "SOL"]);
@@ -184,6 +222,13 @@ test("registry type unions stay synchronized with runtime capability registry", 
   assert.deepEqual(declaredStringUnion(declarations, "VenueId"), SUPPORTED_EXECUTION_VENUES);
   assert.deepEqual(declaredStringUnion(declarations, "CorePerpVenueId"), CORE_PERP_VENUES);
   assert.deepEqual(declaredStringUnion(declarations, "CarryExecutionVenueId"), CARRY_EXECUTION_VENUES);
+  assert.deepEqual(declaredStringUnion(declarations, "AutopilotWorkerVenueId"), AUTOPILOT_WORKER_VENUES);
+  assert.deepEqual(declaredStringUnion(declarations, "AutopilotAccountVenueId"), AUTOPILOT_ACCOUNT_VENUES);
+  assert.deepEqual(
+    declaredStringUnion(declarations, "PrivateExecutionInstructionVenueId"),
+    PRIVATE_EXECUTION_INSTRUCTION_VENUES,
+  );
+  assert.deepEqual(declaredStringUnion(declarations, "ConnectorSdkVenueId"), CONNECTOR_SDK_VENUES);
 });
 
 test("candidate venues cannot enter Carry until the identical execution contract is complete", () => {

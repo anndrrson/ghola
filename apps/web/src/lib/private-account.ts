@@ -3,6 +3,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import {
   CARRY_EXECUTION_VENUES,
   CARRY_SHADOW_ASSETS,
+  connectorSdkDefaultVenue,
   executionVenueLabel,
   isCarryExecutionVenue,
   type CarryExecutionVenueId,
@@ -2433,10 +2434,8 @@ export function venuePlatformClass(venueId: GholaVenueId): GholaPlatformClass {
 }
 
 export function venueIdForPlatformClass(platformClass: GholaPlatformClass): GholaVenueId | null {
-  if (platformClass === "hyperliquid_style_market") return "hyperliquid";
-  if (platformClass === "solana_perps_market") return "phoenix";
-  if (platformClass === "solana_swap_aggregator") return "jupiter";
-  if (platformClass === "coinbase_style_provider") return "coinbase_advanced";
+  const registeredDefault = connectorSdkDefaultVenue(platformClass);
+  if (registeredDefault) return registeredDefault as GholaVenueId;
   if (platformClass === "rfq_solver_network") return "rfq_network";
   return null;
 }

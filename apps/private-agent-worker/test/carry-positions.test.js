@@ -4,7 +4,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { canonicalCarryCommitmentJson, cashflowValuationEvidenceMessage } from "@ghola/execution-core";
+import {
+  appendCarryValueLedgerEntry,
+  canonicalCarryCommitmentJson,
+  cashflowValuationEvidenceMessage,
+} from "@ghola/execution-core";
 import {
   advanceStoredCarryPosition,
   appendStoredCarryValueEntry,
@@ -14,10 +18,13 @@ import {
   compileStoredCarryPortfolioValueReport,
   collectStoredCarryFundingEvidence,
   createStoredCarryPosition,
+  buildCarryCostOperationEvidence,
+  buildStoredCarryCostManifest,
   finalizeStoredCarryValueLedger,
   observeStoredCarryPosition,
   requestStoredCarryPositionExit,
   runCarryMonitoringTick,
+  verifyStoredCarryCostCompleteness,
   verifyStoredCarryOpportunityBinding,
 } from "../src/execution/carry-positions.js";
 import { observeCarryTransferRoutes } from "../src/execution/carry-transfer-routes.js";
@@ -192,10 +199,8 @@ test("persists a Carry Position, lifecycle, and final value proof across state r
     now_ms: NOW + 10,
   });
   assert.equal(valued.ok, true);
-  const completedEvidence = await state.putCarryPositionRecord({
-    ...(await state.getCarryPositionRecord(record.position.position_id)),
-    value_evidence: completeValueEvidence(),
-  }, { expected_version: valued.record.record_version });
+  const completeRecord = completeNormalCostRecord(await state.getCarryPositionRecord(record.position.position_id));
+  const completedEvidence = await state.putCarryPositionRecord(completeRecord, { expected_version: valued.record.record_version });
   assert.equal(completedEvidence.ok, true);
   const finalized = await finalizeStoredCarryValueLedger({
     state,
@@ -205,11 +210,12 @@ test("persists a Carry Position, lifecycle, and final value proof across state r
       gross_exposure_micro_usdc: 0,
       open_order_count: 0,
       costs_complete: true,
+      cost_manifest: completedEvidence.record.value_evidence.cost_manifest,
       reconciliation_commitment: "carry:reconciliation:0001",
     },
     now_ms: NOW + 11,
   });
-  assert.equal(finalized.ok, true);
+  assert.equal(finalized.ok, true, finalized.error);
   assert.equal(finalized.record.value_ledger.status, "finalized");
   assert.equal(finalized.record.value_boundary_authoritative, false);
 
@@ -446,17 +452,18 @@ test("refuses final value claims that do not match durable flat reconciliation",
     });
     record = advanced.record;
   }
-  const completed = await state.putCarryPositionRecord({
-    ...(await state.getCarryPositionRecord(record.position.position_id)),
-    value_evidence: completeValueEvidence(),
-  }, { expected_version: record.record_version });
+  const completeRecord = completeNormalCostRecord(await state.getCarryPositionRecord(record.position.position_id));
+  const completed = await state.putCarryPositionRecord(completeRecord, { expected_version: record.record_version });
   assert.equal(completed.ok, true);
 
   const rejected = await finalizeStoredCarryValueLedger({
     state,
     position_id: record.position.position_id,
     owner_commitment: OWNER,
-    evidence: { ...finalizationEvidence(), reconciliation_commitment: "carry:reconciliation:wrong" },
+    evidence: {
+      ...finalizationEvidence(completed.record.value_evidence.cost_manifest),
+      reconciliation_commitment: "carry:reconciliation:wrong",
+    },
     now_ms: NOW + 10,
   });
 
@@ -487,27 +494,79 @@ test("finalizes an aborted entry only from complete recovery and flat evidence",
     });
     record = advanced.record;
   }
-  const completed = await state.putCarryPositionRecord({
-    ...(await state.getCarryPositionRecord(record.position.position_id)),
-    value_evidence: {
-      aborted_entry_recovery: { status: "complete" },
-      funding: { status: "complete_through_exit" },
-      realized_economics: { status: "complete" },
-      costs_complete: true,
-    },
-  }, { expected_version: record.record_version });
+  const completeRecord = completeAbortedCostRecord(await state.getCarryPositionRecord(record.position.position_id));
+  const completed = await state.putCarryPositionRecord(completeRecord, { expected_version: record.record_version });
   assert.equal(completed.ok, true);
 
   const finalized = await finalizeStoredCarryValueLedger({
     state,
     position_id: record.position.position_id,
     owner_commitment: OWNER,
-    evidence: finalizationEvidence(),
+    evidence: finalizationEvidence(completed.record.value_evidence.cost_manifest),
     now_ms: NOW + 10,
   });
 
-  assert.equal(finalized.ok, true);
+  assert.equal(finalized.ok, true, finalized.error);
   assert.equal(finalized.record.value_ledger.status, "finalized");
+});
+
+test("cost manifests rebuild durably and category tampering cannot claim complete costs", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ghola-carry-cost-manifest-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const state = createWorkerState(dir);
+  const created = await createStoredCarryPosition({
+    state,
+    owner_commitment: OWNER,
+    position_input: await positionInput("cost-manifest"),
+    opportunity: opportunity(),
+    monitoring_context: monitoringContext(),
+    now_ms: NOW,
+  });
+  let record = created.record;
+  for (const item of lifecycle()) {
+    record = (await advanceStoredCarryPosition({
+      state,
+      position_id: record.position.position_id,
+      owner_commitment: OWNER,
+      event: item,
+      now_ms: NOW + item.sequence,
+    })).record;
+  }
+
+  const normal = completeNormalCostRecord(await state.getCarryPositionRecord(record.position.position_id));
+  const rebuilt = buildStoredCarryCostManifest(normal);
+  assert.equal(rebuilt.ok, true, rebuilt.error);
+  assert.equal(
+    canonicalCarryCommitmentJson(rebuilt.manifest),
+    canonicalCarryCommitmentJson(normal.value_evidence.cost_manifest),
+  );
+  assert.equal(verifyStoredCarryCostCompleteness(normal).ok, true);
+  assert.deepEqual(new Set(rebuilt.manifest.operations.map((operation) => operation.phase)), new Set(["entry", "exit"]));
+
+  const aborted = completeAbortedCostRecord(await state.getCarryPositionRecord(record.position.position_id));
+  const abortedBuilt = buildStoredCarryCostManifest(aborted);
+  assert.equal(abortedBuilt.ok, true, abortedBuilt.error);
+  assert.equal(abortedBuilt.manifest.lifecycle_kind, "aborted_entry_recovery");
+  assert.equal(abortedBuilt.manifest.operations.every((operation) => operation.phase === "entry"), true);
+
+  const tamperedManifest = structuredClone(normal.value_evidence.cost_manifest);
+  delete tamperedManifest.operations[0].costs.transfer_fee;
+  const stored = await state.putCarryPositionRecord({
+    ...normal,
+    value_evidence: { ...normal.value_evidence, cost_manifest: tamperedManifest },
+  }, { expected_version: record.record_version });
+  assert.equal(stored.ok, true, stored.error);
+  const rejected = await finalizeStoredCarryValueLedger({
+    state,
+    position_id: record.position.position_id,
+    owner_commitment: OWNER,
+    evidence: finalizationEvidence(tamperedManifest),
+    now_ms: NOW + 11,
+  });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.error, "carry_cost_manifest_commitment_mismatch");
+  const persisted = await state.getCarryPositionRecord(record.position.position_id);
+  assert.equal(persisted.value_ledger.status, "open");
 });
 
 test("rejects stale concurrent Carry Position writers", async (t) => {
@@ -2541,21 +2600,164 @@ function monitoringInventoryExpectations() {
   ]));
 }
 
-function completeValueEvidence() {
-  return {
-    entry: { status: "complete" },
-    exit: { status: "complete" },
+function completeNormalCostRecord(record) {
+  let ledger = record.value_ledger;
+  const venues = [
+    ["hyperliquid", "carry:leg:long"],
+    ["lighter", "carry:leg:short"],
+  ];
+  const valueEvidence = {
+    entry: { status: "complete", venues: {} },
+    exit: { status: "complete", venues: {} },
     funding: { status: "complete_through_exit" },
     realized_economics: { status: "complete" },
-    costs_complete: true,
+    costs_complete: false,
   };
+  for (const phase of ["entry", "exit"]) {
+    for (const [venueId, legId] of venues) {
+      const evidenceCommitment = `carry:value:evidence:${phase}:${venueId}`;
+      valueEvidence[phase].venues[venueId] = {
+        fee_exact: true,
+        slippage_exact: true,
+        fill_exact: true,
+        evidence_commitment: evidenceCommitment,
+        cost_operation_evidence: testCostOperationEvidence({
+          phase,
+          venueId,
+          legId,
+          executionEvidenceCommitment: evidenceCommitment,
+        }),
+      };
+      for (const [suffix, entryType] of [["fee", "trading_fee"], ["slippage", "slippage"]]) {
+        const appended = appendCarryValueLedgerEntry({
+          ledger,
+          entry: {
+            version: 1,
+            entry_id: `carry:value:${phase}:${venueId}:${suffix}`,
+            sequence: ledger.last_sequence + 1,
+            entry_type: entryType,
+            direction: "debit",
+            amount_micro_usdc: 0,
+            venue_id: venueId,
+            leg_id: legId,
+            occurred_at_ms: NOW + 10,
+            evidence_commitment: evidenceCommitment,
+          },
+          now_ms: NOW + 10,
+        });
+        assert.equal(appended.ok, true, appended.error);
+        ledger = appended.ledger;
+      }
+    }
+  }
+  const candidate = { ...record, value_ledger: ledger, value_evidence: valueEvidence };
+  const built = buildStoredCarryCostManifest(candidate);
+  assert.equal(built.ok, true, built.error);
+  candidate.value_evidence = { ...valueEvidence, costs_complete: true, cost_manifest: built.manifest };
+  return candidate;
 }
 
-function finalizationEvidence() {
+function completeAbortedCostRecord(record) {
+  const operations = [
+    ["hyperliquid", "carry:leg:long"],
+    ["lighter", "carry:leg:short"],
+  ].map(([venueId, legId]) => {
+    const operationEvidence = testCostOperationEvidence({ phase: "entry", venueId, legId, noFill: true });
+    return {
+      operation_id: `carry:cost:aborted-entry:${venueId}`,
+      phase: "entry",
+      venue_id: venueId,
+      leg_id: legId,
+      source_evidence_commitments: operationEvidence.source_evidence_commitments,
+      fee_entry_ids: [],
+      slippage_entry_ids: [],
+      gas_entry_ids: [],
+      transfer_entry_ids: [],
+      operation_evidence: operationEvidence,
+      no_fill: true,
+    };
+  });
+  const valueEvidence = {
+    aborted_entry_recovery: { status: "complete", cost_operations: operations },
+    funding: { status: "complete_through_exit" },
+    realized_economics: { status: "complete" },
+    costs_complete: false,
+  };
+  const candidate = { ...record, value_evidence: valueEvidence };
+  const built = buildStoredCarryCostManifest(candidate);
+  assert.equal(built.ok, true, built.error);
+  candidate.value_evidence = { ...valueEvidence, costs_complete: true, cost_manifest: built.manifest };
+  return candidate;
+}
+
+function testCostOperationEvidence({ phase, venueId, legId, executionEvidenceCommitment = null, noFill = false }) {
+  const terminalMaterial = noFill
+    ? {
+      version: 1,
+      evidence_kind: "saga_terminal_no_fill_v1",
+      phase,
+      venue_id: venueId,
+      leg_id: legId,
+      work_order_commitment: `work:carry:${phase}:${venueId}`,
+      provider_ref_commitment: null,
+      saga_id: `saga:carry:${phase}:${venueId}`,
+      saga_status: "failed_no_fill",
+      saga_terminal_reason: "no_fill_terminal",
+      submission_status: "failed",
+      cancel_confirmed: false,
+      terminal: true,
+      filled_micro_usdc: 0,
+      network_transaction_submitted: false,
+      transfer_operation_requested: false,
+    }
+    : {
+      version: 1,
+      evidence_kind: "provider_terminal_execution_v1",
+      phase,
+      venue_id: venueId,
+      leg_id: legId,
+      work_order_commitment: `work:carry:${phase}:${venueId}`,
+      provider_ref_commitment: `provider:carry:${phase}:${venueId}`,
+      result_commitment: `result:carry:${phase}:${venueId}`,
+      execution_evidence_commitment: executionEvidenceCommitment,
+      terminal_status: "filled",
+      network_transaction_submitted: false,
+      transfer_operation_requested: false,
+    };
+  const terminalCommitment = `carry:cost-terminal-evidence:${createHash("sha256")
+    .update(canonicalCarryCommitmentJson(terminalMaterial)).digest("hex")}`;
+  const operation = buildCarryCostOperationEvidence({
+    evidence_kind: noFill
+      ? "terminal_saga_no_fill_cost_scope_v1"
+      : "terminal_provider_order_cost_scope_v1",
+    phase,
+    venue_id: venueId,
+    leg_id: legId,
+    source_evidence_commitments: noFill
+      ? [terminalCommitment]
+      : [executionEvidenceCommitment, terminalCommitment],
+    work_order_commitment: terminalMaterial.work_order_commitment,
+    provider_ref_commitment: terminalMaterial.provider_ref_commitment,
+    result_commitment: terminalMaterial.result_commitment || null,
+    terminal_evidence_commitment: terminalCommitment,
+    execution_evidence_commitment: executionEvidenceCommitment,
+    saga_id: terminalMaterial.saga_id || null,
+    saga_status: terminalMaterial.saga_status || null,
+    saga_terminal_reason: terminalMaterial.saga_terminal_reason || null,
+    submission_status: terminalMaterial.submission_status || null,
+    cancel_confirmed: terminalMaterial.cancel_confirmed || false,
+    terminal_no_fill: noFill,
+  });
+  assert.ok(operation);
+  return operation;
+}
+
+function finalizationEvidence(costManifest) {
   return {
     gross_exposure_micro_usdc: 0,
     open_order_count: 0,
     costs_complete: true,
+    ...(costManifest ? { cost_manifest: costManifest } : {}),
     reconciliation_commitment: "carry:reconciliation:0001",
   };
 }

@@ -53,7 +53,7 @@ import {
 import { executeStoredCarryEntry, startCarryExecutionLoop } from "./execution/carry-executor.js";
 import {
   buildCompletedCarryReleaseMaterial,
-  readCompletedCarryLifecycleProof,
+  readCompletedCarryLifecycleProofs,
 } from "./execution/carry-release-evidence.js";
 import { carrySupervisionHealth } from "./execution/carry-loop-supervisor.js";
 import { createCarryTransferRouteProbe } from "./execution/carry-transfer-probe.js";
@@ -3117,7 +3117,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
           ...(options.carryFetchVenue ? { fetchVenue: options.carryFetchVenue } : {}),
         });
         const nowMs = Date.now();
-        const [shadowQualification, routeObservation, lifecycleProof] = await Promise.all([
+        const [shadowQualification, routeObservation, lifecycleProofSet] = await Promise.all([
           readCarryShadowQualification({ state, now_ms: nowMs }),
           observePreopenCarryTransferRoutes({
             state,
@@ -3128,13 +3128,15 @@ export function createPrivateAgentWorkerServer(options = {}) {
             probe_route: probeCarryTransferRoute,
             now_ms: nowMs,
           }),
-          readCompletedCarryLifecycleProof({
+          readCompletedCarryLifecycleProofs({
             state,
             owner_commitment: body.owner_commitment,
             asset: body.asset,
             now_ms: nowMs,
           }),
         ]);
+        const lifecycleProofs = lifecycleProofSet.ok ? lifecycleProofSet.proofs : [];
+        const lifecycleProof = lifecycleProofs[0] || null;
         const routeEvidence = await loadCarryTransferRouteEvidence({
           state,
           owner_commitment: body.owner_commitment,
@@ -3150,6 +3152,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
           route_observation_configured: typeof probeCarryTransferRoute === "function",
           route_evidence: routeEvidence,
           lifecycle_proof: lifecycleProof,
+          lifecycle_proofs: lifecycleProofs,
           now_ms: nowMs,
         });
         return json(res, 200, {
@@ -3191,7 +3194,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
           return json(res, 503, { error: "attested sealed execution is unavailable", missing: ready.missing });
         }
         const nowMs = Date.now();
-        const [readiness, diagnostic, shadowQualification, routeEvidence, lifecycleProof] = await Promise.all([
+        const [readiness, diagnostic, shadowQualification, routeEvidence, lifecycleProofSet] = await Promise.all([
           readCarryExecutionReadiness({
             state,
             owner_commitment: body.owner_commitment,
@@ -3217,13 +3220,15 @@ export function createPrivateAgentWorkerServer(options = {}) {
             max_data_age_ms: 30_000,
             expected_worker_image_digest: env("PHALA_CVM_IMAGE_DIGEST", env("PRIVATE_AGENT_IMAGE_DIGEST", "")),
           }).catch(() => ({ ok: false, error: "carry_transfer_route_evidence_unavailable" })),
-          readCompletedCarryLifecycleProof({
+          readCompletedCarryLifecycleProofs({
             state,
             owner_commitment: body.owner_commitment,
             asset: body.asset,
             now_ms: nowMs,
           }),
         ]);
+        const lifecycleProofs = lifecycleProofSet.ok ? lifecycleProofSet.proofs : [];
+        const lifecycleProof = lifecycleProofs[0] || null;
         const privatePrimeReadiness = buildCarryPrivatePrimeReadiness({
           readiness,
           diagnostic,
@@ -3232,6 +3237,7 @@ export function createPrivateAgentWorkerServer(options = {}) {
           route_observation_configured: typeof probeCarryTransferRoute === "function",
           route_evidence: routeEvidence,
           lifecycle_proof: lifecycleProof,
+          lifecycle_proofs: lifecycleProofs,
           now_ms: nowMs,
         });
         return json(res, 200, {

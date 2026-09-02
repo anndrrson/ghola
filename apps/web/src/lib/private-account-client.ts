@@ -23,6 +23,10 @@ import type { AsterV3AgentOnboardingContract } from "./aster-agent-onboarding";
 import type { LighterChangePubKeyTransactionPlan } from "./lighter-agent-association";
 import { defaultHyperliquidMarketAllowlist } from "./private-account-hyperliquid-policy";
 import { isPrivateAccountLiveMutationPath } from "./private-account-live-routes";
+import {
+  connectorSdkDefaultVenue,
+  type AutopilotAccountVenueId,
+} from "@ghola/execution-core";
 
 export type PrivateAccountProductBucket =
   | "stablecoin"
@@ -50,20 +54,13 @@ export interface PrivateAccountSafeInput {
   solver_count_bucket: "1" | "2-4" | "5+";
 }
 
-const DEFAULT_PRIVATE_EXECUTION_VENUE: Partial<Record<GholaPlatformClass, GholaVenueId>> = {
-  hyperliquid_style_market: "hyperliquid",
-  solana_perps_market: "phoenix",
-  solana_swap_aggregator: "jupiter",
-  coinbase_style_provider: "coinbase_advanced",
-};
-
 export function bindPrivateAccountSafeInputPlatform(
   input: PrivateAccountSafeInput,
   platformClass: GholaPlatformClass,
 ): PrivateAccountSafeInput {
   const safeInput = { ...input };
   delete safeInput.venue_id;
-  const venueId = DEFAULT_PRIVATE_EXECUTION_VENUE[platformClass];
+  const venueId = connectorSdkDefaultVenue(platformClass) as GholaVenueId | null;
   return {
     ...safeInput,
     platform_class: platformClass,
@@ -71,7 +68,7 @@ export function bindPrivateAccountSafeInputPlatform(
   };
 }
 
-export type PrivateAutopilotVenueId = "jupiter" | "phoenix" | "backpack" | "hyperliquid" | "coinbase_advanced";
+export type PrivateAutopilotVenueId = AutopilotAccountVenueId;
 export type PrivateAutopilotStatus =
   | "armed"
   | "watching"

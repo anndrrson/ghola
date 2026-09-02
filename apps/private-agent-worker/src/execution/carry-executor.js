@@ -9,6 +9,8 @@ import {
   advanceStoredCarryPosition,
   appendStoredCarryValueEntry,
   authoritativeStoredCarryValueBoundary,
+  buildCarryCostOperationEvidence,
+  buildStoredCarryCostManifest,
   collectStoredCarryFundingEvidence,
   finalizeStoredCarryValueLedger,
   verifyStoredCarryOpportunityBinding,
@@ -1966,6 +1968,12 @@ async function recordExecutionValueEvidence({ state, ownerCommitment, positionId
   for (const leg of legs) {
     const receipt = receiptByLeg[leg.leg_id];
     const evidence = executionValueEvidence({ leg, receipt, nowMs });
+    const costOperationEvidence = terminalProviderCostOperationEvidence({
+      phase,
+      leg,
+      receipt,
+      executionEvidenceCommitment: evidence.evidenceCommitment,
+    });
     venues[leg.venue_id] = {
       fee_exact: evidence.fee.complete,
       slippage_exact: evidence.slippage.complete,
@@ -1982,6 +1990,7 @@ async function recordExecutionValueEvidence({ state, ownerCommitment, positionId
       side: leg.side,
       pnl_settlement_asset: accountingAsset(leg.pnl_settlement_asset),
       evidence_commitment: evidence.evidenceCommitment,
+      cost_operation_evidence: costOperationEvidence,
     };
     const entries = [];
     if (evidence.fee.complete) {
@@ -2021,7 +2030,10 @@ async function recordExecutionValueEvidence({ state, ownerCommitment, positionId
       entriesPersisted &&= persisted;
     }
   }
-  const complete = entriesPersisted && legs.length === 2 && legs.every((leg) => venues[leg.venue_id]?.fee_exact && venues[leg.venue_id]?.slippage_exact && venues[leg.venue_id]?.fill_exact);
+  const complete = entriesPersisted && legs.length === 2 && legs.every((leg) => venues[leg.venue_id]?.fee_exact
+    && venues[leg.venue_id]?.slippage_exact
+    && venues[leg.venue_id]?.fill_exact
+    && venues[leg.venue_id]?.cost_operation_evidence);
   let storedRecord = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const current = await state.getCarryPositionRecord(positionId);
@@ -2124,6 +2136,7 @@ async function recordRecoveredEntryUnwindValueEvidence({
   let complete = true;
   let totalSlippageMicro = 0n;
   const pnlComponents = [];
+  const costOperations = [];
   const before = await state.getCarryPositionRecord(positionId);
   const persistedSettlement = before?.value_ledger?.entries?.find(
     (entry) => entry.entry_id === "carry:value:aborted-entry:round-trip-pnl",
@@ -2138,6 +2151,7 @@ async function recordRecoveredEntryUnwindValueEvidence({
     const context = saga.execution_context?.legs?.find((item) => item.leg_id === sagaLeg.leg_id);
     const pnlSettlementAsset = accountingAsset(context?.accounting_pnl_settlement_asset);
     if (sagaLeg.filled_micro_usdc === 0) {
+      const operationEvidence = terminalSagaNoFillCostOperationEvidence({ saga, sagaLeg, context });
       const component = pnlSettlementAsset
         ? verifiedStoredPnlComponent(
             persistedSettlement?.pnl_components?.find((item) => item?.venue_id === sagaLeg.venue_id),
@@ -2151,9 +2165,23 @@ async function recordRecoveredEntryUnwindValueEvidence({
           })
         : null;
       if (component) pnlComponents.push(component);
-      complete &&= component !== null;
+      complete &&= component !== null && operationEvidence !== null;
+      costOperations.push({
+        operation_id: `carry:cost:entry:${sagaLeg.venue_id}:${digest(sagaLeg.leg_id).slice(0, 24)}`,
+        phase: "entry",
+        venue_id: sagaLeg.venue_id,
+        leg_id: sagaLeg.leg_id,
+        no_fill: true,
+        fee_entry_ids: [],
+        slippage_entry_ids: [],
+        gas_entry_ids: [],
+        transfer_entry_ids: [],
+        source_evidence_commitments: operationEvidence?.source_evidence_commitments || [],
+        operation_evidence: operationEvidence,
+      });
       venues[sagaLeg.venue_id] = {
         status: component ? "no_fill" : "pending_exact_valuation",
+        leg_id: sagaLeg.leg_id,
         filled_base_e8: "0",
         pnl_settlement_asset: pnlSettlementAsset,
         contract_pnl_source_amount_micro: 0,
@@ -2227,7 +2255,30 @@ async function recordRecoveredEntryUnwindValueEvidence({
         evidence,
         nowMs,
       });
-      exactCosts &&= persisted;
+      exactCosts &&= persisted.ok;
+      if (persisted.ok) {
+        const phase = execution.label === "opening" ? "entry" : "recovery_exit";
+        const operationEvidence = terminalProviderCostOperationEvidence({
+          phase,
+          leg: execution.leg,
+          receipt: execution.receipt,
+          executionEvidenceCommitment: evidence.evidenceCommitment,
+        });
+        exactCosts &&= operationEvidence !== null;
+        costOperations.push({
+          operation_id: `carry:cost:${phase}:${sagaLeg.venue_id}:${digest(`${execution.label}:${execution.leg.work_order_commitment}`).slice(0, 24)}`,
+          phase,
+          venue_id: sagaLeg.venue_id,
+          leg_id: sagaLeg.leg_id,
+          no_fill: false,
+          fee_entry_ids: [persisted.fee_entry_id],
+          slippage_entry_ids: [persisted.slippage_entry_id],
+          gas_entry_ids: [],
+          transfer_entry_ids: [],
+          source_evidence_commitments: [evidence.evidenceCommitment],
+          operation_evidence: operationEvidence,
+        });
+      }
     }
     let pnlComponent = null;
     if (exactBases) {
@@ -2258,6 +2309,7 @@ async function recordRecoveredEntryUnwindValueEvidence({
     complete &&= exactCosts;
     venues[sagaLeg.venue_id] = {
       status: exactCosts ? "complete" : "pending_exact_receipts",
+      leg_id: sagaLeg.leg_id,
       filled_base_e8: openingSummary.baseE8,
       unwind_base_e8: unwindSummary.baseE8,
       opening_average_price_e8: openingSummary.averagePriceE8,
@@ -2352,6 +2404,7 @@ async function recordRecoveredEntryUnwindValueEvidence({
           exposure_boundary_provenance: exposureBoundary.provenance,
           exposure_observed_at_ms_by_venue: exposureBoundary.observed_at_ms_by_venue,
           exposure_boundary_provenance_by_venue: exposureBoundary.provenance_by_venue,
+          cost_operations: costOperations,
         },
         funding: fundingBoundary.value,
         costs_complete: false,
@@ -2373,26 +2426,23 @@ async function recordRecoveredEntryUnwindValueEvidence({
 }
 
 async function appendExecutionCostEvidence({ state, ownerCommitment, positionId, venueId, legId, label, evidence, nowMs }) {
-  if (!evidence.fee.complete || !evidence.slippage.complete || !evidence.fill.complete) return false;
-  const entries = [];
-  if (evidence.fee.amountMicro !== 0) {
-    entries.push({
+  if (!evidence.fee.complete || !evidence.slippage.complete || !evidence.fill.complete) return { ok: false };
+  const entries = [
+    {
       entry_id: `carry:value:aborted-entry:${venueId}:${label}:fee`,
       entry_type: evidence.fee.amountMicro < 0 ? "rebate" : "trading_fee",
       direction: evidence.fee.amountMicro < 0 ? "credit" : "debit",
       amount_micro_usdc: Math.abs(evidence.fee.amountMicro),
       evidence_commitment: evidence.evidenceCommitment,
-    });
-  }
-  if (evidence.slippage.amountMicro > 0) {
-    entries.push({
+    },
+    {
       entry_id: `carry:value:aborted-entry:${venueId}:${label}:slippage`,
       entry_type: "slippage",
       direction: "debit",
       amount_micro_usdc: evidence.slippage.amountMicro,
       evidence_commitment: evidence.evidenceCommitment,
-    });
-  }
+    },
+  ];
   for (const entry of entries) {
     const current = await state.getCarryPositionRecord(positionId);
     const existing = current?.value_ledger?.entries?.find((item) => item.entry_id === entry.entry_id);
@@ -2402,7 +2452,7 @@ async function appendExecutionCostEvidence({ state, ownerCommitment, positionId,
         || existing.amount_micro_usdc !== entry.amount_micro_usdc
         || existing.venue_id !== venueId
         || existing.leg_id !== legId
-        || existing.evidence_commitment !== entry.evidence_commitment) return false;
+        || existing.evidence_commitment !== entry.evidence_commitment) return { ok: false };
       continue;
     }
     const persisted = await appendValueEntryWithRetry({
@@ -2418,9 +2468,13 @@ async function appendExecutionCostEvidence({ state, ownerCommitment, positionId,
       },
       nowMs,
     });
-    if (!persisted) return false;
+    if (!persisted) return { ok: false };
   }
-  return true;
+  return {
+    ok: true,
+    fee_entry_id: entries[0].entry_id,
+    slippage_entry_id: entries[1].entry_id,
+  };
 }
 
 async function finalizeAbortedCarryValueEvidenceIfComplete({ state, record, recipient, readFundingSettlements, nowMs }) {
@@ -2491,6 +2545,10 @@ async function finalizeAbortedCarryValueEvidenceIfComplete({ state, record, reci
   if (!capitalStored) return { ok: false, error: "carry_aborted_capital_cost_persistence_failed", finalized: false, record: publicCarryRecord(current) };
   for (let attempt = 0; attempt < 3; attempt += 1) {
     current = await state.getCarryPositionRecord(current.position.position_id);
+    const costManifest = buildStoredCarryCostManifest(current);
+    if (!costManifest.ok) {
+      return { ok: false, error: costManifest.error, finalized: false, record: publicCarryRecord(current) };
+    }
     const stored = await state.putCarryPositionRecord({
       ...current,
       value_evidence: {
@@ -2505,6 +2563,7 @@ async function finalizeAbortedCarryValueEvidenceIfComplete({ state, record, reci
           capital_cost_micro_usdc: capitalCost,
           checked_at_ms: exitAtMs,
         },
+        cost_manifest: costManifest.manifest,
         costs_complete: true,
       },
     }, { expected_version: current.record_version });
@@ -2521,6 +2580,7 @@ async function finalizeAbortedCarryValueEvidenceIfComplete({ state, record, reci
       gross_exposure_micro_usdc: reconciliation?.gross_exposure_micro_usdc,
       open_order_count: reconciliation?.open_order_count,
       costs_complete: true,
+      cost_manifest: current.value_evidence.cost_manifest,
       reconciliation_commitment: reconciliation?.reconciliation_commitment,
     },
     now_ms: exitAtMs,
@@ -2611,6 +2671,8 @@ async function finalizeCarryValueEvidenceIfComplete({ state, ownerCommitment, po
   if (!pnlStored || !capitalStored) return { finalized: false, record: publicCarryRecord(await state.getCarryPositionRecord(positionId) || current) };
   for (let attempt = 0; attempt < 3; attempt += 1) {
     current = await state.getCarryPositionRecord(positionId);
+    const costManifest = buildStoredCarryCostManifest(current);
+    if (!costManifest.ok) return { finalized: false, record: publicCarryRecord(current) };
     const stored = await state.putCarryPositionRecord({
       ...current,
       value_evidence: {
@@ -2629,6 +2691,7 @@ async function finalizeCarryValueEvidenceIfComplete({ state, ownerCommitment, po
           evidence_commitment: economicCommitment,
           checked_at_ms: nowMs,
         },
+        cost_manifest: costManifest.manifest,
         costs_complete: true,
       },
     }, { expected_version: current.record_version });
@@ -2651,6 +2714,7 @@ async function finalizeCarryValueEvidenceIfComplete({ state, ownerCommitment, po
       gross_exposure_micro_usdc: 0,
       open_order_count: 0,
       costs_complete: true,
+      cost_manifest: current.value_evidence.cost_manifest,
       reconciliation_commitment: reconciliation.reconciliation_commitment,
     },
     now_ms: nowMs,
@@ -2960,6 +3024,110 @@ function executionValueEvidence({ leg, receipt, nowMs }) {
     fee: feeSourceMatches ? fee : incompleteValuedCashflow(sourceFee.sourceAsset),
     slippage: slippageComplete ? slippage : incompleteValuedCashflow(leg.quote_asset),
   };
+}
+
+function terminalProviderCostOperationEvidence({ phase, leg, receipt, executionEvidenceCommitment }) {
+  const resultCommitment = commitmentValue(receipt?.result_commitment)
+    ? receipt.result_commitment
+    : receipt && commitmentValue(receipt.provider_ref_commitment)
+      ? `carry:cost-provider-result:${digest(canonicalJson({
+        status: receipt.status || null,
+        provider_ref_commitment: receipt.provider_ref_commitment,
+        final_proof: receipt.final_proof || null,
+        fills: Array.isArray(receipt.fills) ? receipt.fills : [],
+      }))}`
+      : null;
+  if (!commitmentValue(leg?.work_order_commitment)
+    || !commitmentValue(receipt?.provider_ref_commitment)
+    || !commitmentValue(resultCommitment)
+    || !commitmentValue(executionEvidenceCommitment)) return null;
+  const providerMaterial = {
+    version: 1,
+    evidence_kind: "provider_terminal_execution_v1",
+    phase,
+    venue_id: leg.venue_id,
+    leg_id: leg.leg_id,
+    work_order_commitment: leg.work_order_commitment,
+    provider_ref_commitment: receipt.provider_ref_commitment,
+    result_commitment: resultCommitment,
+    execution_evidence_commitment: executionEvidenceCommitment,
+    terminal_status: "filled",
+    network_transaction_submitted: false,
+    transfer_operation_requested: false,
+  };
+  const providerEvidenceCommitment = `carry:cost-terminal-evidence:${digest(canonicalJson(providerMaterial))}`;
+  return buildCarryCostOperationEvidence({
+    evidence_kind: "terminal_provider_order_cost_scope_v1",
+    phase,
+    venue_id: leg.venue_id,
+    leg_id: leg.leg_id,
+    source_evidence_commitments: [executionEvidenceCommitment, providerEvidenceCommitment],
+    work_order_commitment: leg.work_order_commitment,
+    provider_ref_commitment: receipt.provider_ref_commitment,
+    result_commitment: resultCommitment,
+    terminal_evidence_commitment: providerEvidenceCommitment,
+    execution_evidence_commitment: executionEvidenceCommitment,
+    terminal_no_fill: false,
+  });
+}
+
+function terminalSagaNoFillCostOperationEvidence({ saga, sagaLeg, context }) {
+  const submissionFinal = saga?.status === "failed_no_submit"
+    || sagaLeg?.submission_status === "failed"
+    || sagaLeg?.submission_status === "finalized"
+    || sagaLeg?.cancel_confirmed === true;
+  if (saga?.terminal !== true
+    || !["failed_no_submit", "failed_no_fill", "unwound"].includes(saga.status)
+    || sagaLeg?.filled_micro_usdc !== 0
+    || !submissionFinal
+    || !commitmentValue(saga.saga_id)
+    || !commitmentValue(sagaLeg.leg_id)
+    || !commitmentValue(context?.work_order_commitment)) return null;
+  const material = {
+    version: 1,
+    evidence_kind: "saga_terminal_no_fill_v1",
+    phase: "entry",
+    venue_id: sagaLeg.venue_id,
+    leg_id: sagaLeg.leg_id,
+    work_order_commitment: context.work_order_commitment,
+    provider_ref_commitment: sagaLeg.provider_ref_commitment,
+    saga_id: saga.saga_id,
+    saga_status: saga.status,
+    saga_terminal_reason: saga.terminal_reason,
+    submission_status: sagaLeg.submission_status,
+    cancel_confirmed: sagaLeg.cancel_confirmed === true,
+    terminal: true,
+    filled_micro_usdc: 0,
+    network_transaction_submitted: false,
+    transfer_operation_requested: false,
+  };
+  const sagaEvidenceCommitment = `carry:cost-terminal-evidence:${digest(canonicalJson(material))}`;
+  return buildCarryCostOperationEvidence({
+    evidence_kind: "terminal_saga_no_fill_cost_scope_v1",
+    phase: "entry",
+    venue_id: sagaLeg.venue_id,
+    leg_id: sagaLeg.leg_id,
+    source_evidence_commitments: [sagaEvidenceCommitment],
+    work_order_commitment: context.work_order_commitment,
+    provider_ref_commitment: sagaLeg.provider_ref_commitment,
+    terminal_evidence_commitment: sagaEvidenceCommitment,
+    saga_id: saga.saga_id,
+    saga_status: saga.status,
+    saga_terminal_reason: saga.terminal_reason,
+    submission_status: sagaLeg.submission_status,
+    cancel_confirmed: sagaLeg.cancel_confirmed === true,
+    terminal_no_fill: true,
+  });
+}
+
+function canonicalJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  return `{${Object.entries(value)
+    .filter(([, nested]) => nested !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`)
+    .join(",")}}`;
 }
 
 function valuedExecutionCashflow({ leg, sourceAsset, sourceAmountMicro, nowMs, outputSign }) {

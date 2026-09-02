@@ -1,6 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { canonicalCarryCommitmentJson, sha256HexUtf8 } from "@ghola/execution-core";
 import { listCarryPositions } from "@/lib/private-account-client";
 import { CarryPositionRail, selectCarryPositionRecord, type CarryPositionRailRecord } from "./CarryPositionRail";
 
@@ -102,6 +103,67 @@ describe("CarryPositionRail", () => {
     expect(container.textContent).not.toContain("$1.25");
   });
 
+  it("never labels a finalized ledger real net before exact costs are committed", async () => {
+    vi.mocked(listCarryPositions).mockResolvedValue({
+      ok: true,
+      records: [positionRecord({
+        status: "reconciled",
+        ledger_status: "finalized",
+        value_boundary_authoritative: true,
+        active_boundary_provenance: "authoritative_exchange_fill_time",
+        cost_manifest_complete: false,
+      })],
+    });
+    await act(async () => {
+      root.render(<CarryPositionRail />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("VALUEUNVERIFIED");
+    expect(container.textContent).not.toContain("REAL NET");
+  });
+
+  it("never labels a cross-position cost manifest real net", async () => {
+    const record = positionRecord({
+      status: "reconciled",
+      ledger_status: "finalized",
+      value_boundary_authoritative: true,
+      active_boundary_provenance: "authoritative_exchange_fill_time",
+    });
+    const wrongManifest = costManifest("carry:position:someone-else");
+    record.value_evidence = { costs_complete: true, cost_manifest: wrongManifest };
+    record.value_ledger!.finalization_evidence = { costs_complete: true, cost_manifest: wrongManifest };
+    vi.mocked(listCarryPositions).mockResolvedValue({ ok: true, records: [record] });
+    await act(async () => {
+      root.render(<CarryPositionRail />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("VALUEUNVERIFIED");
+    expect(container.textContent).not.toContain("REAL NET");
+  });
+
+  it("never labels a tampered matching cost manifest real net", async () => {
+    const record = positionRecord({
+      status: "reconciled",
+      ledger_status: "finalized",
+      value_boundary_authoritative: true,
+      active_boundary_provenance: "authoritative_exchange_fill_time",
+    });
+    const tampered = structuredClone(record.value_evidence!.cost_manifest!);
+    tampered.operations = [...(tampered.operations || []), { operation_id: "tampered" }];
+    record.value_evidence = { costs_complete: true, cost_manifest: tampered };
+    record.value_ledger!.finalization_evidence = { costs_complete: true, cost_manifest: tampered };
+    vi.mocked(listCarryPositions).mockResolvedValue({ ok: true, records: [record] });
+    await act(async () => {
+      root.render(<CarryPositionRail />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("VALUEUNVERIFIED");
+    expect(container.textContent).not.toContain("REAL NET");
+  });
+
   it("never labels a non-finite finalized ledger real net", async () => {
     vi.mocked(listCarryPositions).mockResolvedValue({
       ok: true,
@@ -132,7 +194,7 @@ describe("CarryPositionRail", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(container.textContent).toContain("VALUEFINALIZING");
+    expect(container.textContent).toContain("VALUEFINALIZING COSTS");
     expect(container.textContent).not.toContain("REAL NET");
   });
 
@@ -274,12 +336,18 @@ function positionRecord(overrides: {
   value_boundary_authoritative?: boolean;
   active_boundary_provenance?: string | null;
   realized_net_micro_usdc?: number;
+  cost_manifest_complete?: boolean;
 } = {}): CarryPositionRailRecord {
+  const costManifestComplete = overrides.cost_manifest_complete ?? overrides.ledger_status === "finalized";
+  const positionId = overrides.position_id || "carry:position:test";
+  const manifest = costManifestComplete
+    ? costManifest(positionId)
+    : undefined;
   return {
     updated_at: overrides.updated_at || new Date().toISOString(),
     value_boundary_authoritative: overrides.value_boundary_authoritative,
     position: {
-      position_id: overrides.position_id || "carry:position:test",
+      position_id: positionId,
       asset: "BTC",
       long_venue_id: "lighter",
       short_venue_id: "hyperliquid",
@@ -292,7 +360,9 @@ function positionRecord(overrides: {
       status: overrides.ledger_status || "open",
       modeled: { net_value_micro_usdc: 3_500_000 },
       realized: { net_value_micro_usdc: overrides.realized_net_micro_usdc ?? 1_250_000 },
+      ...(costManifestComplete ? { finalization_evidence: { costs_complete: true, cost_manifest: manifest } } : {}),
     },
+    value_evidence: { costs_complete: costManifestComplete, cost_manifest: manifest },
     latest_observation: {
       expected_net_value_bps: 14,
       margin_runway_ms_by_venue: {
@@ -305,6 +375,23 @@ function positionRecord(overrides: {
       },
       recorded_at_ms: Date.now(),
     },
+  };
+}
+
+function costManifest(positionId: string) {
+  const material = {
+    version: 1,
+    position_id: positionId,
+    status: "complete",
+    lifecycle_kind: "normal",
+    operations: [
+      { operation_id: "carry:cost:entry:lighter" },
+      { operation_id: "carry:cost:entry:hyperliquid" },
+    ],
+  };
+  return {
+    ...material,
+    manifest_commitment: `carry:cost-manifest:${sha256HexUtf8(canonicalCarryCommitmentJson(material))}`,
   };
 }
 

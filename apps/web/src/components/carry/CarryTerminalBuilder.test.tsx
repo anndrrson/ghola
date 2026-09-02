@@ -344,7 +344,7 @@ describe("CarryTerminalBuilder", () => {
     })).toEqual({ value: "2/8 · 5M OBSERVED", tone: "warn", ready: false });
   });
 
-  it("shows compact private-prime readiness without claiming a live lifecycle", async () => {
+  it("shows compact private-prime readiness without claiming live readiness after one lifecycle", async () => {
     api.listCarryPositions.mockResolvedValue({ ok: true, records: [] });
     api.getCarryExecutionReadiness.mockResolvedValue({
       ...readyReadiness(),
@@ -354,7 +354,7 @@ describe("CarryTerminalBuilder", () => {
     await act(async () => root.render(<CarryTerminalBuilder candidate={candidate()} />));
     expect(container.textContent).toContain("PRIVATE PRIME");
     expect(container.textContent).toContain("5/5 DATA · 3/3 EXEC · 3/3 REC · 6/6 ROUTES");
-    expect(container.textContent).toContain("QUALIFIED · NO-SUBMIT ONLY · LIVE PAIRED PROOF REQUIRED");
+    expect(container.textContent).toContain("QUALIFIED · NO-SUBMIT ONLY · LIVE LIFECYCLE COVERAGE REQUIRED");
     expect(container.textContent).not.toContain("LIVE PAIRED LIFECYCLE PROVEN");
   });
 
@@ -1790,14 +1790,67 @@ function readyReadiness() {
 
 function privatePrimeReadiness() {
   const now = Date.now();
+  const pairedLifecycle = {
+    verified: true,
+    position_id: "carry:position:live:0001",
+    asset: "BTC",
+    venue_ids: ["hyperliquid", "aster"],
+    verified_at_ms: now - 1_000,
+    expires_at_ms: now + 86_400_000,
+    account_bindings_verified: true,
+    live_entry_exit_proven: true,
+    supervised_monitoring_proven: true,
+    final_flat_zero_orders: true,
+    value_ledger_finalized: true,
+    value_boundary_authoritative: true,
+    exposure_boundary_provenance: "authoritative_exchange_fill_time",
+    first_exposure_observed_at_ms: now - 10_000,
+    first_exposure_observed_at_ms_by_venue: {
+      hyperliquid: now - 10_000,
+      aster: now - 9_000,
+    },
+    exposure_boundary_provenance_by_venue: {
+      hyperliquid: "authoritative_exchange_fill_time",
+      aster: "authoritative_exchange_fill_time",
+    },
+    realized_net_value_micro_usdc: 34,
+    value_attribution: {
+      modeled: {
+        gross_funding_micro_usdc: 400,
+        total_cost_micro_usdc: 200,
+        expected_net_micro_usdc: 200,
+      },
+      realized: {
+        contract_pnl_micro_usdc: 10,
+        funding_micro_usdc: 50,
+        fees_micro_usdc: 20,
+        slippage_micro_usdc: 5,
+        gas_micro_usdc: 0,
+        capital_cost_micro_usdc: 1,
+        transfer_fees_micro_usdc: 0,
+        rebates_micro_usdc: 0,
+        net_value_micro_usdc: 34,
+      },
+      realized_total_cost_micro_usdc: 26,
+      variance_from_modeled_micro_usdc: -166,
+    },
+    ambiguity_retry_count: 0,
+    owner_only_funding: true,
+    owner_only_transfers: true,
+    owner_only_withdrawals: true,
+    transaction_broadcast: false,
+    creation_input_evidence_commitment: `carry:creation-inputs:${"c".repeat(64)}`,
+    worker_material_commitment: `carry:release:material:${"a".repeat(64)}`,
+    evidence_commitment: `carry:lifecycle-proof:evidence:${"b".repeat(64)}`,
+  };
   const readiness = {
     version: 1,
     kind: "ghola_private_prime_no_submit_readiness",
     ready: true,
     no_submit_ready: true,
     ready_for_live_users: false,
-    live_launch_blockers: ["live_paired_lifecycle_unproven"],
-    proof_level: "pre_broadcast_readiness",
+    live_launch_blockers: ["live_release_lifecycle_coverage_unproven"],
+    proof_level: "live_paired_lifecycle",
     checked_at_ms: now,
     expires_at_ms: now + 5_000,
     asset: "BTC",
@@ -1839,7 +1892,19 @@ function privatePrimeReadiness() {
       checked_at_ms: now,
       evidence_commitment: `carry:supervision:evidence:${"a".repeat(64)}`,
     },
-    live_paired_lifecycle_proven: false,
+    paired_lifecycle: pairedLifecycle,
+    release_equivalent_lifecycles: {
+      verified: false,
+      lifecycle_count: 1,
+      distinct_position_count: 1,
+      distinct_venue_pair_count: 1,
+      normalized_venue_pairs: ["aster:hyperliquid"],
+      position_ids: [pairedLifecycle.position_id],
+      lifecycle_evidence_commitments: [pairedLifecycle.evidence_commitment],
+      expires_at_ms: null,
+      lifecycles: [pairedLifecycle],
+    },
+    live_paired_lifecycle_proven: true,
     owner_only_funding: true,
     owner_only_transfers: true,
     owner_only_withdrawals: true,

@@ -19,6 +19,7 @@ export function buildCarryPrivatePrimeReadiness({
   route_observation_configured: routeObservationConfigured,
   route_evidence: routeEvidence,
   lifecycle_proof: lifecycleProof,
+  lifecycle_proofs: lifecycleProofs,
   now_ms: nowMs = Date.now(),
 }) {
   const assessedReadiness = verifyCarryExecutionReadinessResult(readiness, { now_ms: nowMs });
@@ -38,6 +39,14 @@ export function buildCarryPrivatePrimeReadiness({
     nowMs,
   });
   const pairedLifecycle = verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs });
+  const releaseEquivalentLifecycles = verifiedReleaseEquivalentLifecycles({
+    readiness,
+    lifecycleProofs: [
+      lifecycleProof,
+      ...(Array.isArray(lifecycleProofs) ? lifecycleProofs : []),
+    ],
+    nowMs,
+  });
   const failureRecovery = verifiedFailureRecovery(readiness);
   const technicalReasons = [];
   if (!executionReadinessVerified) technicalReasons.push("three_venue_no_submit_unproven");
@@ -54,10 +63,16 @@ export function buildCarryPrivatePrimeReadiness({
     ...technicalReasons,
     ...(executionReadinessVerified && !capitalReady ? ["opening_capital_shortfall"] : []),
   ];
-  const readyForLiveUsers = noSubmitReady && capitalReady && pairedLifecycle.verified;
+  const readyForLiveUsers = noSubmitReady
+    && capitalReady
+    && pairedLifecycle.verified
+    && releaseEquivalentLifecycles.verified;
   const liveLaunchBlockers = [
     ...reasons,
     ...(pairedLifecycle.verified ? [] : ["live_paired_lifecycle_unproven"]),
+    ...(pairedLifecycle.verified && !releaseEquivalentLifecycles.verified
+      ? ["live_release_lifecycle_coverage_unproven"]
+      : []),
   ];
   const material = {
     version: 1,
@@ -77,6 +92,7 @@ export function buildCarryPrivatePrimeReadiness({
       routeObservation.expires_at_ms,
       supervisionVerified ? assessedSupervision.health.checked_at_ms + 5_000 : null,
       pairedLifecycle.verified ? pairedLifecycle.expires_at_ms : null,
+      releaseEquivalentLifecycles.verified ? releaseEquivalentLifecycles.expires_at_ms : null,
     ),
     five_venue_shadow: {
       ready: shadowQualificationVerified,
@@ -103,6 +119,7 @@ export function buildCarryPrivatePrimeReadiness({
       evidence_commitment: assessedSupervision.ok ? assessedSupervision.health.evidence_commitment : null,
     },
     paired_lifecycle: pairedLifecycle,
+    release_equivalent_lifecycles: releaseEquivalentLifecycles,
     live_paired_lifecycle_proven: pairedLifecycle.verified,
     owner_only_funding: true,
     owner_only_transfers: true,
@@ -112,6 +129,39 @@ export function buildCarryPrivatePrimeReadiness({
   };
   material.evidence_commitment = evidenceCommitment(material);
   return Object.freeze(material);
+}
+
+function verifiedReleaseEquivalentLifecycles({ readiness, lifecycleProofs, nowMs }) {
+  const lifecycles = [];
+  const seenEvidenceCommitments = new Set();
+  for (const lifecycleProof of lifecycleProofs) {
+    const lifecycle = verifiedPairedLifecycle({ readiness, lifecycleProof, nowMs });
+    if (!lifecycle.verified || seenEvidenceCommitments.has(lifecycle.evidence_commitment)) continue;
+    seenEvidenceCommitments.add(lifecycle.evidence_commitment);
+    lifecycles.push(lifecycle);
+  }
+  const positionIds = lifecycles.map((item) => item.position_id);
+  const evidenceCommitments = lifecycles.map((item) => item.evidence_commitment);
+  const normalizedVenuePairs = lifecycles.map((item) => normalizedVenuePair(item.venue_ids));
+  const uniquePositionIds = new Set(positionIds);
+  const uniqueVenuePairs = new Set(normalizedVenuePairs);
+  const verified = uniquePositionIds.size >= 2
+    && uniqueVenuePairs.size >= 2;
+  return Object.freeze({
+    verified,
+    lifecycle_count: lifecycles.length,
+    distinct_position_count: uniquePositionIds.size,
+    distinct_venue_pair_count: uniqueVenuePairs.size,
+    normalized_venue_pairs: Object.freeze([...uniqueVenuePairs].sort()),
+    position_ids: Object.freeze([...uniquePositionIds].sort()),
+    lifecycle_evidence_commitments: Object.freeze([...evidenceCommitments].sort()),
+    expires_at_ms: verified ? Math.min(...lifecycles.map((item) => item.expires_at_ms)) : null,
+    lifecycles: Object.freeze(lifecycles),
+  });
+}
+
+function normalizedVenuePair(venueIds) {
+  return [...venueIds].sort().join(":");
 }
 
 function verifiedFailureRecovery(readiness) {
@@ -317,13 +367,21 @@ function directedRoutePairs(venueIds) {
     .map((toVenueId) => `${fromVenueId}:${toVenueId}`));
 }
 
-function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry, supervisionExpiry, lifecycleExpiry) {
+function minimumExpiry(
+  readinessExpiry,
+  shadowCheckedAt,
+  routeExpiry,
+  supervisionExpiry,
+  lifecycleExpiry,
+  releaseEquivalentExpiry,
+) {
   const values = [
     readinessExpiry,
     Number.isSafeInteger(shadowCheckedAt) ? shadowCheckedAt + 60_000 : null,
     routeExpiry,
     supervisionExpiry,
     lifecycleExpiry,
+    releaseEquivalentExpiry,
   ]
     .filter((value) => Number.isSafeInteger(value) && value > 0);
   return values.length > 0 ? Math.min(...values) : null;

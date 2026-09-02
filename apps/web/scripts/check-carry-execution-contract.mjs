@@ -1777,7 +1777,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeReadiness", "proof?.creation_input_evidence_commitment", "carry_private_prime_creation_input_gate_missing");
   requireText("privatePrimeReadiness", "creation_input_evidence_commitment: verified ? proof.creation_input_evidence_commitment : null", "carry_private_prime_creation_input_output_missing");
   requireText("privatePrimeReadinessTest", "without exact creation-input lineage", "carry_private_prime_creation_input_test_missing");
-  requireText("webPrivatePrimeReadiness", "pairedLifecycle.creation_input_evidence_commitment", "carry_private_prime_ui_creation_input_gate_missing");
+  requireText("webPrivatePrimeReadiness", "value.creation_input_evidence_commitment", "carry_private_prime_ui_creation_input_gate_missing");
   requireText("preflightTest", "rejects cross-owner sealed venue access before order verification", "carry_preflight_owner_binding_test_missing");
   requireText("coreCarry", "collateral_basis_risk_bps", "collateral_basis_stress_missing");
   requireText("coreCarry", "contract_data_skew_exceeded", "carry_contract_skew_model_missing");
@@ -2108,6 +2108,18 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilderTest", "labels a finalized ledger real only with authoritative exchange boundaries", "carry_terminal_ledger_authoritative_test_missing");
   requireText("webCarryBuilderTest", 'active_boundary_provenance: "authoritative_exchange_fill_time"', "carry_terminal_ledger_authoritative_fixture_missing");
   requireText("webCarryBuilderTest", 'active_boundary_provenance: "worker_observed_positive_fill_conservative"', "carry_terminal_ledger_conservative_fixture_missing");
+  requireText("coreCarry", "normalizeCarryCostCompletenessManifest(evidence.cost_manifest, ledger)", "carry_cost_manifest_core_gate_missing");
+  requireText("coreCarry", 'carry:cost-manifest:${sha256HexUtf8(canonicalCarryCommitmentJson(material))}', "carry_cost_manifest_canonical_recompute_missing");
+  requireText("coreCarry", "carry_value_cost_zero_invariant_invalid", "carry_cost_verified_zero_invariant_gate_missing");
+  requireText("positions", "export function verifyStoredCarryCostCompleteness(record)", "carry_cost_worker_verifier_missing");
+  requireText("positions", "buildStoredCarryCostManifest(record)", "carry_cost_worker_rebuild_missing");
+  requireText("executor", "cost_manifest: costManifest.manifest", "carry_cost_manifest_persistence_missing");
+  requireText("releaseMaterial", "const costCompleteness = verifyStoredCarryCostCompleteness(record);", "carry_release_cost_manifest_verification_missing");
+  requireText("releaseMaterial", 'denied("carry_release_cost_completeness_unproven")', "carry_release_cost_manifest_fail_closed_missing");
+  requireText("releaseMaterialTest", "release rejects missing, tampered, or unbound cost-completeness evidence", "carry_release_cost_manifest_mutation_test_missing");
+  requireText("positionsTest", "cost manifests rebuild durably and category tampering cannot claim complete costs", "carry_cost_manifest_worker_test_missing");
+  requireText("webCarryPositionRail", 'value: "FINALIZING COSTS"', "carry_position_finalizing_costs_state_missing");
+  requireText("webCarryPositionRailTest", "VALUEFINALIZING COSTS", "carry_position_finalizing_costs_test_missing");
   requireText("webCarryBuilderTest", "FEE +$0.5 · SLIP −$0.25", "carry_terminal_execution_attribution_verified_test_missing");
   const authoritativeStoredValueBoundary = sourceSection(
     "positions",
@@ -2225,6 +2237,11 @@ export function checkCarryExecutionContract(sources) {
   requireText("workerState", "carry_lifecycle_projection_write_requires_event", "carry_lifecycle_projection_guard_missing");
   requireText("positionsTest", "projectionMutation.error", "carry_lifecycle_projection_guard_test_missing");
   requireText("phalaCompose", "PRIVATE_AGENT_STATE_SINGLE_PROCESS_OK", "carry_phala_single_process_env_missing");
+  requireText("phalaCompose", "PRIVATE_AGENT_CARRY_SHADOW_QUALIFICATION_SAMPLES", "carry_phala_shadow_sample_window_env_missing");
+  requireText("phalaCompose", "PRIVATE_AGENT_ASTER_ALLOW_MAINNET", "carry_phala_aster_mainnet_env_missing");
+  requireText("phalaCompose", "PRIVATE_AGENT_ASTER_LIVE_MODE", "carry_phala_aster_mode_env_missing");
+  requireText("phalaCompose", "PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET", "carry_phala_lighter_mainnet_env_missing");
+  requireText("phalaCompose", "PRIVATE_AGENT_LIGHTER_LIVE_MODE", "carry_phala_lighter_mode_env_missing");
   requireText("phalaWorkerEnv", "JSON/file state requires PRIVATE_AGENT_STATE_SINGLE_PROCESS_OK=true", "carry_phala_single_process_validation_missing");
   requireText("phalaWorkerEnvTest", "SINGLE_PROCESS_OK=true", "carry_phala_single_process_validation_test_missing");
   requireText("workerImageWorkflow", "Test private-agent worker", "carry_worker_image_test_gate_missing");
@@ -2994,8 +3011,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("server", "observePreopenCarryTransferRoutes", "carry_preopen_route_observation_missing");
   requireText("server", "collateral_route_observation: routeObservation", "carry_preopen_route_response_missing");
   requireText("server", "route_evidence: routeEvidence", "carry_private_prime_route_evidence_binding_missing");
-  requireText("server", "readCompletedCarryLifecycleProof", "carry_private_prime_lifecycle_read_missing");
+  requireText("server", "readCompletedCarryLifecycleProofs", "carry_private_prime_lifecycle_read_missing");
   requireText("server", "lifecycle_proof: lifecycleProof", "carry_private_prime_lifecycle_binding_missing");
+  requireCount("server", "lifecycle_proofs: lifecycleProofs", 2, "carry_private_prime_lifecycle_plural_binding_missing");
   requireCount("server", "private_prime_authentication: authenticateCarryPrivatePrimeReadiness({", 2, "carry_private_prime_worker_authentication_missing");
   requireText("privatePrimeAuthentication", "carryPrivatePrimeWorkerAuthenticationMessage", "carry_private_prime_worker_authentication_payload_missing");
   requireText("privatePrimeAuthentication", 'createHmac("sha256", secret)', "carry_private_prime_worker_authentication_mac_missing");
@@ -3051,7 +3069,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("releaseMaterial", "sameLifecycleProofSemantics(persistedProof, proof)", "carry_lifecycle_proof_retry_semantics_missing");
   requireText("releaseMaterial", "structuredClone(persistedProof)", "carry_lifecycle_proof_legacy_pointer_immutability_missing");
   requireText("releaseMaterial", "asset: normalizedAsset", "carry_lifecycle_proof_asset_assessment_binding_missing");
-  requireCount("server", "readCompletedCarryLifecycleProof({\n            state,\n            owner_commitment: body.owner_commitment,\n            asset: body.asset,", 2, "carry_lifecycle_proof_asset_http_binding_missing");
+  requireCount("server", "readCompletedCarryLifecycleProofs({\n            state,\n            owner_commitment: body.owner_commitment,\n            asset: body.asset,", 2, "carry_lifecycle_proof_asset_http_binding_missing");
+  requireText("releaseMaterial", "listAllCarryPositionRecords({", "carry_lifecycle_proof_owner_position_scan_missing");
+  requireText("releaseMaterial", "require_immutable_reference: true", "carry_lifecycle_proof_immutable_aggregate_gate_missing");
+  requireText("privatePrimeReadinessTest", "aggregates only immutable persisted lifecycle proofs into live route readiness", "carry_lifecycle_proof_persisted_route_test_missing");
   requireText("releaseMaterialTest", "keeps lifecycle proof storage isolated per asset, position, and venue pair", "carry_lifecycle_proof_pair_isolation_test_missing");
   requireText("releaseMaterialTest", "atomically claims immutable lifecycle references under concurrent writes", "carry_lifecycle_proof_reference_concurrency_test_missing");
   requireText("releaseMaterialTest", "returns the original immutable proof on a default fresh-timestamp retry without refreshing expiry", "carry_lifecycle_proof_body_immutability_test_missing");
@@ -3126,20 +3147,21 @@ export function checkCarryExecutionContract(sources) {
   requireText("privatePrimeReadiness", "safeLifecycleValueAttribution(proof?.value_attribution)", "carry_private_prime_value_attribution_gate_missing");
   requireText("privatePrimeReadiness", "normalizeCarryLifecycleValueAttribution", "carry_private_prime_shared_value_attribution_missing");
   requireText("privatePrimeReadiness", "value_attribution: verified ? valueAttribution : null", "carry_private_prime_value_attribution_output_missing");
-  requireText("privatePrimeReadiness", "function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry, supervisionExpiry, lifecycleExpiry)", "carry_private_prime_lifecycle_expiry_binding_missing");
+  requireText("privatePrimeReadiness", "releaseEquivalentExpiry,", "carry_private_prime_lifecycle_expiry_binding_missing");
   requireText("privatePrimeReadiness", "assessedSupervision.health.checked_at_ms + 5_000", "carry_private_prime_supervision_expiry_binding_missing");
   requireText("privatePrimeReadiness", "pairedLifecycle.verified ? pairedLifecycle.expires_at_ms : null", "carry_private_prime_lifecycle_expiry_input_missing");
+  requireText("privatePrimeReadiness", "releaseEquivalentLifecycles.verified ? releaseEquivalentLifecycles.expires_at_ms : null", "carry_private_prime_release_lifecycle_expiry_input_missing");
   requireText("privatePrimeReadinessTest", "never lets aggregate readiness outlive its paired lifecycle proof", "carry_private_prime_lifecycle_expiry_test_missing");
   requireText("privatePrimeReadinessTest", "never lets aggregate readiness outlive its supervision heartbeat", "carry_private_prime_supervision_expiry_test_missing");
   requireText("privatePrimeReadiness", "proof?.owner_commitment === readiness?.owner_commitment", "carry_private_prime_lifecycle_owner_binding_missing");
   requireText("privatePrimeReadiness", "proof?.worker_image_digest === readiness?.image_digest", "carry_private_prime_lifecycle_image_binding_missing");
   const webLifecycleReadiness = sourceSection(
     "webPrivatePrimeReadiness",
-    "const lifecycleReady =",
-    "const proofBoundaryValid =",
+    "function verifiedPairedLifecycle(",
+    "function normalizedVenuePair(",
   );
-  requireSectionText(webLifecycleReadiness, "pairedLifecycle.value_boundary_authoritative === true", "carry_private_prime_ui_authoritative_value_gate_missing");
-  requireSectionText(webLifecycleReadiness, 'pairedLifecycle.exposure_boundary_provenance === "authoritative_exchange_fill_time"', "carry_private_prime_ui_authoritative_provenance_gate_missing");
+  requireSectionText(webLifecycleReadiness, "value.value_boundary_authoritative === true", "carry_private_prime_ui_authoritative_value_gate_missing");
+  requireSectionText(webLifecycleReadiness, 'value.exposure_boundary_provenance === "authoritative_exchange_fill_time"', "carry_private_prime_ui_authoritative_provenance_gate_missing");
   requireText("webPrivatePrimeReadinessTest", 'exposure_boundary_provenance: "worker_observed_positive_fill_conservative"', "carry_private_prime_ui_conservative_provenance_test_missing");
   requireText("privatePrimeReadiness", "collateral_route_evidence_unverified", "carry_private_prime_route_evidence_gate_missing");
   requireText("privatePrimeReadiness", "verifyCarryExecutionReadinessResult(readiness", "carry_private_prime_readiness_wrapper_verification_missing");
@@ -3168,10 +3190,21 @@ export function checkCarryExecutionContract(sources) {
   requireText("webPrivatePrimeReadinessTest", "rejects recovery labels backed only by unproven adapter registration", "carry_private_prime_ui_recovery_qualification_test_missing");
   requireText("privatePrimeReadiness", 'technicalReasons.push("three_venue_recovery_unproven")', "carry_private_prime_recovery_gate_missing");
   requireText("privatePrimeReadiness", "const noSubmitReady = technicalReasons.length === 0", "carry_private_prime_capital_free_no_submit_gate_missing");
-  requireText("privatePrimeReadiness", "noSubmitReady && capitalReady && pairedLifecycle.verified", "carry_private_prime_live_capital_gate_missing");
+  requireText("privatePrimeReadiness", "&& releaseEquivalentLifecycles.verified", "carry_private_prime_release_lifecycle_gate_missing");
+  requireText("privatePrimeReadiness", "uniquePositionIds.size >= 2", "carry_private_prime_release_unique_position_gate_missing");
+  requireText("privatePrimeReadiness", "uniqueVenuePairs.size >= 2", "carry_private_prime_release_distinct_pair_gate_missing");
+  requireText("privatePrimeReadiness", "seenEvidenceCommitments.has(lifecycle.evidence_commitment)", "carry_private_prime_release_unique_evidence_gate_missing");
+  requireText("privatePrimeReadiness", "distinct_position_count: uniquePositionIds.size", "carry_private_prime_release_position_count_output_missing");
+  requireText("privatePrimeReadiness", "Math.min(...lifecycles.map((item) => item.expires_at_ms))", "carry_private_prime_release_earliest_expiry_missing");
+  requireText("privatePrimeReadiness", "normalizedVenuePair(item.venue_ids)", "carry_private_prime_release_pair_normalization_missing");
+  requireText("privatePrimeReadiness", 'return [...venueIds].sort().join(":")', "carry_private_prime_release_pair_normalizer_invalid");
+  requireText("privatePrimeReadiness", "release_equivalent_lifecycles: releaseEquivalentLifecycles", "carry_private_prime_release_lifecycle_output_missing");
   requireText("privatePrimeReadinessTest", "refuses private-prime readiness without exact three-venue recovery policy", "carry_private_prime_recovery_test_missing");
   requireText("privatePrimeReadinessTest", "without overstating live proof", "carry_private_prime_proof_boundary_test_missing");
-  requireText("privatePrimeReadinessTest", "durable paired lifecycle evidence", "carry_private_prime_live_proof_test_missing");
+  requireText("privatePrimeReadinessTest", "release-equivalent lifecycle coverage", "carry_private_prime_live_proof_test_missing");
+  requireText("privatePrimeReadinessTest", "one completed paired lifecycle below the live-user release threshold", "carry_private_prime_release_lifecycle_count_test_missing");
+  requireText("privatePrimeReadinessTest", "normalizes venue direction before counting distinct release pairs", "carry_private_prime_release_pair_normalization_test_missing");
+  requireText("privatePrimeReadinessTest", "counts distinct positions and venue pairs independently without duplicate inflation", "carry_private_prime_release_independent_coverage_test_missing");
   requireText("privatePrimeReadinessTest", "lifecycle proof with a valid-looking but mismatched commitment", "carry_private_prime_lifecycle_commitment_test_missing");
   requireText("privatePrimeReadinessTest", "without fresh owner-bound route evidence", "carry_private_prime_route_evidence_test_missing");
   requireText("privatePrimeReadinessTest", "without complete directed collateral routes", "carry_private_prime_route_coverage_test_missing");
@@ -3189,20 +3222,31 @@ export function checkCarryExecutionContract(sources) {
   requireText("webPrivatePrimeReadiness", "value.ready_for_live_users === expectedLiveReady", "carry_private_prime_ui_live_user_gate_missing");
   requireText("webPrivatePrimeReadiness", "QUALIFIED · NO-SUBMIT ONLY · LIVE PAIRED PROOF REQUIRED", "carry_private_prime_ui_prebroadcast_disclosure_missing");
   requireText("webPrivatePrimeReadinessTest", "no-submit aggregate relabeled as ready for live users", "carry_private_prime_ui_live_user_test_missing");
-  requireText("webCarryBuilderTest", "QUALIFIED · NO-SUBMIT ONLY · LIVE PAIRED PROOF REQUIRED", "carry_terminal_prebroadcast_disclosure_test_missing");
-  requireText("webPrivatePrimeReadiness", "integer(pairedLifecycle.realized_net_value_micro_usdc)", "carry_private_prime_ui_realized_net_gate_missing");
+  requireText("webCarryBuilderTest", "QUALIFIED · NO-SUBMIT ONLY · LIVE LIFECYCLE COVERAGE REQUIRED", "carry_terminal_prebroadcast_disclosure_test_missing");
+  requireText("webPrivatePrimeReadiness", "integer(value.realized_net_value_micro_usdc)", "carry_private_prime_ui_realized_net_gate_missing");
   requireText("webPrivatePrimeReadiness", "parseLifecycleValueAttribution(pairedLifecycle.value_attribution)", "carry_private_prime_ui_value_attribution_gate_missing");
   requireText("webPrivatePrimeReadiness", "normalizeCarryLifecycleValueAttribution", "carry_private_prime_ui_shared_value_attribution_missing");
   requireText("webPrivatePrimeReadiness", "ΔMODEL ${formatSignedMicroUsd(value.variance_from_modeled_micro_usdc)}", "carry_private_prime_ui_value_attribution_display_missing");
   requireText("webPrivatePrimeReadiness", "expiresAt <= lifecycleExpiresAt", "carry_private_prime_ui_lifecycle_expiry_gate_missing");
-  requireText("webPrivatePrimeReadiness", "pairedLifecycle.final_flat_zero_orders === true", "carry_private_prime_ui_flat_proof_gate_missing");
+  requireText("webPrivatePrimeReadiness", "value.final_flat_zero_orders === true", "carry_private_prime_ui_flat_proof_gate_missing");
   requireText("webPrivatePrimeReadiness", "route.verified === true", "carry_private_prime_ui_route_evidence_gate_missing");
   requireText("webPrivatePrimeReadiness", "route.fund_movement_authorized === false", "carry_private_prime_ui_route_authority_gate_missing");
   requireText("webPrivatePrimeReadiness", "CARRY_RECOVERY_POLICY", "carry_private_prime_ui_recovery_policy_missing");
   requireText("webPrivatePrimeReadiness", "REC ·", "carry_private_prime_ui_recovery_display_missing");
   requireText("webPrivatePrimeReadinessTest", "rejects recovery coverage that permits ambiguous retries", "carry_private_prime_ui_recovery_test_missing");
   requireText("webPrivatePrimeReadiness", 'reason !== "opening_capital_shortfall"', "carry_private_prime_ui_capital_free_no_submit_gate_missing");
-  requireText("webPrivatePrimeReadiness", "expectedReady && capitalReady && lifecycleReady", "carry_private_prime_ui_live_capital_gate_missing");
+  requireText("webPrivatePrimeReadiness", "expectedReady && capitalReady && lifecycleReady && releaseEquivalentReady", "carry_private_prime_ui_live_capital_gate_missing");
+  requireText("webPrivatePrimeReadiness", "uniqueReleasePositionIds.length >= 2", "carry_private_prime_ui_release_unique_position_gate_missing");
+  requireText("webPrivatePrimeReadiness", "uniqueReleaseNormalizedPairs.length >= 2", "carry_private_prime_ui_release_distinct_pair_gate_missing");
+  requireText("webPrivatePrimeReadiness", "new Set(releaseEvidenceCommitments).size === releaseLifecycles.length", "carry_private_prime_ui_release_unique_evidence_gate_missing");
+  requireText("webPrivatePrimeReadiness", "releaseEquivalent.distinct_position_count === uniqueReleasePositionIds.length", "carry_private_prime_ui_release_position_count_binding_missing");
+  requireText("webPrivatePrimeReadiness", "Math.min(...releaseLifecycleExpiries.map((item) => Number(item)))", "carry_private_prime_ui_release_earliest_expiry_missing");
+  requireText("webPrivatePrimeReadiness", '[...venues].sort().join(":")', "carry_private_prime_ui_release_pair_normalizer_invalid");
+  requireText("webPrivatePrimeReadiness", "releaseEquivalentValid", "carry_private_prime_ui_release_lifecycle_verification_missing");
+  requireText("webPrivatePrimeReadinessTest", "one completed lifecycle below the live-user release threshold", "carry_private_prime_ui_release_lifecycle_count_test_missing");
+  requireText("webPrivatePrimeReadinessTest", "reversed venue direction as a distinct release pair", "carry_private_prime_ui_release_pair_normalization_test_missing");
+  requireText("webPrivatePrimeReadinessTest", "counts distinct positions and venue pairs independently", "carry_private_prime_ui_release_independent_coverage_test_missing");
+  requireText("webPrivatePrimeReadinessTest", "earliest unequal lifecycle expiry", "carry_private_prime_ui_release_unequal_expiry_test_missing");
   requireText("webPrivatePrimeReadinessTest", "capital-free no-submit readiness without claiming live-entry readiness", "carry_private_prime_ui_capital_test_missing");
   requireText("webPrivatePrimeAuthentication", "carryPrivatePrimeWorkerAuthenticationMessage", "carry_private_prime_gateway_authentication_payload_missing");
   requireText("webPrivatePrimeAuthentication", 'createHmac("sha256", secret)', "carry_private_prime_gateway_authentication_mac_missing");
@@ -3239,7 +3283,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("webRoute", 'action === "preflight_pair"', "carry_creation_opportunity_gateway_pair_gate_missing");
   requireText("webCarryBuilder", 'label="PRIVATE PRIME"', "carry_private_prime_terminal_metric_missing");
   requireText("webCarryBuilder", "carryPrivatePrimeSummary", "carry_private_prime_terminal_validation_missing");
-  requireText("webCarryBuilderTest", "without claiming a live lifecycle", "carry_private_prime_terminal_test_missing");
+  requireText("webCarryBuilderTest", "without claiming live readiness after one lifecycle", "carry_private_prime_terminal_test_missing");
   requireText("webCarryBuilderTest", "3/3 REC", "carry_private_prime_terminal_recovery_missing");
   requireText("webCarryBuilder", "carryCreationProofFreshness(proofOpportunity)", "carry_creation_proof_freshness_missing");
   requireText("webCarryBuilder", "const canSave = routeQualified && actionableProof && creationProofFreshness.fresh", "carry_creation_stale_action_gate_missing");
@@ -3768,6 +3812,9 @@ export function checkCarryExecutionContract(sources) {
     "function positionLedgerMetric(record:",
     "function RailMetric({",
   );
+  requireSectionText(carryPositionLedgerMetric, "const costManifestComplete", "carry_position_rail_cost_manifest_completeness_missing");
+  requireSectionText(carryPositionLedgerMetric, "costManifestMatchesPosition(valueManifest, record.position.position_id)", "carry_position_rail_cost_manifest_position_binding_missing");
+  requireSectionText(carryPositionLedgerMetric, "canonicalCarryCommitmentJson(finalizedManifest) === canonicalCarryCommitmentJson(valueManifest)", "carry_position_rail_cost_manifest_full_binding_missing");
   requireSectionText(carryPositionLedgerMetric, 'positionStatus === "reconciled" && ledgerStatus === "finalized"', "carry_position_rail_finalized_predicate_missing");
   const finalizedLedgerMetric = sourceSection(
     "webCarryPositionRail",
@@ -3775,18 +3822,21 @@ export function checkCarryExecutionContract(sources) {
     'if (positionStatus === "reconciled" && ledgerStatus === "open")',
   );
   requireSectionText(finalizedLedgerMetric, 'record.position.active_boundary_provenance === "authoritative_exchange_fill_time"', "carry_position_rail_authoritative_provenance_missing");
+  requireSectionText(finalizedLedgerMetric, "costManifestComplete", "carry_position_rail_cost_manifest_gate_missing");
   requireSectionText(finalizedLedgerMetric, "record.value_boundary_authoritative === true", "carry_position_rail_authoritative_value_gate_missing");
   requireSectionText(finalizedLedgerMetric, "Number.isFinite(realized)", "carry_position_rail_finite_realized_gate_missing");
   requireSectionText(finalizedLedgerMetric, 'return { label: "REAL NET", value: microUsd(realized)', "carry_position_rail_realized_value_missing");
   requireSectionText(finalizedLedgerMetric, 'return { label: "VALUE", value: "UNVERIFIED", tone: "warn" }', "carry_position_rail_finalized_unverified_fallback_missing");
   requireOrdered(finalizedLedgerMetric, "Number.isFinite(realized)", 'return { label: "VALUE", value: "UNVERIFIED"', "carry_position_rail_finalized_fallback_order_missing");
   requireSectionText(carryPositionLedgerMetric, 'positionStatus === "reconciled" && ledgerStatus === "open"', "carry_position_rail_finalizing_predicate_missing");
-  requireText("webCarryPositionRail", 'return { label: "VALUE", value: "FINALIZING"', "carry_position_rail_finalizing_state_missing");
+  requireText("webCarryPositionRail", 'return { label: "VALUE", value: "FINALIZING COSTS"', "carry_position_rail_finalizing_state_missing");
   requireText("webCarryPositionRail", '["active", "rebalancing"].includes(positionStatus) && ledgerStatus === "open"', "carry_position_rail_accruing_predicate_missing");
   requireText("webCarryPositionRail", 'return { label: "VALUE", value: "ACCRUING"', "carry_position_rail_accruing_state_missing");
   requireText("webCarryPositionRailTest", "labels realized value only after the ledger is finalized", "carry_position_rail_finalized_test_missing");
   requireText("webCarryPositionRailTest", "never labels a conservative finalized ledger real net", "carry_position_rail_conservative_provenance_test_missing");
   requireText("webCarryPositionRailTest", "never labels a non-finite finalized ledger real net", "carry_position_rail_nonfinite_finalized_test_missing");
+  requireText("webCarryPositionRailTest", "never labels a cross-position cost manifest real net", "carry_position_rail_cross_position_cost_test_missing");
+  requireText("webCarryPositionRailTest", "never labels a tampered matching cost manifest real net", "carry_position_rail_tampered_cost_test_missing");
   requireText("webCarryPositionRailTest", 'active_boundary_provenance: "authoritative_exchange_fill_time"', "carry_position_rail_authoritative_fixture_missing");
   requireText("webCarryPositionRailTest", "realized_net_micro_usdc: Number.NaN", "carry_position_rail_nonfinite_fixture_missing");
   requireText("webCarryPositionRailTest", "keeps a reconciled position finalizing while its ledger remains open", "carry_position_rail_finalizing_test_missing");

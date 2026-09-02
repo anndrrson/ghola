@@ -13,7 +13,11 @@ import {
   readCompletedCarryLifecycleProof,
   recordCompletedCarryLifecycleProof,
 } from "../src/execution/carry-release-evidence.js";
-import { carryPositionLegId } from "../src/execution/carry-positions.js";
+import {
+  buildCarryCostOperationEvidence,
+  buildStoredCarryCostManifest,
+  carryPositionLegId,
+} from "../src/execution/carry-positions.js";
 import { authenticateCarryCreationOpportunity } from "../src/execution/carry-opportunity-authentication.js";
 import { observeCarryShadowQualification } from "../src/execution/carry-shadow-qualification.js";
 import {
@@ -189,7 +193,56 @@ test("derives release material only from a completed durable lifecycle", async (
   ]);
   assert.match(result.material.value_ledger.realized.settlement_evidence_commitment, /^carry:settlement:evidence:[0-9a-f]{64}$/);
   assert.equal(result.material.value_ledger.realized.net_value_micro_usdc, 39);
+  assert.match(result.material.value_ledger.cost_manifest_commitment, /^carry:cost-manifest:[0-9a-f]{64}$/);
   assert.match(result.material.worker_material_commitment, /^carry:release:material:[0-9a-f]{64}$/);
+});
+
+test("release rejects missing, tampered, or unbound cost-completeness evidence", async (t) => {
+  const mutations = [
+    ["missing manifest", (record) => {
+      const valueEvidence = { ...record.value_evidence };
+      delete valueEvidence.cost_manifest;
+      record.value_evidence = valueEvidence;
+    }],
+    ["regex-only manifest commitment", (record) => {
+      const manifest = structuredClone(record.value_evidence.cost_manifest);
+      manifest.manifest_commitment = `carry:cost-manifest:${"f".repeat(64)}`;
+      record.value_evidence = { ...record.value_evidence, cost_manifest: manifest };
+      record.value_ledger.finalization_evidence.cost_manifest = structuredClone(manifest);
+    }],
+    ["tampered exact amount", (record) => {
+      const manifest = structuredClone(record.value_evidence.cost_manifest);
+      manifest.operations[0].costs.trading_fee.amount_micro_usdc += 1;
+      record.value_evidence = { ...record.value_evidence, cost_manifest: manifest };
+      record.value_ledger.finalization_evidence.cost_manifest = structuredClone(manifest);
+    }],
+    ["tampered proof source", (record) => {
+      const manifest = structuredClone(record.value_evidence.cost_manifest);
+      manifest.operations[0].costs.slippage.source_evidence_commitments[0] = "carry:tampered:source:0001";
+      record.value_evidence = { ...record.value_evidence, cost_manifest: manifest };
+      record.value_ledger.finalization_evidence.cost_manifest = structuredClone(manifest);
+    }],
+    ["finalization binding removed", (record) => {
+      const finalization = { ...record.value_ledger.finalization_evidence };
+      delete finalization.cost_manifest;
+      record.value_ledger.finalization_evidence = finalization;
+    }],
+  ];
+  for (const [name, mutate] of mutations) {
+    await t.test(name, async () => {
+      const fixture = await stateFixture();
+      mutate(fixture.record);
+      const result = await buildCompletedCarryReleaseMaterial({
+        state: fixture.state,
+        owner_commitment: OWNER,
+        position_id: fixture.record.position.position_id,
+        env: { PHALA_CVM_IMAGE_DIGEST: IMAGE },
+        now_ms: NOW,
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.error, "carry_release_cost_completeness_unproven");
+    });
+  }
 });
 
 test("release accepts complete terminal partial-fill evidence without requiring full fill", async () => {
@@ -1562,10 +1615,25 @@ async function stateFixture() {
   const settlementValuedAtMs = 1_800_000_005_000;
   const pnlComponents = releasePnlComponents(settlementValuedAtMs);
   const settlementEvidenceCommitment = `carry:value:economics:${"ef".repeat(20)}`;
-  const ledgerEntries = [...entrySaga.legs, ...exitSaga.legs].flatMap((leg, index) => [
-    { leg_id: leg.leg_id, entry_type: "trading_fee", direction: "debit", amount_micro_usdc: 5 },
-    { leg_id: leg.leg_id, entry_type: "slippage", direction: "debit", amount_micro_usdc: index === 3 ? 2 : 1 },
-  ]);
+  const ledgerEntries = [
+    ...entrySaga.legs.map((leg) => ({ phase: "entry", leg })),
+    ...exitSaga.legs.map((leg) => ({ phase: "exit", leg })),
+  ].flatMap(({ phase, leg }, index) => {
+    const venueId = leg.venue_id;
+    const evidenceCommitment = `carry:value:execution:work:carry:${phase}:${venueId}`;
+    return [
+      {
+        entry_id: `carry:value:${phase}:${venueId}:fee`, venue_id: venueId, leg_id: leg.leg_id,
+        entry_type: "trading_fee", direction: "debit", amount_micro_usdc: 5,
+        evidence_commitment: evidenceCommitment,
+      },
+      {
+        entry_id: `carry:value:${phase}:${venueId}:slippage`, venue_id: venueId, leg_id: leg.leg_id,
+        entry_type: "slippage", direction: "debit", amount_micro_usdc: index === 3 ? 2 : 1,
+        evidence_commitment: evidenceCommitment,
+      },
+    ];
+  });
   ledgerEntries.push(
     {
       venue_id: "hyperliquid",
@@ -1781,6 +1849,16 @@ async function stateFixture() {
   record.final_reconciliation_evidence.reconciliation_commitment = carryReconciliationCommitment(
     record.final_reconciliation_evidence,
   );
+  const costManifest = buildStoredCarryCostManifest(record);
+  assert.equal(costManifest.ok, true, costManifest.error);
+  record.value_evidence.cost_manifest = costManifest.manifest;
+  record.value_ledger.finalization_evidence = {
+    gross_exposure_micro_usdc: 0,
+    open_order_count: 0,
+    costs_complete: true,
+    cost_manifest: structuredClone(costManifest.manifest),
+    reconciliation_commitment: record.final_reconciliation_evidence.reconciliation_commitment,
+  };
   record.position.mandate_authorization = await signedMandateAuthorization(record.position);
   const receipts = Object.fromEntries([
     ...entrySaga.execution_context.legs,
@@ -2306,7 +2384,14 @@ function releaseExecutionValueEvidence(sagaValue) {
     status: "complete",
     venues: Object.fromEntries(sagaValue.execution_context.legs.map((context) => [
       context.work_order_commitment.endsWith(":aster") ? "aster" : "hyperliquid",
-      {
+      (() => {
+        const venueId = context.work_order_commitment.endsWith(":aster") ? "aster" : "hyperliquid";
+        const phase = context.work_order_commitment.includes(":exit:") ? "exit" : "entry";
+        const evidenceCommitment = `carry:value:execution:${context.work_order_commitment}`;
+        return {
+        fee_exact: true,
+        slippage_exact: true,
+        fill_exact: true,
         filled_base_e8: "11000000",
         average_fill_price_e8: context.work_order_commitment === "work:carry:exit:hyperliquid"
           ? "1000000005455"
@@ -2315,10 +2400,59 @@ function releaseExecutionValueEvidence(sagaValue) {
             : "1000000000000",
         side: context.instruction.order.side,
         pnl_settlement_asset: context.accounting_pnl_settlement_asset,
-        evidence_commitment: `carry:value:execution:${context.work_order_commitment}`,
-      },
+        evidence_commitment: evidenceCommitment,
+        cost_operation_evidence: releaseCostOperationEvidence({
+          phase,
+          venueId,
+          legId: context.leg_id,
+          workOrderCommitment: context.work_order_commitment,
+          executionEvidenceCommitment: evidenceCommitment,
+        }),
+      };
+      })(),
     ])),
   };
+}
+
+function releaseCostOperationEvidence({ phase, venueId, legId, workOrderCommitment, executionEvidenceCommitment }) {
+  const terminalMaterial = {
+    version: 1,
+    evidence_kind: "provider_terminal_execution_v1",
+    phase,
+    venue_id: venueId,
+    leg_id: legId,
+    work_order_commitment: workOrderCommitment,
+    provider_ref_commitment: `provider:carry:${phase}:${venueId}`,
+    result_commitment: `result:carry:${phase}:${venueId}`,
+    execution_evidence_commitment: executionEvidenceCommitment,
+    terminal_status: "filled",
+    network_transaction_submitted: false,
+    transfer_operation_requested: false,
+  };
+  const terminalCommitment = `carry:cost-terminal-evidence:${createHash("sha256")
+    .update(canonicalJson(terminalMaterial)).digest("hex")}`;
+  const operation = buildCarryCostOperationEvidence({
+    evidence_kind: "terminal_provider_order_cost_scope_v1",
+    phase,
+    venue_id: venueId,
+    leg_id: legId,
+    source_evidence_commitments: [executionEvidenceCommitment, terminalCommitment],
+    work_order_commitment: workOrderCommitment,
+    provider_ref_commitment: terminalMaterial.provider_ref_commitment,
+    result_commitment: terminalMaterial.result_commitment,
+    terminal_evidence_commitment: terminalCommitment,
+    execution_evidence_commitment: executionEvidenceCommitment,
+    terminal_no_fill: false,
+  });
+  assert.ok(operation);
+  return operation;
+}
+
+function canonicalJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`).join(",")}}`;
 }
 
 function qualificationEvidence() {

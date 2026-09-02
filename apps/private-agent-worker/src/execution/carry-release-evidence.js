@@ -11,6 +11,7 @@ import { verifyCarryRiskMandateAuthorization } from "./carry-mandate.js";
 import {
   carryPositionLegId,
   validateCarryCreationInputEvidence,
+  verifyStoredCarryCostCompleteness,
   verifyStoredCarryOpportunityBinding,
 } from "./carry-positions.js";
 import { assessCarryFlatReconciliation } from "./carry-reconciliation.js";
@@ -25,6 +26,7 @@ import { verifyCashflowValuationEvidence } from "./carry-stablecoin-conversion.j
 import { hasProvenLiveOrderBroadcast } from "./order-broadcast-proof.js";
 import { liquidationDistanceSourceForVenue } from "../venues/liquidation-distance.js";
 import { finalizeCarryLifecycleEventRecord } from "../state/private-state.js";
+import { listAllCarryPositionRecords } from "./carry-record-scan.js";
 import {
   validCarryInventoryEvidence,
   validateCarryInventoryBinding,
@@ -238,6 +240,7 @@ export async function readCompletedCarryLifecycleProof({
   owner_commitment: ownerCommitment,
   asset,
   position_id: positionId,
+  require_immutable_reference: requireImmutableReference = false,
   env = process.env,
   now_ms: nowMs = Date.now(),
 }) {
@@ -265,6 +268,9 @@ export async function readCompletedCarryLifecycleProof({
     : "";
   if (storedReference && !referenceFormat) {
     return denied("carry_lifecycle_proof_reference_invalid");
+  }
+  if (requireImmutableReference && !storedReference) {
+    return denied("carry_lifecycle_proof_reference_missing");
   }
   let stored;
   let migratableLegacyEntry = null;
@@ -406,6 +412,50 @@ export async function readCompletedCarryLifecycleProof({
     : denied("carry_lifecycle_proof_reference_mismatch");
 }
 
+export async function readCompletedCarryLifecycleProofs({
+  state,
+  owner_commitment: ownerCommitment,
+  asset,
+  env = process.env,
+  now_ms: nowMs = Date.now(),
+}) {
+  if (typeof state?.listCarryPositionRecords !== "function") {
+    return { ok: false, error: "carry_lifecycle_proof_position_scan_unavailable", proofs: Object.freeze([]) };
+  }
+  let records;
+  try {
+    records = await listAllCarryPositionRecords({
+      state,
+      owner_commitment: ownerCommitment,
+    });
+  } catch {
+    return { ok: false, error: "carry_lifecycle_proof_position_scan_failed", proofs: Object.freeze([]) };
+  }
+  const positionIds = [...new Set(records
+    .map((record) => String(record?.position?.position_id || ""))
+    .filter(Boolean))]
+    .sort();
+  const proofs = [];
+  for (const positionId of positionIds) {
+    const assessed = await readCompletedCarryLifecycleProof({
+      state,
+      owner_commitment: ownerCommitment,
+      asset,
+      position_id: positionId,
+      require_immutable_reference: true,
+      env,
+      now_ms: nowMs,
+    });
+    if (assessed.ok) proofs.push(assessed);
+  }
+  return {
+    ok: true,
+    scanned_position_count: positionIds.length,
+    proof_count: proofs.length,
+    proofs: Object.freeze(proofs),
+  };
+}
+
 export function assessCompletedCarryLifecycleProof({
   proof,
   owner_commitment: ownerCommitment,
@@ -533,6 +583,8 @@ export async function buildCompletedCarryReleaseMaterial({
   if (record.value_ledger?.status !== "finalized" || record.value_evidence?.costs_complete !== true) {
     return denied("carry_release_value_ledger_incomplete");
   }
+  const costCompleteness = verifyStoredCarryCostCompleteness(record);
+  if (!costCompleteness.ok) return denied("carry_release_cost_completeness_unproven");
   const contractEquivalence = releaseContractEquivalence(record.opportunity);
   if (!contractEquivalence.ok) return contractEquivalence;
   const creationInputEvidence = releaseCreationInputEvidence(record.position, record.opportunity?.input_evidence);
@@ -1514,6 +1566,7 @@ function releaseValueLedger(record, settlementEvidence) {
   return {
     finalized: ledger.status === "finalized",
     complete_costs: record.value_evidence?.costs_complete === true,
+    cost_manifest_commitment: record.value_evidence?.cost_manifest?.manifest_commitment || null,
     modeled: {
       gross_funding_micro_usdc: modeled.gross_funding_micro_usdc,
       total_cost_micro_usdc: modeled.trading_cost_micro_usdc + modeled.capital_cost_micro_usdc + modeled.risk_buffer_micro_usdc,

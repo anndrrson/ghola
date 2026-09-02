@@ -4,6 +4,7 @@ import type {
   GholaRailKind,
   GholaVenueId,
 } from "./private-account";
+import { connectorSdkDefaultVenue } from "@ghola/execution-core";
 
 export interface GholaConnectorSdkHttpPaths {
   submit: string;
@@ -60,7 +61,7 @@ const CONNECTOR_SPECS: GholaConnectorSdkSpec[] = [
   {
     version: 1,
     platform_class: "solana_perps_market",
-    default_venue_id: "phoenix",
+    default_venue_id: registeredConnectorDefaultVenue("solana_perps_market"),
     label: "Solana perps market",
     supported_actions: ["fund_platform", "trade_on_platform", "rebalance"],
     operation_classes: ["read", "perp_limit_order", "cancel", "fills", "reconcile"],
@@ -78,7 +79,7 @@ const CONNECTOR_SPECS: GholaConnectorSdkSpec[] = [
   {
     version: 1,
     platform_class: "solana_swap_aggregator",
-    default_venue_id: "jupiter",
+    default_venue_id: registeredConnectorDefaultVenue("solana_swap_aggregator"),
     label: "Solana swap aggregator",
     supported_actions: ["trade_on_platform", "rebalance"],
     operation_classes: ["read", "preview_order", "swap", "reconcile"],
@@ -96,7 +97,7 @@ const CONNECTOR_SPECS: GholaConnectorSdkSpec[] = [
   {
     version: 1,
     platform_class: "hyperliquid_style_market",
-    default_venue_id: "hyperliquid",
+    default_venue_id: registeredConnectorDefaultVenue("hyperliquid_style_market"),
     label: "Hyperliquid-style market",
     supported_actions: ["fund_platform", "trade_on_platform", "rebalance"],
     operation_classes: ["read", "limit_order", "cancel", "reconcile"],
@@ -114,7 +115,7 @@ const CONNECTOR_SPECS: GholaConnectorSdkSpec[] = [
   {
     version: 1,
     platform_class: "coinbase_style_provider",
-    default_venue_id: "coinbase_advanced",
+    default_venue_id: registeredConnectorDefaultVenue("coinbase_style_provider"),
     label: "Coinbase Advanced provider",
     supported_actions: ["fund_platform", "trade_on_platform", "rebalance"],
     operation_classes: ["read", "preview_order", "spot_limit_order", "spot_market_order", "cancel", "fills", "reconcile"],
@@ -171,4 +172,10 @@ export function connectorSdkSpecForPlatform(platformClass: GholaPlatformClass): 
 
 export function connectorSdkPlatformClasses(): GholaPlatformClass[] {
   return CONNECTOR_SPECS.map((spec) => spec.platform_class);
+}
+
+function registeredConnectorDefaultVenue(platformClass: GholaPlatformClass): GholaVenueId {
+  const venueId = connectorSdkDefaultVenue(platformClass);
+  if (!venueId) throw new Error(`connector venue registry missing: ${platformClass}`);
+  return venueId;
 }

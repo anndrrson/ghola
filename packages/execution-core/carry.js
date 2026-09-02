@@ -32,6 +32,22 @@ const EVENT_TYPES = new Set([
 const VALUE_ENTRY_TYPES = new Set([
   "funding", "trading_fee", "slippage", "gas", "capital_cost", "transfer_fee", "rebate", "settlement_adjustment",
 ]);
+const CARRY_COST_CATEGORIES = Object.freeze(["trading_fee", "slippage", "gas", "transfer_fee"]);
+const CARRY_COST_PHASES = new Set(["entry", "exit", "recovery_exit"]);
+const CARRY_COST_LIFECYCLES = new Set(["normal", "aborted_entry_recovery"]);
+const CARRY_COST_PROOF_STATUSES = new Set(["exact", "verified_zero"]);
+const CARRY_COST_PROOF_KINDS = new Set([
+  "terminal_execution_exact_v1",
+  "terminal_no_fill_zero_cost_v1",
+  "venue_order_api_no_network_transaction_v1",
+  "carry_execution_no_transfer_operation_v1",
+]);
+const CARRY_COST_OPERATION_EVIDENCE_KINDS = new Set([
+  "terminal_provider_order_cost_scope_v1",
+  "terminal_saga_no_fill_cost_scope_v1",
+]);
+const CARRY_COST_OPERATION_EVIDENCE_COMMITMENT = /^carry:cost-operation-evidence:[0-9a-f]{64}$/;
+const CARRY_COST_MANIFEST_COMMITMENT = /^carry:cost-manifest:[0-9a-f]{64}$/;
 const DEBIT_ONLY_VALUE_ENTRY_TYPES = new Set([
   "trading_fee", "slippage", "gas", "capital_cost", "transfer_fee",
 ]);
@@ -2344,6 +2360,7 @@ export function finalizeCarryValueLedger({ ledger: ledgerInput, evidence: eviden
     if (grossExposure !== 0) fail("carry_value_final_exposure_not_flat");
     if (openOrderCount !== 0) fail("carry_value_final_open_orders_nonzero");
     if (evidence.costs_complete !== true) fail("carry_value_final_costs_incomplete");
+    const costManifest = normalizeCarryCostCompletenessManifest(evidence.cost_manifest, ledger);
     const nowMs = positiveInteger(now_ms, "carry_value_finalized_at");
     ledger.status = "finalized";
     ledger.updated_at_ms = nowMs;
@@ -2353,12 +2370,506 @@ export function finalizeCarryValueLedger({ ledger: ledgerInput, evidence: eviden
       gross_exposure_micro_usdc: 0,
       open_order_count: 0,
       costs_complete: true,
+      cost_manifest: costManifest,
       reconciliation_commitment: identifier(evidence.reconciliation_commitment, "carry_value_reconciliation_commitment"),
     };
     return deepFreeze({ ok: true, ledger: deepFreeze(ledger) });
   } catch (error) {
     return deepFreeze({ ok: false, error: error instanceof CarryModelError ? error.code : "carry_value_finalization_invalid", ledger: ledgerInput });
   }
+}
+
+function normalizeCarryCostCompletenessManifest(value, ledger) {
+  const raw = object(value, "carry_value_cost_manifest_required");
+  exactVersion(raw.version, "carry_value_cost_manifest_version");
+  const positionId = identifier(raw.position_id, "carry_value_cost_manifest_position");
+  if (positionId !== ledger.position_id) fail("carry_value_cost_manifest_position_mismatch");
+  if (raw.status !== "complete") fail("carry_value_cost_manifest_incomplete");
+  const lifecycleKind = enumValue(raw.lifecycle_kind, CARRY_COST_LIFECYCLES, "carry_value_cost_manifest_lifecycle");
+  const rawOperations = array(raw.operations, "carry_value_cost_manifest_operations", 2, 16);
+  const ledgerEntries = ledger.entries.map(normalizeValueEntry);
+  const usedEntryIds = new Set();
+  const operationIds = new Set();
+  const operations = rawOperations.map((operation) => {
+    const item = object(operation, "carry_value_cost_operation_required");
+    const operationId = identifier(item.operation_id, "carry_value_cost_operation_id");
+    if (operationIds.has(operationId)) fail("carry_value_cost_operation_duplicate");
+    operationIds.add(operationId);
+    const phase = enumValue(item.phase, CARRY_COST_PHASES, "carry_value_cost_operation_phase");
+    const venueId = venue(item.venue_id, "carry_value_cost_operation_venue");
+    const legId = identifier(item.leg_id, "carry_value_cost_operation_leg");
+    const operationEvidence = normalizeCarryCostOperationEvidence({
+      value: item.operation_evidence,
+      phase,
+      venueId,
+      legId,
+    });
+    const costsRaw = object(item.costs, "carry_value_cost_operation_costs_required");
+    if (canonicalCarryCommitmentJson(Object.keys(costsRaw).sort())
+      !== canonicalCarryCommitmentJson([...CARRY_COST_CATEGORIES].sort())) {
+      fail("carry_value_cost_operation_categories_invalid");
+    }
+    const costs = Object.fromEntries(CARRY_COST_CATEGORIES.map((category) => [
+      category,
+      normalizeCarryCostProof({
+        value: costsRaw[category], category, phase, venueId, legId, ledgerEntries, usedEntryIds,
+        operationEvidence,
+      }),
+    ]));
+    if (costs.trading_fee.status !== costs.slippage.status
+      || (costs.trading_fee.status === "verified_zero"
+        && canonicalCarryCommitmentJson(costs.trading_fee.source_evidence_commitments)
+          !== canonicalCarryCommitmentJson(costs.slippage.source_evidence_commitments))) {
+      fail("carry_value_cost_execution_proof_incoherent");
+    }
+    for (const category of ["trading_fee", "slippage"]) {
+      if (costs[category].status === "exact"
+        && costs[category].source_evidence_commitments.some(
+          (source) => !operationEvidence.source_evidence_commitments.includes(source),
+        )) fail("carry_value_cost_execution_source_unbound");
+    }
+    return {
+      operation_id: operationId,
+      phase,
+      venue_id: venueId,
+      leg_id: legId,
+      operation_evidence: operationEvidence,
+      costs,
+    };
+  });
+  validateCarryCostOperationCoverage(operations, lifecycleKind);
+  const relevantEntryIds = ledgerEntries
+    .filter((entry) => ["trading_fee", "rebate", "slippage", "gas", "transfer_fee"].includes(entry.entry_type))
+    .map((entry) => entry.entry_id)
+    .sort();
+  if (canonicalCarryCommitmentJson([...usedEntryIds].sort()) !== canonicalCarryCommitmentJson(relevantEntryIds)) {
+    fail("carry_value_cost_manifest_ledger_coverage_incomplete");
+  }
+  const manifestCommitment = typeof raw.manifest_commitment === "string"
+    && CARRY_COST_MANIFEST_COMMITMENT.test(raw.manifest_commitment)
+    ? raw.manifest_commitment
+    : fail("carry_value_cost_manifest_commitment");
+  const normalizedOperations = operations.sort((left, right) => left.operation_id.localeCompare(right.operation_id));
+  const material = {
+    version: 1,
+    position_id: positionId,
+    status: "complete",
+    lifecycle_kind: lifecycleKind,
+    operations: normalizedOperations,
+  };
+  if (manifestCommitment !== `carry:cost-manifest:${sha256HexUtf8(canonicalCarryCommitmentJson(material))}`) {
+    fail("carry_value_cost_manifest_commitment_mismatch");
+  }
+  return deepFreeze({
+    ...material,
+    manifest_commitment: manifestCommitment,
+  });
+}
+
+function normalizeCarryCostOperationEvidence({ value, phase, venueId, legId }) {
+  const raw = object(value, "carry_value_cost_operation_evidence_required");
+  exactVersion(raw.version, "carry_value_cost_operation_evidence_version");
+  const evidenceKind = enumValue(
+    raw.evidence_kind,
+    CARRY_COST_OPERATION_EVIDENCE_KINDS,
+    "carry_value_cost_operation_evidence_kind",
+  );
+  if (raw.phase !== phase || raw.venue_id !== venueId || raw.leg_id !== legId) {
+    fail("carry_value_cost_operation_evidence_binding_invalid");
+  }
+  const sourceEvidence = array(
+    raw.source_evidence_commitments,
+    "carry_value_cost_operation_evidence_sources",
+    1,
+    64,
+  ).map((claim) => identifier(claim, "carry_value_cost_operation_evidence_source"));
+  if (new Set(sourceEvidence).size !== sourceEvidence.length) {
+    fail("carry_value_cost_operation_evidence_sources_duplicate");
+  }
+  const terminalNoFill = raw.terminal_no_fill === true;
+  if (terminalNoFill !== (evidenceKind === "terminal_saga_no_fill_cost_scope_v1")) {
+    fail("carry_value_cost_operation_evidence_terminal_invalid");
+  }
+  if (raw.separate_network_fee_charged !== false || raw.transfer_operation_requested !== false) {
+    fail("carry_value_cost_operation_evidence_scope_invalid");
+  }
+  const workOrderCommitment = identifier(
+    raw.work_order_commitment,
+    "carry_value_cost_operation_evidence_work_order",
+  );
+  const terminalEvidenceCommitment = identifier(
+    raw.terminal_evidence_commitment,
+    "carry_value_cost_operation_evidence_terminal_source",
+  );
+  const terminalEvidence = normalizeCarryCostTerminalEvidence({
+    value: raw.terminal_evidence,
+    evidenceKind,
+    phase,
+    venueId,
+    legId,
+    workOrderCommitment,
+  });
+  if (terminalEvidenceCommitment !== terminalEvidence.evidence_commitment) {
+    fail("carry_value_cost_operation_evidence_terminal_commitment_mismatch");
+  }
+  if (!sourceEvidence.includes(terminalEvidenceCommitment)) {
+    fail("carry_value_cost_operation_evidence_terminal_source_unbound");
+  }
+  let providerRefCommitment = null;
+  let resultCommitment = null;
+  let sagaId = null;
+  let sagaStatus = null;
+  let submissionStatus = null;
+  let cancelConfirmed = false;
+  if (evidenceKind === "terminal_provider_order_cost_scope_v1") {
+    providerRefCommitment = identifier(
+      raw.provider_ref_commitment,
+      "carry_value_cost_operation_evidence_provider_ref",
+    );
+    resultCommitment = identifier(
+      raw.result_commitment,
+      "carry_value_cost_operation_evidence_result",
+    );
+    if (raw.saga_id != null || raw.saga_status != null || raw.submission_status != null
+      || raw.cancel_confirmed !== false) {
+      fail("carry_value_cost_operation_evidence_provider_shape_invalid");
+    }
+  } else {
+    sagaId = identifier(raw.saga_id, "carry_value_cost_operation_evidence_saga");
+    sagaStatus = enumValue(
+      raw.saga_status,
+      new Set(["failed_no_submit", "failed_no_fill", "unwound"]),
+      "carry_value_cost_operation_evidence_saga_status",
+    );
+    submissionStatus = enumValue(
+      raw.submission_status,
+      new Set(["pending", "submitted", "acknowledged", "failed", "finalized"]),
+      "carry_value_cost_operation_evidence_submission_status",
+    );
+    cancelConfirmed = raw.cancel_confirmed === true;
+    if (!(sagaStatus === "failed_no_submit" && submissionStatus === "pending")
+      && !["failed", "finalized"].includes(submissionStatus)
+      && !cancelConfirmed) {
+      fail("carry_value_cost_operation_evidence_submission_not_terminal");
+    }
+    providerRefCommitment = raw.provider_ref_commitment == null
+      ? null
+      : identifier(raw.provider_ref_commitment, "carry_value_cost_operation_evidence_provider_ref");
+    if (raw.result_commitment != null) fail("carry_value_cost_operation_evidence_saga_shape_invalid");
+  }
+  if (terminalEvidence.provider_ref_commitment !== providerRefCommitment
+    || (evidenceKind === "terminal_provider_order_cost_scope_v1"
+      && (terminalEvidence.result_commitment !== resultCommitment
+        || !sourceEvidence.includes(terminalEvidence.execution_evidence_commitment)))
+    || (evidenceKind === "terminal_saga_no_fill_cost_scope_v1"
+      && (terminalEvidence.saga_id !== sagaId
+        || terminalEvidence.saga_status !== sagaStatus
+        || terminalEvidence.submission_status !== submissionStatus
+        || terminalEvidence.cancel_confirmed !== cancelConfirmed))) {
+    fail("carry_value_cost_operation_evidence_terminal_binding_invalid");
+  }
+  const evidenceCommitment = typeof raw.evidence_commitment === "string"
+    && CARRY_COST_OPERATION_EVIDENCE_COMMITMENT.test(raw.evidence_commitment)
+    ? raw.evidence_commitment
+    : fail("carry_value_cost_operation_evidence_commitment");
+  const material = {
+    version: 1,
+    evidence_kind: evidenceKind,
+    phase,
+    venue_id: venueId,
+    leg_id: legId,
+    source_evidence_commitments: sourceEvidence,
+    work_order_commitment: workOrderCommitment,
+    provider_ref_commitment: providerRefCommitment,
+    result_commitment: resultCommitment,
+    terminal_evidence_commitment: terminalEvidenceCommitment,
+    terminal_evidence: terminalEvidence,
+    saga_id: sagaId,
+    saga_status: sagaStatus,
+    submission_status: submissionStatus,
+    cancel_confirmed: cancelConfirmed,
+    terminal_no_fill: terminalNoFill,
+    separate_network_fee_charged: false,
+    transfer_operation_requested: false,
+  };
+  if (evidenceCommitment
+    !== `carry:cost-operation-evidence:${sha256HexUtf8(canonicalCarryCommitmentJson(material))}`) {
+    fail("carry_value_cost_operation_evidence_commitment_mismatch");
+  }
+  return { ...material, evidence_commitment: evidenceCommitment };
+}
+
+function normalizeCarryCostTerminalEvidence({ value, evidenceKind, phase, venueId, legId, workOrderCommitment }) {
+  const raw = object(value, "carry_value_cost_terminal_evidence_required");
+  exactVersion(raw.version, "carry_value_cost_terminal_evidence_version");
+  if (raw.phase !== phase || raw.venue_id !== venueId || raw.leg_id !== legId
+    || raw.work_order_commitment !== workOrderCommitment
+    || raw.network_transaction_submitted !== false
+    || raw.transfer_operation_requested !== false) {
+    fail("carry_value_cost_terminal_evidence_binding_invalid");
+  }
+  let material;
+  if (evidenceKind === "terminal_provider_order_cost_scope_v1") {
+    if (raw.evidence_kind !== "provider_terminal_execution_v1"
+      || raw.terminal_status !== "filled") fail("carry_value_cost_terminal_evidence_provider_invalid");
+    material = {
+      version: 1,
+      evidence_kind: "provider_terminal_execution_v1",
+      phase,
+      venue_id: venueId,
+      leg_id: legId,
+      work_order_commitment: workOrderCommitment,
+      provider_ref_commitment: identifier(raw.provider_ref_commitment, "carry_value_cost_terminal_provider_ref"),
+      result_commitment: identifier(raw.result_commitment, "carry_value_cost_terminal_result"),
+      execution_evidence_commitment: identifier(
+        raw.execution_evidence_commitment,
+        "carry_value_cost_terminal_execution_evidence",
+      ),
+      terminal_status: "filled",
+      network_transaction_submitted: false,
+      transfer_operation_requested: false,
+    };
+  } else {
+    if (raw.evidence_kind !== "saga_terminal_no_fill_v1"
+      || raw.terminal !== true
+      || raw.filled_micro_usdc !== 0) fail("carry_value_cost_terminal_evidence_saga_invalid");
+    material = {
+      version: 1,
+      evidence_kind: "saga_terminal_no_fill_v1",
+      phase,
+      venue_id: venueId,
+      leg_id: legId,
+      work_order_commitment: workOrderCommitment,
+      provider_ref_commitment: raw.provider_ref_commitment == null
+        ? null
+        : identifier(raw.provider_ref_commitment, "carry_value_cost_terminal_provider_ref"),
+      saga_id: identifier(raw.saga_id, "carry_value_cost_terminal_saga"),
+      saga_status: enumValue(
+        raw.saga_status,
+        new Set(["failed_no_submit", "failed_no_fill", "unwound"]),
+        "carry_value_cost_terminal_saga_status",
+      ),
+      saga_terminal_reason: raw.saga_terminal_reason == null
+        ? null
+        : identifier(raw.saga_terminal_reason, "carry_value_cost_terminal_saga_reason"),
+      submission_status: enumValue(
+        raw.submission_status,
+        new Set(["pending", "submitted", "acknowledged", "failed", "finalized"]),
+        "carry_value_cost_terminal_submission_status",
+      ),
+      cancel_confirmed: raw.cancel_confirmed === true,
+      terminal: true,
+      filled_micro_usdc: 0,
+      network_transaction_submitted: false,
+      transfer_operation_requested: false,
+    };
+  }
+  const evidenceCommitment = identifier(raw.evidence_commitment, "carry_value_cost_terminal_evidence_commitment");
+  if (evidenceCommitment !== `carry:cost-terminal-evidence:${sha256HexUtf8(canonicalCarryCommitmentJson(material))}`) {
+    fail("carry_value_cost_terminal_evidence_commitment_mismatch");
+  }
+  return { ...material, evidence_commitment: evidenceCommitment };
+}
+
+function normalizeCarryCostProof({
+  value,
+  category,
+  phase,
+  venueId,
+  legId,
+  ledgerEntries,
+  usedEntryIds,
+  operationEvidence,
+}) {
+  const raw = object(value, "carry_value_cost_proof_required");
+  exactVersion(raw.version, "carry_value_cost_proof_version");
+  if (raw.phase !== phase || raw.venue_id !== venueId || raw.leg_id !== legId || raw.category !== category) {
+    fail("carry_value_cost_proof_binding_invalid");
+  }
+  const status = enumValue(raw.status, CARRY_COST_PROOF_STATUSES, "carry_value_cost_proof_status");
+  const proofKind = enumValue(raw.proof_kind, CARRY_COST_PROOF_KINDS, "carry_value_cost_proof_kind");
+  const amount = category === "trading_fee"
+    ? signedInteger(raw.amount_micro_usdc, "carry_value_cost_proof_amount")
+    : nonNegativeInteger(raw.amount_micro_usdc, "carry_value_cost_proof_amount");
+  const evidenceCommitment = identifier(raw.evidence_commitment, "carry_value_cost_proof_evidence");
+  const sourceEvidence = array(
+    raw.source_evidence_commitments,
+    "carry_value_cost_proof_sources",
+    1,
+    64,
+  ).map((claim) => identifier(claim, "carry_value_cost_proof_source"));
+  if (new Set(sourceEvidence).size !== sourceEvidence.length) fail("carry_value_cost_proof_sources_duplicate");
+  const ledgerEntryIds = array(
+    raw.ledger_entry_ids,
+    "carry_value_cost_proof_entries",
+    status === "exact" ? 1 : 0,
+    64,
+  ).map((entryId) => identifier(entryId, "carry_value_cost_proof_entry"));
+  if (new Set(ledgerEntryIds).size !== ledgerEntryIds.length) fail("carry_value_cost_proof_entries_duplicate");
+  let zeroInvariant = null;
+  if (status === "verified_zero") {
+    if (amount !== 0 || ledgerEntryIds.length !== 0) fail("carry_value_cost_zero_proof_invalid");
+    if ((category === "trading_fee" || category === "slippage")
+      && proofKind !== "terminal_no_fill_zero_cost_v1") fail("carry_value_cost_zero_proof_kind_invalid");
+    if (category === "gas" && proofKind !== "venue_order_api_no_network_transaction_v1") {
+      fail("carry_value_cost_zero_proof_kind_invalid");
+    }
+    if (category === "transfer_fee" && proofKind !== "carry_execution_no_transfer_operation_v1") {
+      fail("carry_value_cost_zero_proof_kind_invalid");
+    }
+    if (canonicalCarryCommitmentJson(sourceEvidence)
+      !== canonicalCarryCommitmentJson([operationEvidence.evidence_commitment])) {
+      fail("carry_value_cost_zero_proof_source_unbound");
+    }
+    if ((category === "trading_fee" || category === "slippage") && operationEvidence.terminal_no_fill !== true) {
+      fail("carry_value_cost_zero_proof_terminal_unbound");
+    }
+    const invariant = object(raw.zero_invariant, "carry_value_cost_zero_invariant_required");
+    if (category === "trading_fee" || category === "slippage") {
+      if (invariant.kind !== "terminal_no_fill"
+        || invariant.terminal_order_status !== "no_fill"
+        || invariant.filled_quantity_e8 !== 0
+        || Object.keys(invariant).length !== 3) fail("carry_value_cost_zero_invariant_invalid");
+      zeroInvariant = {
+        kind: "terminal_no_fill",
+        terminal_order_status: "no_fill",
+        filled_quantity_e8: 0,
+      };
+    } else if (category === "gas") {
+      if (invariant.kind !== "venue_order_api"
+        || invariant.network_transaction_submitted !== false
+        || Object.keys(invariant).length !== 2) fail("carry_value_cost_zero_invariant_invalid");
+      zeroInvariant = { kind: "venue_order_api", network_transaction_submitted: false };
+    } else {
+      if (invariant.kind !== "no_transfer_operation"
+        || invariant.transfer_operation_requested !== false
+        || Object.keys(invariant).length !== 2) fail("carry_value_cost_zero_invariant_invalid");
+      zeroInvariant = { kind: "no_transfer_operation", transfer_operation_requested: false };
+    }
+  } else {
+    if (raw.zero_invariant !== undefined && raw.zero_invariant !== null) {
+      fail("carry_value_cost_exact_zero_invariant_invalid");
+    }
+    if (proofKind !== "terminal_execution_exact_v1") fail("carry_value_cost_exact_proof_kind_invalid");
+    let exactAmount = 0;
+    for (const entryId of ledgerEntryIds) {
+      if (usedEntryIds.has(entryId)) fail("carry_value_cost_manifest_entry_reused");
+      const entry = ledgerEntries.find((candidate) => candidate.entry_id === entryId);
+      if (!entry || entry.venue_id !== venueId || entry.leg_id !== legId
+        || !sourceEvidence.includes(entry.evidence_commitment)) {
+        fail("carry_value_cost_manifest_entry_binding_invalid");
+      }
+      if (category === "trading_fee") {
+        if (entry.entry_type === "trading_fee" && entry.direction === "debit") {
+          exactAmount = safeAdd(exactAmount, entry.amount_micro_usdc, "carry_value_cost_proof_amount_overflow");
+        } else if (entry.entry_type === "rebate" && entry.direction === "credit") {
+          exactAmount = safeAdd(exactAmount, -entry.amount_micro_usdc, "carry_value_cost_proof_amount_overflow");
+        } else fail("carry_value_cost_manifest_entry_type_invalid");
+      } else if (entry.entry_type === category && entry.direction === "debit") {
+        exactAmount = safeAdd(exactAmount, entry.amount_micro_usdc, "carry_value_cost_proof_amount_overflow");
+      } else fail("carry_value_cost_manifest_entry_type_invalid");
+      usedEntryIds.add(entryId);
+    }
+    if (exactAmount !== amount) fail("carry_value_cost_proof_amount_mismatch");
+  }
+  const material = {
+    version: 1,
+    phase,
+    venue_id: venueId,
+    leg_id: legId,
+    category,
+    status,
+    amount_micro_usdc: amount,
+    proof_kind: proofKind,
+    ledger_entry_ids: ledgerEntryIds,
+    source_evidence_commitments: sourceEvidence,
+    zero_invariant: zeroInvariant,
+  };
+  if (evidenceCommitment !== `carry:cost-proof:${sha256HexUtf8(canonicalCarryCommitmentJson(material))}`) {
+    fail("carry_value_cost_proof_commitment_mismatch");
+  }
+  return { ...material, evidence_commitment: evidenceCommitment };
+}
+
+function validateCarryCostOperationCoverage(operations, lifecycleKind) {
+  const phases = new Set(operations.map((operation) => operation.phase));
+  const venues = new Set(operations.map((operation) => operation.venue_id));
+  if (venues.size !== 2) fail("carry_value_cost_manifest_venue_coverage_invalid");
+  if (lifecycleKind === "normal" && phases.size === 2 && phases.has("entry") && phases.has("exit")) {
+    if (operations.length !== 4) fail("carry_value_cost_manifest_operation_coverage_invalid");
+    for (const phase of ["entry", "exit"]) {
+      for (const venueId of venues) {
+        if (operations.filter((operation) => operation.phase === phase && operation.venue_id === venueId).length !== 1) {
+          fail("carry_value_cost_manifest_operation_coverage_invalid");
+        }
+      }
+    }
+    return;
+  }
+  if (lifecycleKind === "aborted_entry_recovery" && phases.has("entry") && !phases.has("exit")) {
+    const entryOperations = operations.filter((operation) => operation.phase === "entry");
+    if (entryOperations.length !== 2
+      || new Set(entryOperations.map((operation) => operation.venue_id)).size !== 2
+      || operations.some((operation) => !["entry", "recovery_exit"].includes(operation.phase))) {
+      fail("carry_value_cost_manifest_operation_coverage_invalid");
+    }
+    return;
+  }
+  fail("carry_value_cost_manifest_phase_coverage_invalid");
+}
+
+const SHA256_K = new Uint32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]);
+
+export function sha256HexUtf8(value) {
+  const bytes = new TextEncoder().encode(String(value));
+  const paddedLength = Math.ceil((bytes.length + 9) / 64) * 64;
+  const padded = new Uint8Array(paddedLength);
+  padded.set(bytes);
+  padded[bytes.length] = 0x80;
+  const bitLength = BigInt(bytes.length) * 8n;
+  const view = new DataView(padded.buffer);
+  view.setUint32(paddedLength - 8, Number((bitLength >> 32n) & 0xffffffffn));
+  view.setUint32(paddedLength - 4, Number(bitLength & 0xffffffffn));
+  const hash = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
+  const words = new Uint32Array(64);
+  for (let offset = 0; offset < paddedLength; offset += 64) {
+    for (let index = 0; index < 16; index += 1) words[index] = view.getUint32(offset + index * 4);
+    for (let index = 16; index < 64; index += 1) {
+      const left = words[index - 15];
+      const right = words[index - 2];
+      const s0 = (rotr(left, 7) ^ rotr(left, 18) ^ (left >>> 3)) >>> 0;
+      const s1 = (rotr(right, 17) ^ rotr(right, 19) ^ (right >>> 10)) >>> 0;
+      words[index] = (words[index - 16] + s0 + words[index - 7] + s1) >>> 0;
+    }
+    let [a, b, c, d, e, f, g, h] = hash;
+    for (let index = 0; index < 64; index += 1) {
+      const s1 = (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) >>> 0;
+      const choice = ((e & f) ^ (~e & g)) >>> 0;
+      const t1 = (h + s1 + choice + SHA256_K[index] + words[index]) >>> 0;
+      const s0 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) >>> 0;
+      const majority = ((a & b) ^ (a & c) ^ (b & c)) >>> 0;
+      const t2 = (s0 + majority) >>> 0;
+      h = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    hash[0] = (hash[0] + a) >>> 0; hash[1] = (hash[1] + b) >>> 0;
+    hash[2] = (hash[2] + c) >>> 0; hash[3] = (hash[3] + d) >>> 0;
+    hash[4] = (hash[4] + e) >>> 0; hash[5] = (hash[5] + f) >>> 0;
+    hash[6] = (hash[6] + g) >>> 0; hash[7] = (hash[7] + h) >>> 0;
+  }
+  return [...hash].map((word) => word.toString(16).padStart(8, "0")).join("");
+}
+
+function rotr(value, bits) {
+  return (value >>> bits) | (value << (32 - bits));
 }
 
 function applyEvent(position, event, nowMs) {

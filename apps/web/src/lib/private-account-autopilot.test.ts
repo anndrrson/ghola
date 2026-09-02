@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import bs58 from "bs58";
 import { ed25519 } from "@noble/curves/ed25519";
+import {
+  AUTOPILOT_ACCOUNT_DEFAULT_VENUES,
+  AUTOPILOT_ACCOUNT_READINESS_VENUES,
+  AUTOPILOT_ACCOUNT_VENUES,
+  SUPPORTED_EXECUTION_VENUES,
+} from "@ghola/execution-core";
 import { GET as autopilotReadinessRoute } from "@/app/v1/private-account/autopilot/readiness/route";
 import { GET as autopilotReplayRoute } from "@/app/v1/private-account/autopilot/sessions/[session_id]/replay/route";
 import { POST as createAutopilotRoute } from "@/app/v1/private-account/autopilot/sessions/route";
@@ -21,8 +29,14 @@ import {
 import { privateAccountMobileProofMessage } from "./private-account-mobile-proof";
 
 const owner = { owner_commitment: "owner_a" };
+const autopilotSource = readFileSync(resolve("src/lib/private-account-autopilot.ts"), "utf8");
 
 describe("private account autopilot sessions", () => {
+  it("decodes venue access across every supported account venue", () => {
+    expect(autopilotSource).toContain("for (const venue of AUTOPILOT_ACCOUNT_VENUES)");
+    expect(autopilotSource).not.toContain("for (const venue of DEFAULT_VENUES)");
+  });
+
   beforeEach(() => {
     resetAutopilotSessionsForTests();
   });
@@ -46,13 +60,7 @@ describe("private account autopilot sessions", () => {
 
     expect(created.session.status).toBe("pending_worker");
     expect(created.session.execution_enabled).toBe(false);
-    expect(created.session.session_policy.venue_allowlist).toEqual([
-      "jupiter",
-      "phoenix",
-      "backpack",
-      "hyperliquid",
-      "coinbase_advanced",
-    ]);
+    expect(created.session.session_policy.venue_allowlist).toEqual(AUTOPILOT_ACCOUNT_DEFAULT_VENUES);
     expect(created.session.session_policy.market_allowlist).toEqual(["SOL-USD", "BTC-USD", "ETH-USD"]);
     expect(created.session.session_policy.max_notional_bucket).toBe("50");
     expect(created.session.session_policy.max_position_notional_bucket).toBe("100");
@@ -94,7 +102,7 @@ describe("private account autopilot sessions", () => {
   it("normalizes requested venues, markets, and policy caps", async () => {
     const created = await createAutopilotSessionFromBody({
       session_policy: {
-        venue_allowlist: ["jupiter", "bad", "coinbase_advanced"],
+        venue_allowlist: [...SUPPORTED_EXECUTION_VENUES, "bad"],
         market_allowlist: ["sol", "doge", "SOL/USDC"],
         max_notional_bucket: "1000",
         max_position_notional_bucket: "500",
@@ -107,7 +115,11 @@ describe("private account autopilot sessions", () => {
       },
     }, owner);
 
-    expect(created.session.session_policy.venue_allowlist).toEqual(["jupiter", "coinbase_advanced"]);
+    expect(created.session.session_policy.venue_allowlist).toEqual(
+      SUPPORTED_EXECUTION_VENUES.filter((venueId) => AUTOPILOT_ACCOUNT_VENUES.includes(
+        venueId as typeof AUTOPILOT_ACCOUNT_VENUES[number],
+      )),
+    );
     expect(created.session.session_policy.market_allowlist).toEqual(["SOL-USD", "SOL/USDC"]);
     expect(created.session.session_policy.max_notional_bucket).toBe("1000");
     expect(created.session.session_policy.max_position_notional_bucket).toBe("500");
@@ -745,6 +757,8 @@ describe("private account autopilot sessions", () => {
       label: "Live Capped",
       can_trade: true,
     });
+    expect(body.venue_readiness.map((venue: { venue_id: string }) => venue.venue_id))
+      .toEqual(AUTOPILOT_ACCOUNT_READINESS_VENUES);
     expect(body.venue_readiness.find((venue: { venue_id: string }) => venue.venue_id === "hyperliquid").status)
       .toBe("ready");
   });

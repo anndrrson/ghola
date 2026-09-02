@@ -40,6 +40,62 @@ test("accepts the complete cross-venue Carry execution contract", () => {
   assert.equal(checkCarryExecutionContract(sources).ok, true);
 });
 
+test("rejects cost finalization without canonical manifest verification", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreCarry: sources.coreCarry.replace(
+        "normalizeCarryCostCompletenessManifest(evidence.cost_manifest, ledger)",
+        "structuredClone(evidence.cost_manifest)",
+      ),
+    }),
+    /carry_cost_manifest_core_gate_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      coreCarry: sources.coreCarry.replace(
+        "carry:cost-manifest:${sha256HexUtf8(canonicalCarryCommitmentJson(material))}",
+        "carry:cost-manifest:${manifestCommitment.slice(-64)}",
+      ),
+    }),
+    /carry_cost_manifest_canonical_recompute_missing/,
+  );
+});
+
+test("rejects release and UI contracts that bypass exact cost completeness", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      releaseMaterial: sources.releaseMaterial.replace(
+        "const costCompleteness = verifyStoredCarryCostCompleteness(record);",
+        "const costCompleteness = { ok: true };",
+      ),
+    }),
+    /carry_release_cost_manifest_verification_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryPositionRail: sources.webCarryPositionRail.replace(
+        'value: "FINALIZING COSTS"',
+        'value: "REAL NET"',
+      ),
+    }),
+    /carry_position_finalizing_costs_state_missing/,
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryPositionRail: sources.webCarryPositionRail.replace(
+        "if (costManifestComplete\n      && record.value_boundary_authoritative === true",
+        "if (record.value_boundary_authoritative === true",
+      ),
+    }),
+    /carry_position_rail_cost_manifest_gate_missing/,
+  );
+});
+
 test("rejects Hyperliquid carry handling that loses post-broadcast ambiguity", () => {
   assert.throws(
     () => checkCarryExecutionContract({
@@ -1469,6 +1525,36 @@ test("rejects a Phala surface that cannot configure the single-process assertion
   );
 });
 
+test("rejects a Phala surface that cannot span the shadow qualification floor", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      phalaCompose: sources.phalaCompose.replaceAll(
+        "PRIVATE_AGENT_CARRY_SHADOW_QUALIFICATION_SAMPLES",
+        "PRIVATE_AGENT_CARRY_SHADOW_WINDOW_REMOVED",
+      ),
+    }),
+    /carry_phala_shadow_sample_window_env_missing/,
+  );
+});
+
+test("rejects a Phala surface that omits cross-venue read-only controls", () => {
+  for (const [key, expected] of [
+    ["PRIVATE_AGENT_ASTER_ALLOW_MAINNET", /carry_phala_aster_mainnet_env_missing/],
+    ["PRIVATE_AGENT_ASTER_LIVE_MODE", /carry_phala_aster_mode_env_missing/],
+    ["PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET", /carry_phala_lighter_mainnet_env_missing/],
+    ["PRIVATE_AGENT_LIGHTER_LIVE_MODE", /carry_phala_lighter_mode_env_missing/],
+  ]) {
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        phalaCompose: sources.phalaCompose.replaceAll(key, "REMOVED_CROSS_VENUE_ENV"),
+      }),
+      expected,
+    );
+  }
+});
+
 test("rejects Carry release without an origin-one lifecycle gate", () => {
   assert.throws(
     () => checkCarryExecutionContract({
@@ -2157,11 +2243,11 @@ test("rejects a Carry Position rail that presents accruing value as realized", (
     ],
     [
       'return { label: "VALUE", value: "UNVERIFIED", tone: "warn" };',
-      'return { label: "VALUE", value: "FINALIZING", tone: "warn" };',
+      'return { label: "VALUE", value: "FINALIZING COSTS", tone: "warn" };',
       /carry_position_rail_finalized_unverified_fallback_missing/,
     ],
     [
-      'return { label: "VALUE", value: "FINALIZING", tone: "warn" };',
+      'return { label: "VALUE", value: "FINALIZING COSTS", tone: "warn" };',
       'return { label: "REAL NET", value: microUsd(realized), tone: "good" };',
       /carry_position_rail_finalizing_state_missing/,
     ],
@@ -2295,8 +2381,8 @@ test("rejects lifecycle REAL NET without authoritative exchange fill-time proven
     ["releaseMaterial", "provenanceByVenue[venueId] === AUTHORITATIVE_EXPOSURE_BOUNDARY_PROVENANCE", "Boolean(provenanceByVenue[venueId])", /carry_release_authoritative_venue_provenance_missing/],
     ["releaseMaterial", "proof?.fill_times_authoritative === true", "proof?.fill_times_authoritative !== false", /carry_release_authoritative_fill_time_marker_missing/],
     ["releaseMaterial", "Math.min(...fillTimes) === firstFillAtMs", "Math.max(...fillTimes) === firstFillAtMs", /carry_release_authoritative_fill_time_minimum_missing/],
-    ["webPrivatePrimeReadiness", "pairedLifecycle.value_boundary_authoritative === true", "pairedLifecycle.value_boundary_authoritative !== false", /carry_private_prime_ui_authoritative_value_gate_missing/],
-    ["webPrivatePrimeReadiness", 'pairedLifecycle.exposure_boundary_provenance === "authoritative_exchange_fill_time"', "Boolean(pairedLifecycle.exposure_boundary_provenance)", /carry_private_prime_ui_authoritative_provenance_gate_missing/],
+    ["webPrivatePrimeReadiness", "value.value_boundary_authoritative === true", "value.value_boundary_authoritative !== false", /carry_private_prime_ui_authoritative_value_gate_missing/],
+    ["webPrivatePrimeReadiness", 'value.exposure_boundary_provenance === "authoritative_exchange_fill_time"', "Boolean(value.exposure_boundary_provenance)", /carry_private_prime_ui_authoritative_provenance_gate_missing/],
   ];
   for (const [key, before, after, failure] of cases) {
     assert.ok(sources[key].includes(before), `missing lifecycle provenance mutation source: ${key}:${before}`);
@@ -2987,11 +3073,86 @@ test("rejects private-prime evidence that can outlive its paired lifecycle", () 
     () => checkCarryExecutionContract({
       ...sources,
       privatePrimeReadiness: sources.privatePrimeReadiness.replaceAll(
-        "function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry, supervisionExpiry, lifecycleExpiry)",
-        "function minimumExpiry(readinessExpiry, shadowCheckedAt, routeExpiry)",
+        "releaseEquivalentExpiry,",
+        "",
       ),
     }),
     /carry_private_prime_lifecycle_expiry_binding_missing/,
+  );
+});
+
+test("rejects worker readiness that drops release-equivalent lifecycle coverage", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privatePrimeReadiness: sources.privatePrimeReadiness.replace(
+        "&& releaseEquivalentLifecycles.verified",
+        "&& true",
+      ),
+    }),
+    /carry_private_prime_release_lifecycle_gate_missing/,
+  );
+});
+
+test("rejects worker release coverage that inflates positions or expiry", () => {
+  const cases = [
+    ["uniquePositionIds.size >= 2", "lifecycles.length >= 2", /carry_private_prime_release_unique_position_gate_missing/],
+    ["seenEvidenceCommitments.has(lifecycle.evidence_commitment)", "false", /carry_private_prime_release_unique_evidence_gate_missing/],
+    ["Math.min(...lifecycles.map((item) => item.expires_at_ms))", "Math.max(...lifecycles.map((item) => item.expires_at_ms))", /carry_private_prime_release_earliest_expiry_missing/],
+  ];
+  for (const [before, after, failure] of cases) {
+    assert.ok(sources.privatePrimeReadiness.includes(before));
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        privatePrimeReadiness: sources.privatePrimeReadiness.replace(before, after),
+      }),
+      failure,
+    );
+  }
+});
+
+test("rejects web release coverage that inflates positions, evidence, or expiry", () => {
+  const cases = [
+    ["uniqueReleasePositionIds.length >= 2", "releaseLifecycles.length >= 2", /carry_private_prime_ui_release_unique_position_gate_missing/],
+    ["new Set(releaseEvidenceCommitments).size === releaseLifecycles.length", "releaseEvidenceCommitments.length >= 2", /carry_private_prime_ui_release_unique_evidence_gate_missing/],
+    ["Math.min(...releaseLifecycleExpiries.map((item) => Number(item)))", "Math.max(...releaseLifecycleExpiries.map((item) => Number(item)))", /carry_private_prime_ui_release_earliest_expiry_missing/],
+  ];
+  for (const [before, after, failure] of cases) {
+    assert.ok(sources.webPrivatePrimeReadiness.includes(before));
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        webPrivatePrimeReadiness: sources.webPrivatePrimeReadiness.replace(before, after),
+      }),
+      failure,
+    );
+  }
+});
+
+test("rejects route readiness aggregation from mutable legacy lifecycle pointers", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      releaseMaterial: sources.releaseMaterial.replace(
+        "require_immutable_reference: true",
+        "require_immutable_reference: false",
+      ),
+    }),
+    /carry_lifecycle_proof_immutable_aggregate_gate_missing/,
+  );
+});
+
+test("rejects worker readiness that treats venue direction as a distinct pair", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      privatePrimeReadiness: sources.privatePrimeReadiness.replace(
+        'return [...venueIds].sort().join(":")',
+        'return [...venueIds].join(":")',
+      ),
+    }),
+    /carry_private_prime_release_pair_normalizer_invalid/,
   );
 });
 
@@ -3031,6 +3192,32 @@ test("rejects a terminal that trusts no-submit evidence as live-user readiness",
       ),
     }),
     /carry_private_prime_ui_live_user_gate_missing/,
+  );
+});
+
+test("rejects web readiness that drops release-equivalent lifecycle coverage", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webPrivatePrimeReadiness: sources.webPrivatePrimeReadiness.replace(
+        "expectedReady && capitalReady && lifecycleReady && releaseEquivalentReady",
+        "expectedReady && capitalReady && lifecycleReady",
+      ),
+    }),
+    /carry_private_prime_ui_live_capital_gate_missing/,
+  );
+});
+
+test("rejects web readiness that treats venue direction as a distinct pair", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webPrivatePrimeReadiness: sources.webPrivatePrimeReadiness.replace(
+        '[...venues].sort().join(":")',
+        '[...venues].join(":")',
+      ),
+    }),
+    /carry_private_prime_ui_release_pair_normalizer_invalid/,
   );
 });
 
@@ -3718,7 +3905,7 @@ test("rejects Carry creation detached from exact shadow and account inputs", () 
     () => checkCarryExecutionContract({
       ...sources,
       webPrivatePrimeReadiness: sources.webPrivatePrimeReadiness.replace(
-        "pairedLifecycle.creation_input_evidence_commitment",
+        "value.creation_input_evidence_commitment",
         "null",
       ),
     }),

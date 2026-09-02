@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import bs58 from "bs58";
 import { ed25519, x25519 } from "@noble/curves/ed25519";
+import {
+  PRIVATE_EXECUTION_INSTRUCTION_VENUES,
+  SUPPORTED_EXECUTION_VENUES,
+} from "@ghola/execution-core";
 import { open } from "./envelope";
 import {
   buildPrivateExecutionInstructionBundle,
   privateExecutionInstructionAssociatedData,
   validatePrivateExecutionOrderDraft,
+  type PrivateExecutionOrderDraft,
 } from "./private-execution-instruction-seal";
 import type { PrivateAgentRuntimeStatus } from "./private-agent-runtime";
 
@@ -46,6 +51,24 @@ function runtimeWithRecipient(recipientId: string, recipientPub: Uint8Array): Pr
 }
 
 describe("private execution instruction sealing", () => {
+  it("keeps private-instruction validation synchronized with the registry", () => {
+    const base = {
+      operation_class: "limit_order",
+      market: "BTC",
+      side: "buy",
+      base_size: "1",
+      limit_price: "1",
+    };
+    for (const venueId of SUPPORTED_EXECUTION_VENUES) {
+      const draft = { ...base, venue_id: venueId } as unknown as PrivateExecutionOrderDraft;
+      expect(validatePrivateExecutionOrderDraft(draft).includes("Select a supported venue.")).toBe(
+        !PRIVATE_EXECUTION_INSTRUCTION_VENUES.includes(
+          venueId as typeof PRIVATE_EXECUTION_INSTRUCTION_VENUES[number],
+        ),
+      );
+    }
+  });
+
   it("seals raw order instructions to the attested TEE recipient only", async () => {
     const recipientSecret = x25519.utils.randomPrivateKey();
     const recipientPub = x25519.getPublicKey(recipientSecret);

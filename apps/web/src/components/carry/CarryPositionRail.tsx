@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { canonicalCarryCommitmentJson, sha256HexUtf8 } from "@ghola/execution-core";
 import { CARRY_VENUE_LABELS } from "@/lib/carry-market";
 import { hasExactCarryFlatReconciliation } from "@/lib/carry-reconciliation";
 import { listCarryPositions } from "@/lib/private-account-client";
@@ -25,6 +26,14 @@ export interface CarryPositionRailRecord {
     status?: "open" | "finalized";
     modeled?: { net_value_micro_usdc?: number };
     realized?: { net_value_micro_usdc?: number };
+    finalization_evidence?: {
+      costs_complete?: boolean;
+      cost_manifest?: CarryCostManifest;
+    };
+  };
+  value_evidence?: {
+    costs_complete?: boolean;
+    cost_manifest?: CarryCostManifest;
   };
   final_reconciliation_evidence?: {
     owner_commitment?: string;
@@ -51,6 +60,15 @@ export interface CarryPositionRailRecord {
     margin_runway_status_by_venue?: Record<string, "healthy" | "warning" | "critical" | "breached">;
     recorded_at_ms?: number;
   };
+}
+
+interface CarryCostManifest {
+  version?: number;
+  position_id?: string;
+  status?: string;
+  lifecycle_kind?: string;
+  operations?: unknown[];
+  manifest_commitment?: string;
 }
 
 const POSITION_PRIORITY: Readonly<Record<string, number>> = Object.freeze({
@@ -187,8 +205,16 @@ function positionLedgerMetric(record: CarryPositionRailRecord): {
   const positionStatus = record.position.status;
   const ledgerStatus = record.value_ledger?.status;
   const realized = record.value_ledger?.realized?.net_value_micro_usdc;
+  const valueManifest = record.value_evidence?.cost_manifest;
+  const finalizedManifest = record.value_ledger?.finalization_evidence?.cost_manifest;
+  const costManifestComplete = record.value_evidence?.costs_complete === true
+    && record.value_ledger?.finalization_evidence?.costs_complete === true
+    && costManifestMatchesPosition(valueManifest, record.position.position_id)
+    && costManifestMatchesPosition(finalizedManifest, record.position.position_id)
+    && canonicalCarryCommitmentJson(finalizedManifest) === canonicalCarryCommitmentJson(valueManifest);
   if (positionStatus === "reconciled" && ledgerStatus === "finalized") {
-    if (record.value_boundary_authoritative === true
+    if (costManifestComplete
+      && record.value_boundary_authoritative === true
       && record.position.active_boundary_provenance === "authoritative_exchange_fill_time"
       && Number.isFinite(realized)) {
       return { label: "REAL NET", value: microUsd(realized), tone: signedTone(realized) };
@@ -196,7 +222,7 @@ function positionLedgerMetric(record: CarryPositionRailRecord): {
     return { label: "VALUE", value: "UNVERIFIED", tone: "warn" };
   }
   if (positionStatus === "reconciled" && ledgerStatus === "open") {
-    return { label: "VALUE", value: "FINALIZING", tone: "warn" };
+    return { label: "VALUE", value: "FINALIZING COSTS", tone: "warn" };
   }
   if (["active", "rebalancing"].includes(positionStatus) && ledgerStatus === "open") {
     return { label: "VALUE", value: "ACCRUING" };
@@ -205,6 +231,26 @@ function positionLedgerMetric(record: CarryPositionRailRecord): {
     return { label: "VALUE", value: "REDUCING · RECONCILING", tone: "warn" };
   }
   return { label: "VALUE", value: "UNVERIFIED", tone: "warn" };
+}
+
+function costManifestMatchesPosition(manifest: CarryCostManifest | undefined, positionId: string): boolean {
+  if (manifest?.version !== 1
+    || manifest.position_id !== positionId
+    || manifest.status !== "complete"
+    || !["normal", "aborted_entry_recovery"].includes(manifest.lifecycle_kind || "")
+    || !Array.isArray(manifest.operations)
+    || manifest.operations.length < 2
+    || manifest.operations.length > 16
+    || !/^carry:cost-manifest:[0-9a-f]{64}$/.test(manifest.manifest_commitment || "")) return false;
+  const material = {
+    version: 1,
+    position_id: manifest.position_id,
+    status: "complete",
+    lifecycle_kind: manifest.lifecycle_kind,
+    operations: manifest.operations,
+  };
+  return manifest.manifest_commitment
+    === `carry:cost-manifest:${sha256HexUtf8(canonicalCarryCommitmentJson(material))}`;
 }
 
 function RailMetric({

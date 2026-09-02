@@ -1,11 +1,22 @@
 export type VenueId = "hyperliquid" | "lighter" | "aster" | "edgex" | "dydx" | "variational_omni" | "drift" | "phoenix" | "backpack" | "coinbase_advanced" | "jupiter";
 export type CorePerpVenueId = "hyperliquid" | "lighter" | "aster" | "edgex" | "dydx";
 export type CarryExecutionVenueId = "hyperliquid" | "lighter" | "aster";
+export type AutopilotWorkerVenueId = "jupiter" | "phoenix" | "backpack" | "hyperliquid" | "drift" | "coinbase_advanced";
+export type AutopilotAccountVenueId = "jupiter" | "phoenix" | "backpack" | "hyperliquid" | "coinbase_advanced";
+export type PrivateExecutionInstructionVenueId = "hyperliquid" | "coinbase_advanced" | "phoenix" | "jupiter";
+export type ConnectorSdkVenueId = "phoenix" | "jupiter" | "hyperliquid" | "coinbase_advanced";
 export type StrategyId = "best_execution" | "spot_perp_hedge" | "delta_neutral_carry" | "exposure_rebalance";
 export declare const EXECUTION_CORE_VERSION: 1;
 export declare const SUPPORTED_EXECUTION_VENUES: readonly VenueId[];
 export declare const CORE_PERP_VENUES: readonly CorePerpVenueId[];
 export declare const CARRY_EXECUTION_VENUES: readonly CarryExecutionVenueId[];
+export declare const AUTOPILOT_WORKER_VENUES: readonly AutopilotWorkerVenueId[];
+export declare const AUTOPILOT_ACCOUNT_VENUES: readonly AutopilotAccountVenueId[];
+export declare const AUTOPILOT_WORKER_DEFAULT_VENUES: readonly AutopilotWorkerVenueId[];
+export declare const AUTOPILOT_ACCOUNT_DEFAULT_VENUES: readonly AutopilotAccountVenueId[];
+export declare const AUTOPILOT_ACCOUNT_READINESS_VENUES: readonly AutopilotAccountVenueId[];
+export declare const PRIVATE_EXECUTION_INSTRUCTION_VENUES: readonly PrivateExecutionInstructionVenueId[];
+export declare const CONNECTOR_SDK_VENUES: readonly ConnectorSdkVenueId[];
 export declare const CARRY_SHADOW_ASSETS: readonly ["BTC", "ETH", "SOL"];
 export declare function normalizeCarryShadowAssets(
   value: unknown,
@@ -30,6 +41,7 @@ export declare function exactQuantityRecoveryAdapter(venueId: string): string | 
 export declare function isExecutionVenue(venueId: string): boolean;
 export declare function isCarryExecutionVenue(venueId: string): boolean;
 export declare function mandatoryNoSubmitChecks(venueId: string): readonly string[] | null;
+export declare function connectorSdkDefaultVenue(platformClass: string): ConnectorSdkVenueId | null;
 export declare function supportsExactQuantityRecovery(venueId: string): boolean;
 export declare function venueAdapterCapability(venueId: string, capability: string): Readonly<Record<string, unknown>> | null;
 export declare function venuesWithAdapterCapability(capability: string, options?: { cohort?: string | null; product?: string | null; statuses?: readonly string[] }): readonly VenueId[];
@@ -79,6 +91,7 @@ export declare function convertSignedCashflowToMicroUsdc(input: {
 }): number;
 export declare function normalizePerpContractSpec(input: unknown): Readonly<Record<string, unknown>>;
 export declare function canonicalCarryCommitmentJson(input: unknown): string;
+export declare function sha256HexUtf8(input: unknown): string;
 export declare function carryPrivatePrimeWorkerAuthenticationMessage(input: {
   route_path?: unknown;
   owner_commitment?: unknown;

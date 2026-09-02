@@ -69,6 +69,27 @@ const CARRY_IMPLEMENTATION_STATUSES = Object.freeze(["proven", "implemented_unpr
 
 const specs = [
   venue("hyperliquid", "Hyperliquid", "core_perp", "proven", "enabled", ["perp"], {
+    autopilot: adapter("hyperliquid_autopilot_v1", "enabled", {
+      worker_order: 4,
+      account_order: 4,
+      worker_default_order: 3,
+      account_default_order: 4,
+      account_readiness_order: 1,
+      readiness_adapter: "hyperliquid",
+      default_product_type: "perp",
+      instruction_profile: "perp",
+      operation_classes: Object.freeze(["limit_order"]),
+      single_order_route_order: 5,
+      maker_order: 3,
+      default_operation_class: "limit_order",
+      market_symbol_profile: "base",
+      default_execution_mode: "byo_api_key",
+    }),
+    private_execution_instruction: adapter("hyperliquid_private_instruction_v1", "enabled", { surface_order: 1 }),
+    connector_sdk: adapter("hyperliquid_connector_sdk_v1", "enabled", {
+      platform_class: "hyperliquid_style_market",
+      surface_order: 3,
+    }),
     perp_shadow: adapter("hyperliquid_shadow_v1", "enabled", {
       read_only: true,
       source_schema: "hyperliquid_metaAndAssetCtxs_l2Book_v2",
@@ -212,13 +233,105 @@ const specs = [
       liquidation_model: "unavailable",
     }),
   }),
-  venue("drift", "Drift", "adjacent", "integration", "quarantined", ["perp"]),
-  venue("phoenix", "Phoenix", "adjacent", "legacy", "isolated", ["perp"]),
-  venue("backpack", "Backpack", "adjacent", "legacy", "isolated", ["perp", "spot"]),
+  venue("drift", "Drift", "adjacent", "integration", "quarantined", ["perp"], {
+    autopilot: adapter("drift_autopilot_v1", "quarantined", {
+      worker_order: 5,
+      default_product_type: "perp",
+      instruction_profile: "quarantined",
+      operation_classes: Object.freeze([]),
+      default_execution_mode: "byo_api_key",
+      quarantine_reason: "drift_runtime_quarantined",
+    }),
+  }),
+  venue("phoenix", "Phoenix", "adjacent", "legacy", "isolated", ["perp"], {
+    autopilot: adapter("phoenix_autopilot_v1", "enabled", {
+      worker_order: 2,
+      account_order: 2,
+      worker_default_order: 2,
+      account_default_order: 2,
+      account_readiness_order: 2,
+      readiness_adapter: "phoenix",
+      default_product_type: "spot",
+      instruction_profile: "perp",
+      operation_classes: Object.freeze(["perp_limit_order"]),
+      single_order_route_order: 3,
+      single_order_markets: Object.freeze(["SOL-USD"]),
+      maker_order: 1,
+      default_operation_class: "perp_limit_order",
+      market_symbol_profile: "dash_perp",
+      default_execution_mode: "byo_api_key",
+    }),
+    private_execution_instruction: adapter("phoenix_private_instruction_v1", "enabled", { surface_order: 3 }),
+    connector_sdk: adapter("phoenix_connector_sdk_v1", "enabled", {
+      platform_class: "solana_perps_market",
+      surface_order: 1,
+    }),
+  }),
+  venue("backpack", "Backpack", "adjacent", "legacy", "isolated", ["perp", "spot"], {
+    autopilot: adapter("backpack_autopilot_v1", "enabled", {
+      worker_order: 3,
+      account_order: 3,
+      account_default_order: 3,
+      account_readiness_order: 3,
+      readiness_adapter: "backpack",
+      default_product_type: "spot",
+      instruction_profile: "perp",
+      operation_classes: Object.freeze(["perp_limit_order"]),
+      single_order_route_order: 4,
+      single_order_markets: Object.freeze(["SOL-USD"]),
+      maker_order: 2,
+      default_operation_class: "perp_limit_order",
+      market_symbol_profile: "underscore_usdc_perp",
+      default_execution_mode: "byo_api_key",
+    }),
+  }),
   venue("coinbase_advanced", "Coinbase Advanced", "adjacent", "proven", "enabled", ["spot"], {
+    autopilot: adapter("coinbase_advanced_autopilot_v1", "enabled", {
+      worker_order: 6,
+      account_order: 5,
+      worker_default_order: 4,
+      account_default_order: 5,
+      account_readiness_order: 5,
+      readiness_adapter: "coinbase_advanced",
+      default_product_type: "spot",
+      instruction_profile: "spot",
+      operation_classes: Object.freeze(["spot_market_order", "spot_limit_order"]),
+      single_order_route_order: 2,
+      maker_order: 4,
+      default_operation_class: "spot_limit_order",
+      market_symbol_profile: "base",
+      default_execution_mode: "byo_api_key",
+    }),
+    private_execution_instruction: adapter("coinbase_advanced_private_instruction_v1", "enabled", { surface_order: 2 }),
+    connector_sdk: adapter("coinbase_advanced_connector_sdk_v1", "enabled", {
+      platform_class: "coinbase_style_provider",
+      surface_order: 4,
+    }),
     exact_quantity_recovery: adapter("coinbase_advanced_v1", "proven"),
   }),
-  venue("jupiter", "Jupiter", "adjacent", "proven", "enabled", ["spot"]),
+  venue("jupiter", "Jupiter", "adjacent", "proven", "enabled", ["spot"], {
+    autopilot: adapter("jupiter_autopilot_v1", "enabled", {
+      worker_order: 1,
+      account_order: 1,
+      worker_default_order: 1,
+      account_default_order: 1,
+      account_readiness_order: 4,
+      readiness_adapter: "jupiter",
+      default_product_type: "spot",
+      instruction_profile: "swap",
+      operation_classes: Object.freeze(["swap"]),
+      single_order_route_order: 1,
+      single_order_markets: Object.freeze(["SOL-USD"]),
+      default_operation_class: "swap",
+      market_symbol_profile: "product",
+      default_execution_mode: "user_stealth",
+    }),
+    private_execution_instruction: adapter("jupiter_private_instruction_v1", "enabled", { surface_order: 4 }),
+    connector_sdk: adapter("jupiter_connector_sdk_v1", "enabled", {
+      platform_class: "solana_swap_aggregator",
+      surface_order: 2,
+    }),
+  }),
 ];
 
 export const EXECUTION_VENUE_SPECS = deepFreeze(
@@ -244,6 +357,17 @@ export const CARRY_BROWSER_STREAM_VENUES = Object.freeze(
     .filter((spec) => spec.adapter_capabilities.browser_carry_stream?.status === "enabled")
     .map((spec) => spec.venue_id),
 );
+
+export const AUTOPILOT_WORKER_VENUES = orderedCapabilityVenues("autopilot", "worker_order");
+export const AUTOPILOT_ACCOUNT_VENUES = orderedCapabilityVenues("autopilot", "account_order");
+export const AUTOPILOT_WORKER_DEFAULT_VENUES = orderedCapabilityVenues("autopilot", "worker_default_order");
+export const AUTOPILOT_ACCOUNT_DEFAULT_VENUES = orderedCapabilityVenues("autopilot", "account_default_order");
+export const AUTOPILOT_ACCOUNT_READINESS_VENUES = orderedCapabilityVenues("autopilot", "account_readiness_order");
+export const PRIVATE_EXECUTION_INSTRUCTION_VENUES = orderedCapabilityVenues(
+  "private_execution_instruction",
+  "surface_order",
+);
+export const CONNECTOR_SDK_VENUES = orderedCapabilityVenues("connector_sdk", "surface_order");
 
 export function executionVenueSpec(venueId) {
   return EXECUTION_VENUE_SPECS[venueId] || null;
@@ -287,6 +411,15 @@ export function venueAdapterCapability(venueId, capability) {
 export function mandatoryNoSubmitChecks(venueId) {
   const checks = venueAdapterCapability(venueId, "no_submit_reconciliation")?.mandatory_no_submit_checks;
   return Array.isArray(checks) && checks.length > 0 ? checks : null;
+}
+
+export function connectorSdkDefaultVenue(platformClass) {
+  if (typeof platformClass !== "string" || !/^[a-z][a-z0-9_]{2,63}$/.test(platformClass)) return null;
+  const matches = specs.filter((spec) => {
+    const connector = spec.adapter_capabilities.connector_sdk;
+    return connector?.status === "enabled" && connector.platform_class === platformClass;
+  });
+  return matches.length === 1 ? matches[0].venue_id : null;
 }
 
 export function venuesWithAdapterCapability(capability, {
@@ -359,6 +492,15 @@ function carryExecutionQualificationForSpec(spec) {
     eligible: gaps.length === 0,
     gaps: Object.freeze(gaps),
   });
+}
+
+function orderedCapabilityVenues(capability, orderField) {
+  return Object.freeze(specs
+    .filter((spec) => Number.isSafeInteger(spec.adapter_capabilities[capability]?.[orderField]))
+    .sort((left, right) => (
+      left.adapter_capabilities[capability][orderField] - right.adapter_capabilities[capability][orderField]
+    ))
+    .map((spec) => spec.venue_id));
 }
 
 function deepFreeze(value) {

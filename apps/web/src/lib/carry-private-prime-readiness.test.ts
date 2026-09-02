@@ -33,12 +33,95 @@ describe("private-prime readiness", () => {
       proof_level: "live_paired_lifecycle",
       live_paired_lifecycle_proven: true,
       paired_lifecycle: pairedLifecycle(),
+      release_equivalent_lifecycles: releaseEquivalentLifecycles(),
     }), NOW)).toEqual({
       status: "ready",
       value: "5/5 DATA · 3/3 EXEC · 3/3 REC · 6/6 ROUTES",
       detail: "LIVE · NET +$0.000034 · ΔMODEL −$0.000166 · FUND +$0.000050 · PNL +$0.000010 · COST −$0.000026 · FLAT",
       tone: "good",
     });
+  });
+
+  it("keeps one completed lifecycle below the live-user release threshold", () => {
+    const lifecycle = pairedLifecycle();
+    expect(carryPrivatePrimeSummary(proof({
+      proof_level: "live_paired_lifecycle",
+      live_paired_lifecycle_proven: true,
+      paired_lifecycle: lifecycle,
+      release_equivalent_lifecycles: releaseEquivalentLifecycles([lifecycle]),
+    }), NOW)).toEqual({
+      status: "pending",
+      value: "5/5 DATA · 3/3 EXEC · 3/3 REC · 6/6 ROUTES",
+      detail: "QUALIFIED · NO-SUBMIT ONLY · LIVE LIFECYCLE COVERAGE REQUIRED",
+      tone: "warn",
+    });
+  });
+
+  it("counts distinct positions and venue pairs independently", () => {
+    const lifecycles = [
+      pairedLifecycle(),
+      pairedLifecycleForPair({
+        venueIds: ["hyperliquid", "lighter"],
+        positionId: "carry:position:live:0002",
+        evidenceChar: "d",
+      }),
+      pairedLifecycleForPair({
+        venueIds: ["hyperliquid", "aster"],
+        positionId: "carry:position:live:0002",
+        evidenceChar: "e",
+      }),
+    ];
+    const summary = carryPrivatePrimeSummary(proof({
+      proof_level: "live_paired_lifecycle",
+      live_paired_lifecycle_proven: true,
+      paired_lifecycle: lifecycles[0],
+      release_equivalent_lifecycles: releaseEquivalentLifecycles(lifecycles),
+    }), NOW);
+    expect(summary.status).toBe("ready");
+  });
+
+  it("binds release readiness to the earliest unequal lifecycle expiry", () => {
+    const lifecycles = [
+      pairedLifecycle({ expires_at_ms: NOW + 4_000 }),
+      pairedLifecycleForPair({
+        venueIds: ["hyperliquid", "lighter"],
+        positionId: "carry:position:live:0002",
+        evidenceChar: "d",
+        expiresAtMs: NOW + 3_000,
+      }),
+    ];
+    const release = releaseEquivalentLifecycles(lifecycles);
+    expect(carryPrivatePrimeSummary(proof({
+      proof_level: "live_paired_lifecycle",
+      live_paired_lifecycle_proven: true,
+      expires_at_ms: NOW + 3_000,
+      paired_lifecycle: lifecycles[0],
+      release_equivalent_lifecycles: release,
+    }), NOW).status).toBe("ready");
+    expect(carryPrivatePrimeSummary(proof({
+      proof_level: "live_paired_lifecycle",
+      live_paired_lifecycle_proven: true,
+      expires_at_ms: NOW + 3_000,
+      paired_lifecycle: lifecycles[0],
+      release_equivalent_lifecycles: { ...release, expires_at_ms: NOW + 4_000 },
+    }), NOW).status).toBe("invalid");
+  });
+
+  it("does not count reversed venue direction as a distinct release pair", () => {
+    const lifecycles = [
+      pairedLifecycle(),
+      pairedLifecycleForPair({
+        venueIds: ["aster", "hyperliquid"],
+        positionId: "carry:position:live:0002",
+        evidenceChar: "d",
+      }),
+    ];
+    expect(carryPrivatePrimeSummary(proof({
+      proof_level: "live_paired_lifecycle",
+      live_paired_lifecycle_proven: true,
+      paired_lifecycle: lifecycles[0],
+      release_equivalent_lifecycles: releaseEquivalentLifecycles(lifecycles),
+    }), NOW).status).toBe("pending");
   });
 
   it("rejects stale or overstated evidence", () => {
@@ -242,6 +325,7 @@ function proof(overrides: Record<string, unknown> = {}) {
       checked_at_ms: NOW,
       evidence_commitment: `carry:supervision:evidence:${"c".repeat(64)}`,
     },
+    release_equivalent_lifecycles: releaseEquivalentLifecycles([]),
     live_paired_lifecycle_proven: false,
     owner_only_funding: true,
     owner_only_transfers: true,
@@ -261,12 +345,19 @@ function proof(overrides: Record<string, unknown> = {}) {
   const liveReady = noSubmitReady
     && capitalReady
     && material.proof_level === "live_paired_lifecycle"
-    && material.live_paired_lifecycle_proven === true;
+    && material.live_paired_lifecycle_proven === true
+    && material.release_equivalent_lifecycles
+    && typeof material.release_equivalent_lifecycles === "object"
+    && !Array.isArray(material.release_equivalent_lifecycles)
+    && material.release_equivalent_lifecycles.verified === true;
   material.no_submit_ready = noSubmitReady;
   material.ready_for_live_users = liveReady;
   material.live_launch_blockers = [
     ...(Array.isArray(material.reasons) ? material.reasons : []),
-    ...(liveReady ? [] : ["live_paired_lifecycle_unproven"]),
+    ...(material.live_paired_lifecycle_proven === true ? [] : ["live_paired_lifecycle_unproven"]),
+    ...(material.live_paired_lifecycle_proven === true && !liveReady
+      ? ["live_release_lifecycle_coverage_unproven"]
+      : []),
   ];
   if ("ready_for_live_users" in overrides) material.ready_for_live_users = Boolean(overrides.ready_for_live_users);
   return {
@@ -310,6 +401,62 @@ function pairedLifecycle(overrides: Record<string, unknown> = {}) {
     worker_material_commitment: `carry:release:material:${"a".repeat(64)}`,
     evidence_commitment: `carry:lifecycle-proof:evidence:${"b".repeat(64)}`,
     ...overrides,
+  };
+}
+
+function pairedLifecycleForPair({
+  venueIds,
+  positionId,
+  evidenceChar,
+  expiresAtMs,
+}: {
+  venueIds: string[];
+  positionId: string;
+  evidenceChar: string;
+  expiresAtMs?: number;
+}) {
+  const [left, right] = venueIds;
+  return pairedLifecycle({
+    position_id: positionId,
+    venue_ids: venueIds,
+    first_exposure_observed_at_ms_by_venue: {
+      [left]: NOW - 10_000,
+      [right]: NOW - 9_000,
+    },
+    exposure_boundary_provenance_by_venue: {
+      [left]: "authoritative_exchange_fill_time",
+      [right]: "authoritative_exchange_fill_time",
+    },
+    evidence_commitment: `carry:lifecycle-proof:evidence:${evidenceChar.repeat(64)}`,
+    ...(expiresAtMs === undefined ? {} : { expires_at_ms: expiresAtMs }),
+  });
+}
+
+function releaseEquivalentLifecycles(lifecycles = [
+  pairedLifecycle(),
+  pairedLifecycleForPair({
+    venueIds: ["hyperliquid", "lighter"],
+    positionId: "carry:position:live:0002",
+    evidenceChar: "d",
+  }),
+]) {
+  const pairs = lifecycles.map((item) => [...item.venue_ids].sort().join(":"));
+  const distinctPairs = [...new Set(pairs)].sort();
+  const positionIds = [...new Set(lifecycles.map((item) => item.position_id))].sort();
+  const evidenceCommitments = lifecycles.map((item) => item.evidence_commitment).sort();
+  const verified = positionIds.length >= 2
+    && new Set(evidenceCommitments).size === lifecycles.length
+    && distinctPairs.length >= 2;
+  return {
+    verified,
+    lifecycle_count: lifecycles.length,
+    distinct_position_count: positionIds.length,
+    distinct_venue_pair_count: distinctPairs.length,
+    normalized_venue_pairs: distinctPairs,
+    position_ids: positionIds,
+    lifecycle_evidence_commitments: evidenceCommitments,
+    expires_at_ms: verified ? Math.min(...lifecycles.map((item) => item.expires_at_ms)) : null,
+    lifecycles,
   };
 }
 
