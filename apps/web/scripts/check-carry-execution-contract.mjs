@@ -183,6 +183,7 @@ export const CARRY_RELEASE_FILES = Object.freeze({
   shadowTest: "apps/private-agent-worker/test/perp-shadow-adapters.test.js",
   asterTest: "apps/private-agent-worker/test/aster.test.js",
   lighterTest: "apps/private-agent-worker/test/lighter.test.js",
+  lighterLineageDiscoveryTest: "apps/private-agent-worker/test/lighter-lineage-discovery.test.js",
   coinbaseTest: "apps/private-agent-worker/test/coinbase.test.js",
   lighterConcurrencyTest: "apps/private-agent-worker/test/lighter-concurrency.test.js",
   privateStatePolicyClaimTest: "apps/private-agent-worker/test/private-state-policy-claim.test.js",
@@ -388,7 +389,7 @@ export function checkCarryExecutionContract(sources) {
   requireSectionText(lighterReconciliation, "expectedOrderIndex: lineageOrderIndex", "lighter_reconcile_order_lineage_binding_missing");
   requireSectionText(lighterReconciliation, "result?.target_fingerprint_checked === true", "lighter_reconcile_runner_fingerprint_check_missing");
   requireSectionText(lighterReconciliation, "result?.target_fingerprint_matched === true", "lighter_reconcile_runner_fingerprint_match_missing");
-  requireSectionText(lighterReconciliation, "result?.target_identifier_collision !== true", "lighter_reconcile_fingerprint_collision_gate_missing");
+  requireSectionText(lighterReconciliation, "&& result?.target_identifier_collision === false", "lighter_reconcile_fingerprint_collision_gate_missing");
   requireSectionText(lighterReconciliation, "const targetMatched = fingerprintMatched", "lighter_reconcile_target_fingerprint_gate_missing");
   const lighterCandidateFingerprint = sourceSection(
     "lighter",
@@ -415,8 +416,296 @@ export function checkCarryExecutionContract(sources) {
   requireSectionText(lighterRunnerFingerprint, 'order.get("reduce_only") is not fingerprint["reduce_only"]', "lighter_runner_fingerprint_reduce_only_binding_missing");
   requireSectionText(lighterRunnerFingerprint, "abs(created_at_ms - submitted_at_ms) > LIGHTER_ORDER_TIME_SKEW_MS", "lighter_runner_fingerprint_time_binding_missing");
   requireSectionText(lighterRunnerFingerprint, "expected_order_index is not None", "lighter_runner_fingerprint_order_lineage_missing");
+  const lighterRunnerExactMarketOrder = sourceSection(
+    "lighterRunner",
+    "def exact_market_order(",
+    "def scale(",
+  );
+  requireSectionText(lighterRunnerExactMarketOrder, "matches = []", "lighter_runner_target_match_set_missing");
+  requireSectionText(lighterRunnerExactMarketOrder, "if len(matches) > 1:", "lighter_runner_duplicate_target_gate_missing");
+  requireSectionText(lighterRunnerExactMarketOrder, 'fail("lighter target identifier collision", "venue_rejected")', "lighter_runner_duplicate_target_fail_closed_missing");
+  requireOrdered(lighterRunnerExactMarketOrder, "matches.append(item)", "if len(matches) > 1:", "lighter_runner_duplicate_target_collection_missing");
+  requireOrdered(lighterRunnerExactMarketOrder, "if len(matches) > 1:", "return matches[0] if matches else None", "lighter_runner_duplicate_target_gate_order_missing");
   requireText("lighterTest", "rejects reused Lighter client indexes when the submitted fingerprint differs", "lighter_fingerprint_collision_test_missing");
   requireText("lighterTest", "keeps same-index Lighter side, size, or price collisions ambiguous with no fills", "lighter_fingerprint_ambiguity_test_missing");
+  const lighterCancel = sourceSection(
+    "lighter",
+    'if (operationClass === "cancel") {',
+    "const order = normalizeOrder(instruction, clientOrderIndex);",
+  );
+  requireSectionText(lighterCancel, "expected_order_index: expectedOrderIndex", "lighter_cancel_expected_order_lineage_missing");
+  requireSectionText(lighterCancel, "expected_order_fingerprint: expectedOrderFingerprint", "lighter_cancel_expected_fingerprint_missing");
+  requireSectionText(lighterCancel, "result?.cancel_target_revalidated !== true", "lighter_cancel_revalidation_proof_missing");
+  requireSectionText(lighterCancel, "result?.target_fingerprint_checked !== true", "lighter_cancel_fingerprint_check_proof_missing");
+  requireSectionText(lighterCancel, "result?.target_fingerprint_matched !== true", "lighter_cancel_fingerprint_match_proof_missing");
+  requireSectionText(lighterCancel, "result?.target_identifier_collision !== false", "lighter_cancel_collision_refusal_missing");
+  requireSectionText(lighterCancel, "unsignedDecimalIntegerText(result?.order_index) !== expectedOrderIndex", "lighter_cancel_result_lineage_binding_missing");
+  const lighterExplicitReconcile = sourceSection(
+    "lighter",
+    'if (operationClass === "reconcile") {',
+    'if (operationClass === "cancel") {',
+  );
+  requireSectionText(lighterExplicitReconcile, "expectedOrderIndex === null", "lighter_explicit_reconcile_lineage_gate_missing");
+  const lighterSubmitAndReconcile = sourceSection(
+    "lighter",
+    "export async function submitAndReconcileLighterExecution({",
+    "export async function reconcileLighterExecution({",
+  );
+  requireSectionText(lighterSubmitAndReconcile, "allowLineageDiscovery = false", "lighter_lineage_discovery_default_closed_missing");
+  requireSectionText(
+    lighterSubmitAndReconcile,
+    "reconcileOnly && expectedOrderIndex === null && allowLineageDiscovery !== true",
+    "lighter_lineage_discovery_exact_boolean_gate_missing",
+  );
+  const lighterRunnerCancel = sourceSection(
+    "lighterRunner",
+    'if action == "cancel":',
+    'if action == "reconcile":',
+  );
+  requireSectionText(lighterRunnerCancel, "order = await exact_account_order(", "lighter_cancel_exact_reread_missing");
+  requireSectionText(lighterRunnerCancel, "include_inactive=False", "lighter_cancel_active_inventory_only_missing");
+  requireSectionText(lighterRunnerCancel, "submitted_order_fingerprint_matches(", "lighter_cancel_runner_fingerprint_match_missing");
+  requireSectionText(lighterRunnerCancel, "expected_order_index=expected_order_index", "lighter_cancel_reread_lineage_binding_missing");
+  requireSectionText(lighterRunnerCancel, 'fail("lighter cancel target lineage changed", "venue_rejected")', "lighter_cancel_lineage_change_fail_closed_missing");
+  requireSectionText(lighterRunnerCancel, "order_index=exact_order_index", "lighter_cancel_provider_order_index_binding_missing");
+  requireSectionText(lighterRunnerCancel, '"cancel_target_revalidated": True', "lighter_cancel_runner_revalidation_proof_missing");
+  requireSectionText(lighterRunnerCancel, '"target_identifier_collision": False', "lighter_cancel_runner_collision_proof_missing");
+  requireOrdered(lighterRunnerCancel, "order = await exact_account_order(", "await client.cancel_order(", "lighter_cancel_reread_before_cancel_missing");
+  requireOrdered(lighterRunnerCancel, "if not fingerprint_matched:", "await client.cancel_order(", "lighter_cancel_match_before_cancel_missing");
+  requireText("lighterTest", "revalidates Lighter provider lineage immediately before canceling a reused client index", "lighter_cancel_replacement_collision_test_missing");
+  requireText("lighterTest", "requires an exact false collision proof before accepting a Lighter cancel", "lighter_cancel_exact_collision_proof_test_missing");
+  requireText("lighterTest", "submits an ambiguous Lighter cancel exactly once through reconciliation exhaustion", "lighter_cancel_no_retry_test_missing");
+  requireText("lighterTest", "refuses a Lighter cancel before any venue call when original provider lineage is absent", "lighter_cancel_missing_lineage_test_missing");
+  requireText("lighterTest", "discovers explicit Lighter lineage only through the opt-in restart path", "lighter_explicit_reconcile_lineage_test_missing");
+  requireText("lighterTest", "for (const allowLineageDiscovery of [undefined, \"true\"])", "lighter_lineage_discovery_false_opt_in_test_missing");
+  requireText("lighterTest", "allowLineageDiscovery: true", "lighter_lineage_discovery_true_opt_in_test_missing");
+  requireText("lighterTest", "assert.deepEqual(expectedOrderIndexes, [null, \"88\"])", "lighter_lineage_discovery_exact_index_binding_test_missing");
+  requireText("lighterTest", "assert.equal(result.reconciliation.submission_retry_count, 0)", "lighter_lineage_discovery_no_retry_test_missing");
+  requireText("lighterTest", "assert.equal(result.final_proof.broadcast_performed, false)", "lighter_lineage_discovery_no_broadcast_test_missing");
+  const lighterCancelRecoveryTest = sourceSection(
+    "lighterTest",
+    'test("recovers an ambiguous Lighter cancel against only its original target"',
+    'test("submits an ambiguous Lighter cancel exactly once through reconciliation exhaustion"',
+  );
+  requireSectionText(lighterCancelRecoveryTest, "assert.equal(cancelCalls, 1)", "lighter_cancel_single_submission_assertion_missing");
+  requireSectionText(lighterCancelRecoveryTest, "assert.equal(result.reconciliation.submission_retry_count, 0)", "lighter_cancel_no_retry_assertion_missing");
+
+  const lighterLineageEligibility = sourceSection(
+    "privateExecution",
+    "export function lighterLineageDiscoveryEligibility({",
+    "export function lighterBoundLineageEligibility({",
+  );
+  requireSectionText(lighterLineageEligibility, "Object.hasOwn(LIGHTER_LINEAGE_DISCOVERY_KINDS, attempt.status)", "worker_lighter_lineage_status_allowlist_missing");
+  requireSectionText(lighterLineageEligibility, "attempt.submit_count !== 1 || attempt.ambiguity_retry_count !== 0", "worker_lighter_lineage_single_submit_gate_missing");
+  requireSectionText(lighterLineageEligibility, "attempt.result_seed?.kind !== LIGHTER_LINEAGE_DISCOVERY_KINDS[attempt.status]", "worker_lighter_lineage_result_status_binding_missing");
+  requireSectionText(lighterLineageEligibility, 'provider.venue !== "lighter" || provider.pending !== true', "worker_lighter_lineage_pending_provider_gate_missing");
+  requireSectionText(lighterLineageEligibility, "provider.order_index !== undefined && provider.order_index !== null", "worker_lighter_lineage_unbound_index_gate_missing");
+  requireSectionText(lighterLineageEligibility, "lighterClientOrderIndex(targetWorkOrderCommitment)", "worker_lighter_lineage_durable_target_binding_missing");
+  requireSectionText(lighterLineageEligibility, "exactStoredLighterFingerprint(", "worker_lighter_lineage_exact_fingerprint_missing");
+  requireSectionText(lighterLineageEligibility, 'String(reconcileMarket || "").toUpperCase() !== fingerprint.market', "worker_lighter_lineage_market_binding_missing");
+  const lighterBoundLineageEligibility = sourceSection(
+    "privateExecution",
+    "export function lighterBoundLineageEligibility({",
+    "function discoveredLighterOrderIndex(",
+  );
+  requireSectionText(lighterBoundLineageEligibility, "attempt.submit_count !== 1 || attempt.ambiguity_retry_count !== 0", "worker_lighter_bound_lineage_single_submit_gate_missing");
+  requireSectionText(lighterBoundLineageEligibility, "lighterClientOrderIndex(targetWorkOrderCommitment)", "worker_lighter_bound_lineage_target_binding_missing");
+  requireSectionText(lighterBoundLineageEligibility, "exactLighterOrderIndex(provider.order_index) !== orderIndex", "worker_lighter_bound_lineage_provider_index_gate_missing");
+  requireSectionText(lighterBoundLineageEligibility, "Number(expectedClientOrderIndex) !== clientOrderIndex", "worker_lighter_bound_lineage_client_index_gate_missing");
+  requireSectionText(lighterBoundLineageEligibility, "canonicalJson(instructionFingerprint) !== canonicalJson(fingerprint)", "worker_lighter_bound_lineage_fingerprint_gate_missing");
+  const lighterMonotonicProofFlags = sourceSection(
+    "privateExecution",
+    "const LIGHTER_MONOTONIC_PROOF_FLAGS",
+    "function exactLighterOrderIndex(",
+  );
+  for (const field of [
+    "final_venue_execution_proven",
+    "final_fill_proven",
+    "target_fill_set_complete",
+    "fee_exact",
+    "fee_evidence_pagination_complete",
+    "fill_times_authoritative",
+  ]) {
+    requireSectionText(lighterMonotonicProofFlags, `"${field}"`, `worker_lighter_monotonic_proof_flag_missing:${field}`);
+  }
+  const lighterReconciliationMonotonicity = sourceSection(
+    "privateExecution",
+    "function deepCanonicalJson(",
+    "function discoveredLighterOrderIndex(",
+  );
+  requireSectionText(lighterReconciliationMonotonicity, "Object.keys(value).sort()", "worker_lighter_reconciliation_deep_canonical_missing");
+  requireSectionText(lighterReconciliationMonotonicity, "delete finalProof.checked_at", "worker_lighter_reconciliation_volatile_proof_exclusion_missing");
+  requireSectionText(lighterReconciliationMonotonicity, "lighterReconciliationMaterial(current)", "worker_lighter_reconciliation_deep_material_current_missing");
+  requireSectionText(lighterReconciliationMonotonicity, "lighterReconciliationMaterial(normalizedIncoming)", "worker_lighter_reconciliation_deep_material_incoming_missing");
+  requireSectionText(lighterReconciliationMonotonicity, "LIGHTER_RECONCILIATION_STATUS_RANK[candidate?.status]", "worker_lighter_reconciliation_status_rank_missing");
+  requireSectionText(lighterReconciliationMonotonicity, "candidateRank < referenceRank", "worker_lighter_reconciliation_status_nondecrease_missing");
+  requireSectionText(lighterReconciliationMonotonicity, "baseProgress < 0 || fillBaseProgress < 0 || fillQuoteProgress < 0", "worker_lighter_reconciliation_fill_amount_nondecrease_missing");
+  requireSectionText(lighterReconciliationMonotonicity, "candidateFills.count < referenceFills.count", "worker_lighter_reconciliation_fill_count_nondecrease_missing");
+  requireSectionText(lighterReconciliationMonotonicity, "reference?.final_proof?.target_fill_set_complete === true", "worker_lighter_reconciliation_terminal_fill_complete_gate_missing");
+  requireSectionText(lighterReconciliationMonotonicity, "reference?.final_proof?.fee_exact === true", "worker_lighter_reconciliation_terminal_fee_exact_gate_missing");
+  requireSectionText(lighterReconciliationMonotonicity, "&& candidateFills.count !== referenceFills.count", "worker_lighter_reconciliation_terminal_fill_count_binding_missing");
+  requireSectionText(lighterReconciliationMonotonicity, "for (const field of LIGHTER_MONOTONIC_PROOF_FLAGS)", "worker_lighter_reconciliation_proof_flag_loop_missing");
+  requireSectionText(lighterReconciliationMonotonicity, "referenceProof[field] === true && candidateProof[field] !== true", "worker_lighter_reconciliation_proof_flag_nondecrease_missing");
+  requireSectionText(lighterReconciliationMonotonicity, "current_dominates: equivalent || lighterEvidenceDominates(current, normalizedIncoming)", "worker_lighter_reconciliation_current_dominance_missing");
+  requireSectionText(lighterReconciliationMonotonicity, "incoming_dominates: equivalent || lighterEvidenceDominates(normalizedIncoming, current)", "worker_lighter_reconciliation_incoming_dominance_missing");
+  requireSectionText(lighterReconciliationMonotonicity, "LIGHTER_RECONCILED_STATUSES.has(result?.status)", "worker_lighter_reconciliation_exact_status_allowlist_missing");
+  requireSectionText(lighterReconciliationMonotonicity, "result?.result_seed?.status === result.status", "worker_lighter_reconciliation_result_status_binding_missing");
+  requireSectionText(lighterReconciliationMonotonicity, "result?.final_proof?.status === result.status", "worker_lighter_reconciliation_proof_status_binding_missing");
+  requireSectionText(lighterReconciliationMonotonicity, "Array.isArray(result?.fills)", "worker_lighter_reconciliation_fill_shape_binding_missing");
+  const lighterUnchangedAttemptPersistence = sourceSection(
+    "privateExecution",
+    "async function compareAndSetUnchangedLighterAttempt({",
+    "function discoveredLighterOrderIndex(",
+  );
+  requireSectionText(lighterUnchangedAttemptPersistence, 'typeof state.compareAndSetExecutionAttempt !== "function"', "worker_lighter_unchanged_persistence_atomic_gate_missing");
+  requireSectionText(lighterUnchangedAttemptPersistence, "await state.compareAndSetExecutionAttempt(", "worker_lighter_unchanged_persistence_cas_missing");
+  requireSectionText(lighterUnchangedAttemptPersistence, "targetWorkOrderCommitment,\n    expectedAttempt,\n    expectedAttempt,", "worker_lighter_unchanged_persistence_identity_cas_missing");
+  requireSectionText(lighterUnchangedAttemptPersistence, "if (!persisted?.ok) {", "worker_lighter_unchanged_persistence_conflict_gate_missing");
+  requireSectionText(lighterUnchangedAttemptPersistence, "throw new PrivateExecutionError(", "worker_lighter_unchanged_persistence_throw_missing");
+  const lighterDiscoveredLineageProof = sourceSection(
+    "privateExecution",
+    "function discoveredLighterOrderIndex(",
+    "export async function persistLighterDiscoveredLineage({",
+  );
+  requireSectionText(lighterDiscoveredLineageProof, "eligibility?.eligible", "worker_lighter_lineage_eligibility_proof_gate_missing");
+  requireSectionText(lighterDiscoveredLineageProof, "!exactLighterReconciliationResult(result)", "worker_lighter_lineage_exact_result_gate_missing");
+  requireSectionText(lighterDiscoveredLineageProof, 'provider?.venue !== "lighter"', "worker_lighter_lineage_provider_proof_gate_missing");
+  requireSectionText(lighterDiscoveredLineageProof, "provider?.client_order_index !== eligibility.client_order_index", "worker_lighter_lineage_client_index_proof_gate_missing");
+  requireSectionText(lighterDiscoveredLineageProof, 'result?.result_seed?.kind !== "lighter_exact_reconcile"', "worker_lighter_lineage_exact_result_kind_missing");
+  requireSectionText(lighterDiscoveredLineageProof, 'proof?.proof_kind !== "lighter_client_order_index_reconciliation_v1"', "worker_lighter_lineage_exact_proof_kind_missing");
+  requireSectionText(lighterDiscoveredLineageProof, 'proof?.venue_id !== "lighter"', "worker_lighter_lineage_exact_proof_venue_missing");
+  requireSectionText(lighterDiscoveredLineageProof, "proof?.target_identifier_collision !== false", "worker_lighter_lineage_collision_proof_gate_missing");
+  requireSectionText(lighterDiscoveredLineageProof, "proof?.original_order_target_matched !== true", "worker_lighter_lineage_original_target_proof_missing");
+  requireSectionText(lighterDiscoveredLineageProof, "proof?.original_order_broadcast_proven !== true", "worker_lighter_lineage_original_broadcast_proof_missing");
+  requireSectionText(lighterDiscoveredLineageProof, "proof?.query_broadcast !== false", "worker_lighter_lineage_query_no_broadcast_gate_missing");
+  requireSectionText(lighterDiscoveredLineageProof, "proof?.broadcast_performed !== false", "worker_lighter_lineage_no_broadcast_gate_missing");
+  requireSectionText(lighterDiscoveredLineageProof, "reconciliation?.reconcileOnly !== true", "worker_lighter_lineage_read_only_metadata_missing");
+  requireSectionText(lighterDiscoveredLineageProof, "reconciliation?.submission_retry_count !== 0", "worker_lighter_lineage_no_retry_gate_missing");
+  const lighterLineagePersistence = sourceSection(
+    "privateExecution",
+    "export async function persistLighterDiscoveredLineage({",
+    "export async function persistLighterBoundReconciliation({",
+  );
+  requireSectionText(lighterLineagePersistence, "await state.getExecutionAttempt(targetWorkOrderCommitment)", "worker_lighter_lineage_durable_reread_missing");
+  requireSectionText(lighterLineagePersistence, "lighterLineageDiscoveryEligibility({", "worker_lighter_lineage_durable_revalidation_missing");
+  requireSectionText(lighterLineagePersistence, "lighterBoundLineageEligibility({", "worker_lighter_lineage_same_index_bound_revalidation_missing");
+  requireSectionText(lighterLineagePersistence, "const durableProofIndex = discoveredLighterOrderIndex({", "worker_lighter_lineage_same_index_exact_proof_missing");
+  requireSectionText(lighterLineagePersistence, "durableProofIndex !== currentIndex", "worker_lighter_lineage_same_index_proof_gate_missing");
+  requireSectionText(lighterLineagePersistence, "const progress = lighterReconciliationProgress(current, result)", "worker_lighter_lineage_same_index_progress_missing");
+  requireSectionText(lighterLineagePersistence, "if (progress.current_dominates) {", "worker_lighter_lineage_same_index_idempotence_missing");
+  requireSectionText(lighterLineagePersistence, "return compareAndSetUnchangedLighterAttempt({", "worker_lighter_lineage_same_index_idempotent_cas_missing");
+  requireSectionText(lighterLineagePersistence, "if (!progress.incoming_dominates) {", "worker_lighter_lineage_same_index_conflict_gate_missing");
+  requireSectionText(lighterLineagePersistence, "return persistLighterBoundReconciliation({", "worker_lighter_lineage_same_index_stronger_cas_missing");
+  requireSectionText(lighterLineagePersistence, "expectedAttempt: current", "worker_lighter_lineage_same_index_expected_attempt_missing");
+  requireSectionText(lighterLineagePersistence, "lighterReconciliationProgress(current, result).incoming_dominates", "worker_lighter_lineage_initial_progress_gate_missing");
+  requireSectionText(lighterLineagePersistence, "pending: false", "worker_lighter_lineage_pending_clear_missing");
+  requireSectionText(lighterLineagePersistence, 'typeof state.compareAndSetExecutionAttempt !== "function"', "worker_lighter_lineage_atomic_persistence_gate_missing");
+  requireSectionText(lighterLineagePersistence, "await state.compareAndSetExecutionAttempt(", "worker_lighter_lineage_atomic_persistence_missing");
+  requireSectionText(lighterLineagePersistence, "targetWorkOrderCommitment,\n    current,\n    updated,", "worker_lighter_lineage_original_target_persistence_missing");
+  requireSectionCount(lighterLineagePersistence, "throw new PrivateExecutionError(", 8, "worker_lighter_lineage_throw_semantics_missing");
+  requireSectionCount(lighterLineagePersistence, '"submission_ambiguous"', 8, "worker_lighter_lineage_ambiguous_throw_code_missing");
+  const lighterBoundReconciliationPersistence = sourceSection(
+    "privateExecution",
+    "export async function persistLighterBoundReconciliation({",
+    "export function commitment(",
+  );
+  requireSectionText(lighterBoundReconciliationPersistence, "if (!boundEligibility?.eligible) {", "worker_lighter_bound_persistence_eligibility_gate_missing");
+  requireSectionText(lighterBoundReconciliationPersistence, "lighterBoundLineageEligibility({", "worker_lighter_bound_persistence_revalidation_missing");
+  requireSectionText(lighterBoundReconciliationPersistence, "const observedOrderIndex = discoveredLighterOrderIndex(result, boundEligibility)", "worker_lighter_bound_persistence_exact_proof_missing");
+  requireSectionText(lighterBoundReconciliationPersistence, "observedOrderIndex !== boundEligibility.order_index", "worker_lighter_bound_persistence_order_index_gate_missing");
+  requireSectionText(lighterBoundReconciliationPersistence, "const progress = lighterReconciliationProgress(expectedAttempt, result)", "worker_lighter_bound_persistence_progress_missing");
+  requireSectionText(lighterBoundReconciliationPersistence, "if (progress.equivalent) {", "worker_lighter_bound_persistence_idempotence_missing");
+  requireSectionText(lighterBoundReconciliationPersistence, "return compareAndSetUnchangedLighterAttempt({", "worker_lighter_bound_persistence_idempotent_cas_missing");
+  requireSectionText(lighterBoundReconciliationPersistence, "!progress.incoming_dominates || progress.current_dominates", "worker_lighter_bound_persistence_monotonicity_missing");
+  forbidSectionText(lighterBoundReconciliationPersistence, "priorTerminal", "worker_lighter_bound_legacy_terminal_gate_present");
+  requireSectionText(lighterBoundReconciliationPersistence, 'typeof state.compareAndSetExecutionAttempt !== "function"', "worker_lighter_bound_persistence_atomic_gate_missing");
+  requireSectionText(lighterBoundReconciliationPersistence, "await state.compareAndSetExecutionAttempt(", "worker_lighter_bound_persistence_atomic_write_missing");
+  requireSectionText(lighterBoundReconciliationPersistence, "targetWorkOrderCommitment,\n    expectedAttempt,\n    updated,", "worker_lighter_bound_persistence_original_target_missing");
+  requireSectionText(lighterBoundReconciliationPersistence, "if (!persisted?.ok) {", "worker_lighter_bound_persistence_cas_failure_missing");
+  requireSectionCount(lighterBoundReconciliationPersistence, "throw new PrivateExecutionError(", 5, "worker_lighter_bound_persistence_throw_semantics_missing");
+  requireSectionCount(lighterBoundReconciliationPersistence, '"submission_ambiguous"', 5, "worker_lighter_bound_persistence_throw_code_missing");
+  const lighterDurableResultBinding = sourceSection(
+    "privateExecution",
+    "function withDurableLighterResult(",
+    "export function commitment(",
+  );
+  requireSectionText(lighterDurableResultBinding, "status: attempt.status", "worker_lighter_durable_result_status_binding_missing");
+  requireSectionText(lighterDurableResultBinding, "provider_ref_seed: attempt.provider_ref_seed", "worker_lighter_durable_result_provider_binding_missing");
+  requireSectionText(lighterDurableResultBinding, "result_seed: attempt.result_seed", "worker_lighter_durable_result_seed_binding_missing");
+  requireSectionText(lighterDurableResultBinding, "fills: attempt.fills || []", "worker_lighter_durable_result_fills_binding_missing");
+  requireSectionText(lighterDurableResultBinding, "final_proof: attempt.final_proof || null", "worker_lighter_durable_result_proof_binding_missing");
+  const lighterDedicatedReconcile = sourceSection(
+    "privateExecution",
+    "export async function reconcileLighterOrder({",
+    "export async function executeAsterOrder({",
+  );
+  requireSectionText(lighterDedicatedReconcile, "expectedOrderIndex === null && lineageDiscovery?.eligible !== true", "worker_lighter_reconcile_durable_eligibility_gate_missing");
+  requireSectionText(lighterDedicatedReconcile, "expectedOrderIndex !== null && boundLineage?.eligible !== true", "worker_lighter_reconcile_bound_lineage_gate_missing");
+  requireSectionText(lighterDedicatedReconcile, "throw new PrivateExecutionError(", "worker_lighter_reconcile_durable_eligibility_throw_missing");
+  requireSectionText(lighterDedicatedReconcile, "const persisted = await persistLighterDiscoveredLineage({", "worker_lighter_reconcile_original_lineage_persistence_missing");
+  requireSectionText(lighterDedicatedReconcile, "if (!persisted) {", "worker_lighter_reconcile_incomplete_discovery_throw_missing");
+  requireSectionText(lighterDedicatedReconcile, "await persistLighterBoundReconciliation({", "worker_lighter_reconcile_bound_persistence_missing");
+  requireSectionText(lighterDedicatedReconcile, "expectedAttempt: context.attempt", "worker_lighter_reconcile_bound_expected_attempt_missing");
+  requireSectionCount(lighterDedicatedReconcile, "result = withDurableLighterResult(result, persisted)", 2, "worker_lighter_reconcile_durable_result_binding_missing");
+  forbidSectionText(lighterDedicatedReconcile, "persistReadOnlyReconciliation({", "worker_lighter_reconcile_generic_persistence_forbidden");
+  const lighterExecution = sourceSection(
+    "privateExecution",
+    "export async function executeLighterOrder({",
+    "export async function verifyLighterOrderNoSubmit({",
+  );
+  requireSectionText(lighterExecution, "await state.getExecutionAttempt(lineageTargetWorkOrderCommitment)", "worker_lighter_lineage_durable_attempt_read_missing");
+  requireSectionText(lighterExecution, "lineageDiscovery.eligible !== true", "worker_lighter_lineage_durable_eligibility_gate_missing");
+  requireSectionText(lighterExecution, "boundLineage.eligible !== true", "worker_lighter_bound_lineage_durable_eligibility_gate_missing");
+  requireSectionText(lighterExecution, "!lineageTargetWorkOrderCommitment", "worker_lighter_lineage_nonempty_recovery_target_missing");
+  requireSectionText(lighterExecution, "lineageTargetWorkOrderCommitment === body.work_order_commitment", "worker_lighter_lineage_distinct_recovery_target_missing");
+  requireSectionText(lighterExecution, "allowLineageDiscovery: lineageDiscovery?.eligible === true", "worker_lighter_lineage_exact_boolean_opt_in_missing");
+  requireSectionText(lighterExecution, "targetWorkOrderCommitment: lineageTargetWorkOrderCommitment", "worker_lighter_lineage_original_target_binding_missing");
+  requireSectionText(lighterExecution, "if (!persisted) {", "worker_lighter_lineage_incomplete_discovery_throw_missing");
+  requireSectionText(lighterExecution, "await persistLighterBoundReconciliation({", "worker_lighter_bound_reconciliation_persistence_missing");
+  requireSectionText(lighterExecution, "expectedAttempt: lineageTargetAttempt", "worker_lighter_bound_reconciliation_expected_attempt_missing");
+  requireSectionCount(lighterExecution, "result = withDurableLighterResult(result, persisted)", 2, "worker_lighter_execution_durable_result_binding_missing");
+  requireSectionText(lighterExecution, "throw error;", "worker_lighter_lineage_error_rethrow_missing");
+  requireOrdered(
+    lighterExecution,
+    "await state.getExecutionAttempt(lineageTargetWorkOrderCommitment)",
+    "lighterLineageDiscoveryEligibility({",
+    "worker_lighter_lineage_durable_read_before_eligibility_missing",
+  );
+  requireOrdered(
+    lighterExecution,
+    "const persisted = await persistLighterDiscoveredLineage({",
+    "await state.putExecutionAttempt(body.work_order_commitment, {\n    ...pending,\n    provider_ref_seed: result.provider_ref_seed,",
+    "worker_lighter_lineage_original_persistence_order_missing",
+  );
+  requireOrdered(
+    lighterExecution,
+    "await persistLighterBoundReconciliation({",
+    "await state.putExecutionAttempt(body.work_order_commitment, {\n    ...pending,\n    provider_ref_seed: result.provider_ref_seed,",
+    "worker_lighter_bound_persistence_order_missing",
+  );
+  requireText("lighterLineageDiscoveryTest", "allows Lighter lineage discovery only from an exact durable ambiguous submission", "worker_lighter_lineage_eligibility_test_missing");
+  requireText("lighterLineageDiscoveryTest", "accepts known Lighter lineage only when every durable identifier matches", "worker_lighter_bound_lineage_test_missing");
+  requireText("lighterLineageDiscoveryTest", "persists a uniquely proven Lighter provider index onto the original attempt", "worker_lighter_lineage_persistence_test_missing");
+  requireText("lighterLineageDiscoveryTest", "does not persist unproven or conflicting discovered Lighter lineage", "worker_lighter_lineage_conflict_test_missing");
+  requireText("lighterLineageDiscoveryTest", "fails closed when a concurrent writer changes Lighter lineage", "worker_lighter_lineage_cas_race_test_missing");
+  requireText("lighterLineageDiscoveryTest", "requires durable exact proof before treating a discovered index as idempotent", "worker_lighter_lineage_idempotence_proof_test_missing");
+  requireText("lighterLineageDiscoveryTest", "atomically persists known Lighter reconciliation and rejects stale writers", "worker_lighter_bound_persistence_test_missing");
+  requireText("lighterLineageDiscoveryTest", "never regresses terminal proof, fill evidence, or partial status", "worker_lighter_monotonic_regression_test_missing");
+  requireText("lighterLineageDiscoveryTest", "upgrades stronger same-index discovery evidence exactly once", "worker_lighter_same_index_upgrade_test_missing");
+  requireText("lighterLineageDiscoveryTest", "treats checked-at-only same-index evidence as idempotent", "worker_lighter_checked_at_idempotence_test_missing");
+  requireText("lighterLineageDiscoveryTest", "atomically rejects equivalent evidence after a concurrent terminal advance", "worker_lighter_equivalent_cas_race_test_missing");
+  requireText("lighterLineageDiscoveryTest", "enriches an aggregate terminal fill without changing its exact totals", "worker_lighter_terminal_fill_enrichment_test_missing");
+  requireText("lighterLineageDiscoveryTest", "assert.deepEqual(writes, [TARGET])", "worker_lighter_lineage_original_target_assertion_missing");
+  requireText("lighterLineageDiscoveryTest", 'assert.equal(persisted.provider_ref_seed.order_index, "88")', "worker_lighter_lineage_order_index_assertion_missing");
+  requireText("lighterLineageDiscoveryTest", "assert.equal(persisted.provider_ref_seed.pending, false)", "worker_lighter_lineage_pending_assertion_missing");
+  requireText("lighterLineageDiscoveryTest", "await assert.rejects(persistLighterDiscoveredLineage({", "worker_lighter_lineage_throw_test_missing");
+  requireCount("lighterLineageDiscoveryTest", 'error.code === "submission_ambiguous"', 7, "worker_lighter_lineage_throw_code_test_missing");
+  requireCount("lighterLineageDiscoveryTest", 'throw new Error("must not write")', 3, "worker_lighter_exact_proof_no_write_test_missing");
+  requireText("lighterLineageDiscoveryTest", "assert.equal(compareAndSetCalls, 2)", "worker_lighter_same_index_cas_count_test_missing");
+  requireText("lighterLineageDiscoveryTest", "assert.equal(compareAndSetCalls, 1)", "worker_lighter_checked_at_cas_count_test_missing");
+  requireText("lighterLineageDiscoveryTest", "assert.equal(persisted.final_proof.target_fill_set_complete, true)", "worker_lighter_terminal_fill_enrichment_proof_test_missing");
+  requireText("lighterLineageDiscoveryTest", "assert.equal(persisted.fills.length, 2)", "worker_lighter_terminal_fill_enrichment_count_test_missing");
+  requireText("lighterLineageDiscoveryTest", "assert.equal(writes, 0)", "worker_lighter_lineage_no_write_assertion_missing");
 
   requireText(
     "webPrivateAccountStore",
@@ -3875,7 +4164,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("privateExecution", "export async function reconcileAsterOrder(", "worker_aster_dedicated_reconcile_missing");
   requireText("privateExecution", "const result = await reconcileAsterExecution({", "worker_aster_reconcile_adapter_missing");
   requireText("privateExecution", "export async function reconcileLighterOrder(", "worker_lighter_dedicated_reconcile_missing");
-  requireText("privateExecution", "const result = await reconcileLighterExecution({", "worker_lighter_reconcile_adapter_missing");
+  requireText("privateExecution", "let result = await reconcileLighterExecution({", "worker_lighter_reconcile_adapter_missing");
   requireText("privateExecution", "export async function reconcileCoinbaseOrder(", "worker_coinbase_dedicated_reconcile_missing");
   requireText("privateExecution", "const result = await reconcileCoinbaseExecution({", "worker_coinbase_reconcile_adapter_missing");
   requireText("server", 'url.pathname === "/venues/aster/reconcile"', "worker_aster_reconcile_route_missing");

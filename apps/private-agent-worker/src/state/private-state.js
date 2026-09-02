@@ -880,6 +880,31 @@ export function createPostgresWorkerState(databaseUrl) {
       return next;
     },
 
+    async compareAndSetExecutionAttempt(workOrderCommitment, expectedAttempt, nextAttempt) {
+      const sql = await ensureInitialized();
+      const next = {
+        ...nextAttempt,
+        work_order_commitment: workOrderCommitment,
+        updated_at: new Date().toISOString(),
+      };
+      const rows = await sql`
+        UPDATE worker_execution_attempts
+        SET attempt_json = ${jsonParam(next)}::jsonb,
+            status = ${next.status || null},
+            updated_at = NOW()
+        WHERE work_order_commitment = ${workOrderCommitment}
+          AND attempt_json = ${jsonParam(expectedAttempt)}::jsonb
+        RETURNING attempt_json
+      `;
+      if (rows[0]) return { ok: true, attempt: decodeJson(rows[0].attempt_json) || next };
+      const existingRows = await sql`
+        SELECT attempt_json
+        FROM worker_execution_attempts
+        WHERE work_order_commitment = ${workOrderCommitment}
+      `;
+      return { ok: false, existing: decodeJson(existingRows[0]?.attempt_json) || null };
+    },
+
     async claimExecutionAttempt(workOrderCommitment, attempt) {
       const sql = await ensureInitialized();
       const next = {
@@ -2893,6 +2918,22 @@ export function createWorkerStateAdapter({ path, hmacSecret, load, save, atomicU
           updated_at: new Date().toISOString(),
         };
         return state.execution_attempts[workOrderCommitment];
+      });
+    },
+
+    async compareAndSetExecutionAttempt(workOrderCommitment, expectedAttempt, nextAttempt) {
+      return updateState((state) => {
+        const existing = state.execution_attempts[workOrderCommitment] || null;
+        if (JSON.stringify(existing) !== JSON.stringify(expectedAttempt)) {
+          return { ok: false, existing: structuredClone(existing) };
+        }
+        const next = {
+          ...nextAttempt,
+          work_order_commitment: workOrderCommitment,
+          updated_at: new Date().toISOString(),
+        };
+        state.execution_attempts[workOrderCommitment] = next;
+        return { ok: true, attempt: structuredClone(next) };
       });
     },
 

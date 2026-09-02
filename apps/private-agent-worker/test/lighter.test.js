@@ -405,9 +405,23 @@ async def main():
         raise AssertionError("replacement order was canceled")
     assert cancelled_order_indexes == []
     active_order["order_index"] = 88
+    duplicate = dict(active_order)
+    original_active_orders = OrderApi.account_active_orders
+    async def duplicate_active_orders(self, **kwargs):
+        return {"orders": [dict(active_order), duplicate]}
+    OrderApi.account_active_orders = duplicate_active_orders
+    try:
+        await module.run(payload)
+    except RuntimeError as error:
+        assert str(error) == "venue_rejected:lighter target identifier collision"
+    else:
+        raise AssertionError("duplicate active target was canceled")
+    assert cancelled_order_indexes == []
+    OrderApi.account_active_orders = original_active_orders
     result = await module.run(payload)
     assert result["cancel_target_revalidated"] is True
     assert result["target_fingerprint_matched"] is True
+    assert result["target_identifier_collision"] is False
     assert result["order_index"] == "88"
     assert cancelled_order_indexes == [88]
 asyncio.run(main())
@@ -470,6 +484,35 @@ async def main():
         assert str(error) == "connector_submit_failed"
     else:
         raise AssertionError("repeated cursor accepted")
+    target = {"client_order_index": 77, "market_index": 1, "order_index": 9}
+    client = Client()
+    async def active_target(**kwargs):
+        return {"orders": [dict(target)]}
+    async def inactive_same_target(**kwargs):
+        return {"orders": [{**target, "status": "filled"}]}
+    client.order_api.account_active_orders = active_target
+    client.order_api.account_inactive_orders = inactive_same_target
+    found = await module.exact_account_order(client, 123, 1, 77, include_inactive=False)
+    assert found["order_index"] == 9
+    assert client.order_api.inactive_calls == []
+    try:
+        await module.exact_account_order(client, 123, 1, 77, include_inactive=True)
+    except RuntimeError as error:
+        assert str(error) == "venue_rejected"
+    else:
+        raise AssertionError("active and inactive duplicate accepted")
+    client = Client()
+    async def inactive_duplicate_pages(**kwargs):
+        if kwargs.get("cursor") == "duplicate-page":
+            return {"orders": [{**target, "status": "filled"}]}
+        return {"orders": [{**target, "status": "filled"}], "next_cursor": "duplicate-page"}
+    client.order_api.account_inactive_orders = inactive_duplicate_pages
+    try:
+        await module.exact_account_order(client, 123, 1, 77, include_inactive=True)
+    except RuntimeError as error:
+        assert str(error) == "venue_rejected"
+    else:
+        raise AssertionError("cross-page inactive duplicate accepted")
 asyncio.run(main())
 print("checked")
 `;
@@ -1059,6 +1102,67 @@ test("refuses a Lighter cancel before any venue call when original provider line
   }
 });
 
+test("requires an exact false collision proof before accepting a Lighter cancel", async () => {
+  const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+  const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+  process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = "full_ticket";
+  try {
+    for (const collision of [undefined, null, true, "false", 0]) {
+      await assert.rejects(submitLighterExecution({
+        credential: credential(),
+        instruction: {
+          operation_class: "cancel",
+          cancel: {
+            market: "BTC",
+            client_order_index: 77,
+            expected_order_fingerprint: fingerprint(),
+            expected_order_index: 88,
+          },
+        },
+        clientOrderIndex: 900,
+        runner: async () => ({
+          accepted: true,
+          status: "cancelled",
+          order_index: "88",
+          cancel_target_revalidated: true,
+          target_fingerprint_checked: true,
+          target_fingerprint_matched: true,
+          ...(collision === undefined ? {} : { target_identifier_collision: collision }),
+        }),
+      }), (error) => error.code === "submission_ambiguous");
+    }
+    const accepted = await submitLighterExecution({
+      credential: credential(),
+      instruction: {
+        operation_class: "cancel",
+        cancel: {
+          market: "BTC",
+          client_order_index: 77,
+          expected_order_fingerprint: fingerprint(),
+          expected_order_index: 88,
+        },
+      },
+      clientOrderIndex: 900,
+      runner: async () => ({
+        accepted: true,
+        status: "cancelled",
+        order_index: "88",
+        cancel_target_revalidated: true,
+        target_fingerprint_checked: true,
+        target_fingerprint_matched: true,
+        target_identifier_collision: false,
+      }),
+    });
+    assert.equal(accepted.status, "cancelled");
+  } finally {
+    if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+    else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
+    if (previousMode === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+    else process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = previousMode;
+  }
+});
+
 test("recovers an ambiguous Lighter cancel against only its original target", async () => {
   const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
   const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
@@ -1113,6 +1217,51 @@ test("recovers an ambiguous Lighter cancel against only its original target", as
     assert.equal(result.final_proof.broadcast_performed, false);
     assert.equal(result.reconciliation.submissionResponseAmbiguous, true);
     assert.equal(result.reconciliation.submission_retry_count, 0);
+  } finally {
+    if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+    else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
+    if (previousMode === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+    else process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = previousMode;
+  }
+});
+
+test("submits an ambiguous Lighter cancel exactly once through reconciliation exhaustion", async () => {
+  const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+  const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+  process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = "full_ticket";
+  let cancelCalls = 0;
+  let reconcileCalls = 0;
+  try {
+    await assert.rejects(submitAndReconcileLighterExecution({
+      credential: credential(),
+      instruction: {
+        operation_class: "cancel",
+        cancel: {
+          market: "BTC",
+          client_order_index: 77,
+          expected_order_fingerprint: fingerprint(),
+          expected_order_index: 88,
+        },
+      },
+      clientOrderIndex: 900,
+      now: () => 1_800_000_000_000,
+      sleep: async () => {},
+      env: {
+        PRIVATE_AGENT_LIGHTER_RECONCILE_TIMEOUT_MS: "250",
+        PRIVATE_AGENT_LIGHTER_RECONCILE_INTERVAL_MS: "100",
+      },
+      runner: async (payload) => {
+        if (payload.action === "cancel") {
+          cancelCalls += 1;
+          throw new Error("cancel response lost after write");
+        }
+        reconcileCalls += 1;
+        throw new Error("target not visible");
+      },
+    }), (error) => error.code === "submission_ambiguous");
+    assert.equal(cancelCalls, 1);
+    assert.equal(reconcileCalls, 4);
   } finally {
     if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
     else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
@@ -1566,6 +1715,112 @@ test("reconciles the exact Lighter client order index", async () => {
       expectedOrderFingerprint: fingerprint(),
       runner: async () => boundReconcile({ feeProof: exactFeeProof({ orderIndex: 89 }) }),
     }), (error) => error.code === "connector_submit_failed");
+  } finally {
+    if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+    else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
+    if (previousMode === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+    else process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = previousMode;
+  }
+});
+
+test("treats missing or malformed Lighter collision evidence as ambiguous", async () => {
+  const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+  const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+  process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = "read_only";
+  try {
+    for (const collision of [undefined, null, "false", 0]) {
+      const response = boundReconcile({ feeProof: exactFeeProof() });
+      if (collision === undefined) delete response.target_identifier_collision;
+      else response.target_identifier_collision = collision;
+      const result = await reconcileLighterExecution({
+        credential: credential(),
+        clientOrderIndex: 77,
+        market: "BTC",
+        expectedOrderFingerprint: fingerprint(),
+        runner: async () => response,
+      });
+      assert.equal(result.status, "outcome_unknown");
+      assert.deepEqual(result.fills, []);
+      assert.equal(result.final_proof.target_client_order_matched, false);
+      assert.equal(result.final_proof.target_identifier_collision, true);
+      assert.equal(result.final_proof.final_venue_execution_proven, false);
+    }
+  } finally {
+    if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+    else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;
+    if (previousMode === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+    else process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = previousMode;
+  }
+});
+
+test("discovers explicit Lighter lineage only through the opt-in restart path", async () => {
+  const previousAllow = process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
+  const previousMode = process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE;
+  process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = "true";
+  process.env.PRIVATE_AGENT_LIGHTER_LIVE_MODE = "read_only";
+  let calls = 0;
+  const explicitInstruction = {
+    version: 1,
+    kind: "ghola_private_execution_instruction",
+    venue_id: "lighter",
+    operation_class: "reconcile",
+    reconcile: {
+      market: "BTC",
+      target_client_order_index: 77,
+      expected_order_fingerprint: fingerprint(),
+    },
+  };
+  try {
+    await assert.rejects(submitLighterExecution({
+      credential: credential(),
+      instruction: explicitInstruction,
+      clientOrderIndex: 91,
+      runner: async () => {
+        calls += 1;
+        return boundReconcile({ feeProof: exactFeeProof() });
+      },
+    }), (error) => error.code === "submission_ambiguous");
+    for (const allowLineageDiscovery of [undefined, "true"]) {
+      await assert.rejects(submitAndReconcileLighterExecution({
+        credential: credential(),
+        instruction: explicitInstruction,
+        clientOrderIndex: 91,
+        ...(allowLineageDiscovery === undefined ? {} : { allowLineageDiscovery }),
+        runner: async () => {
+          calls += 1;
+          return boundReconcile({ feeProof: exactFeeProof() });
+        },
+      }), (error) => error.code === "submission_ambiguous");
+    }
+    assert.equal(calls, 0);
+    const expectedOrderIndexes = [];
+    const actions = [];
+    const result = await submitAndReconcileLighterExecution({
+      credential: credential(),
+      instruction: explicitInstruction,
+      clientOrderIndex: 91,
+      allowLineageDiscovery: true,
+      now: () => 1_800_000_000_000,
+      sleep: async () => {},
+      runner: async (payload) => {
+        actions.push(payload.action);
+        expectedOrderIndexes.push(payload.expected_order_index);
+        return expectedOrderIndexes.length === 1
+          ? boundReconcile({
+            order: venueOrder({ status: "open", remaining_base_amount: "0.001" }),
+          })
+          : boundReconcile({ feeProof: exactFeeProof() });
+      },
+    });
+    assert.deepEqual(actions, ["reconcile", "reconcile"]);
+    assert.deepEqual(expectedOrderIndexes, [null, "88"]);
+    assert.equal(result.status, "filled");
+    assert.equal(result.provider_ref_seed.order_index, 88);
+    assert.equal(result.reconciliation.reconcileOnly, true);
+    assert.equal(result.reconciliation.submission_retry_count, 0);
+    assert.equal(result.final_proof.broadcast_performed, false);
+    assert.equal(result.final_proof.query_broadcast, false);
   } finally {
     if (previousAllow === undefined) delete process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET;
     else process.env.PRIVATE_AGENT_LIGHTER_ALLOW_MAINNET = previousAllow;

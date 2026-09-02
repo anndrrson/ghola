@@ -272,12 +272,20 @@ export async function submitLighterExecution({
   assertLighterPilotMode(credential, operationClass);
   if (operationClass === "reconcile") {
     const target = instruction.reconcile?.target_client_order_index;
+    const expectedOrderIndex = unsignedDecimalIntegerText(instruction.reconcile?.expected_order_index);
+    if (expectedOrderIndex === null) {
+      throw new LighterExecutionError(
+        "lighter explicit reconciliation requires exact original order lineage",
+        503,
+        "submission_ambiguous",
+      );
+    }
     return reconcileLighterExecution({
       credential,
       clientOrderIndex: integer(target, "lighter reconcile target is invalid"),
       market: instruction.reconcile?.target_market || instruction.reconcile?.market || instruction.reconcile?.product_id,
       expectedOrderFingerprint: instruction.reconcile?.expected_order_fingerprint,
-      expectedOrderIndex: instruction.reconcile?.expected_order_index,
+      expectedOrderIndex,
       submissionTxHash: instruction.reconcile?.submission_tx_hash,
       runner,
     });
@@ -311,7 +319,7 @@ export async function submitLighterExecution({
       if (result?.cancel_target_revalidated !== true
         || result?.target_fingerprint_checked !== true
         || result?.target_fingerprint_matched !== true
-        || result?.target_identifier_collision === true
+        || result?.target_identifier_collision !== false
         || unsignedDecimalIntegerText(result?.order_index) !== expectedOrderIndex) {
         throw new LighterExecutionError(
           "lighter cancel target revalidation is unproven",
@@ -355,6 +363,7 @@ export async function submitAndReconcileLighterExecution({
   instruction,
   clientOrderIndex,
   submittedOrderFingerprint = null,
+  allowLineageDiscovery = false,
   runner = defaultRunner,
   now = () => Date.now(),
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -393,6 +402,13 @@ export async function submitAndReconcileLighterExecution({
         ? instruction?.cancel?.expected_order_index
         : null,
   );
+  if (reconcileOnly && expectedOrderIndex === null && allowLineageDiscovery !== true) {
+    throw new LighterExecutionError(
+      "lighter explicit reconciliation requires exact original order lineage",
+      503,
+      "submission_ambiguous",
+    );
+  }
   const submissionTxHash = String(
     reconcileOnly
       ? instruction?.reconcile?.submission_tx_hash || ""
@@ -570,7 +586,7 @@ export async function reconcileLighterExecution({
     });
   const fingerprintMatched = result?.target_fingerprint_checked === true
     && result?.target_fingerprint_matched === true
-    && result?.target_identifier_collision !== true
+    && result?.target_identifier_collision === false
     && localFingerprintMatched;
   const targetMatched = fingerprintMatched &&
     Number.isSafeInteger(returnedClientOrderIndex) &&
@@ -645,7 +661,7 @@ export async function reconcileLighterExecution({
       target_client_order_matched: targetMatched,
       submitted_order_fingerprint_matched: fingerprintMatched,
       submitted_order_fingerprint_commitment: fingerprintCommitment,
-      target_identifier_collision: result?.target_identifier_collision === true,
+      target_identifier_collision: result?.target_identifier_collision === false ? false : true,
       venue_order_lineage_matched: exactOriginalOrderObserved,
       query_broadcast: false,
       broadcast_performed: false,

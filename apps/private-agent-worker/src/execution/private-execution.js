@@ -263,6 +263,666 @@ function privateCarryAdapter({ venueId, platformClass, execute, verify, executeM
   });
 }
 
+const LIGHTER_LINEAGE_DISCOVERY_KINDS = Object.freeze({
+  pending: "lighter_submission_pending",
+  ambiguous: "lighter_submission_ambiguous",
+});
+const LIGHTER_BOUND_LINEAGE_STATUSES = new Set([
+  "pending",
+  "ambiguous",
+  "open",
+  "partially_filled",
+  "filled",
+  "cancelled",
+]);
+const LIGHTER_RECONCILIATION_STATUS_RANK = Object.freeze({
+  pending: 0,
+  ambiguous: 0,
+  outcome_unknown: 0,
+  submitted: 0,
+  open: 1,
+  partially_filled: 2,
+  filled: 3,
+  cancelled: 3,
+});
+const LIGHTER_RECONCILED_STATUSES = new Set([
+  "open",
+  "partially_filled",
+  "filled",
+  "cancelled",
+]);
+const LIGHTER_TERMINAL_STATUSES = new Set(["filled", "cancelled"]);
+const LIGHTER_MONOTONIC_PROOF_FLAGS = Object.freeze([
+  "target_client_order_matched",
+  "submitted_order_fingerprint_matched",
+  "venue_order_lineage_matched",
+  "original_order_target_matched",
+  "original_order_broadcast_proven",
+  "final_venue_execution_proven",
+  "final_fill_proven",
+  "target_fill_set_complete",
+  "fee_exact",
+  "fee_evidence_pagination_complete",
+  "fill_times_authoritative",
+]);
+
+function exactLighterOrderIndex(value) {
+  const text = typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? String(value)
+    : typeof value === "string"
+      ? value
+      : "";
+  return /^(0|[1-9][0-9]*)$/.test(text) ? text : null;
+}
+
+function exactStoredLighterFingerprint(value, clientOrderIndex) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  try {
+    const normalized = lighterOrderFingerprint({
+      operation_class: "limit_order",
+      order: {
+        market: value.market,
+        side: value.side,
+        base_size: value.base_size,
+        limit_price: value.limit_price,
+        reduce_only: value.reduce_only,
+        tif: value.time_in_force,
+      },
+    }, clientOrderIndex, { submittedAtMs: value.submitted_at_ms });
+    return canonicalJson(normalized) === canonicalJson(value) ? normalized : null;
+  } catch {
+    return null;
+  }
+}
+
+export function lighterLineageDiscoveryEligibility({
+  attempt,
+  targetWorkOrderCommitment,
+  reconcileMarket,
+  accountCommitment = null,
+}) {
+  const deny = (reason) => Object.freeze({ eligible: false, reason });
+  if (typeof targetWorkOrderCommitment !== "string" || !targetWorkOrderCommitment.trim()) {
+    return deny("target_work_order_missing");
+  }
+  if (!attempt || attempt.venue_id !== "lighter") return deny("target_venue_mismatch");
+  if (!Object.hasOwn(LIGHTER_LINEAGE_DISCOVERY_KINDS, attempt.status)) {
+    return deny("target_status_ineligible");
+  }
+  if (attempt.submit_count !== 1 || attempt.ambiguity_retry_count !== 0) {
+    return deny("target_submission_lineage_ineligible");
+  }
+  if (attempt.result_seed?.kind !== LIGHTER_LINEAGE_DISCOVERY_KINDS[attempt.status]) {
+    return deny("target_result_lineage_inconsistent");
+  }
+  if (accountCommitment && attempt.account_commitment !== accountCommitment) {
+    return deny("target_account_mismatch");
+  }
+  const provider = attempt.provider_ref_seed;
+  if (!provider || provider.venue !== "lighter" || provider.pending !== true) {
+    return deny("target_provider_lineage_inconsistent");
+  }
+  if (provider.order_index !== undefined && provider.order_index !== null) {
+    return deny("target_provider_lineage_already_bound");
+  }
+  const clientOrderIndex = lighterClientOrderIndex(targetWorkOrderCommitment);
+  if (provider.client_order_index !== clientOrderIndex) return deny("target_client_order_mismatch");
+  const fingerprint = exactStoredLighterFingerprint(
+    provider.submitted_order_fingerprint,
+    clientOrderIndex,
+  );
+  if (!fingerprint) return deny("target_fingerprint_invalid");
+  if (String(reconcileMarket || "").toUpperCase() !== fingerprint.market) {
+    return deny("target_market_mismatch");
+  }
+  return Object.freeze({
+    eligible: true,
+    reason: null,
+    client_order_index: clientOrderIndex,
+    fingerprint,
+  });
+}
+
+export function lighterBoundLineageEligibility({
+  attempt,
+  targetWorkOrderCommitment,
+  reconcileMarket,
+  expectedOrderIndex,
+  expectedClientOrderIndex,
+  expectedOrderFingerprint,
+  accountCommitment = null,
+}) {
+  const deny = (reason) => Object.freeze({ eligible: false, reason });
+  if (typeof targetWorkOrderCommitment !== "string" || !targetWorkOrderCommitment.trim()) {
+    return deny("target_work_order_missing");
+  }
+  if (!attempt || attempt.venue_id !== "lighter") return deny("target_venue_mismatch");
+  if (!LIGHTER_BOUND_LINEAGE_STATUSES.has(attempt.status)) return deny("target_status_ineligible");
+  if (attempt.submit_count !== 1 || attempt.ambiguity_retry_count !== 0) {
+    return deny("target_submission_lineage_ineligible");
+  }
+  if (accountCommitment && attempt.account_commitment !== accountCommitment) {
+    return deny("target_account_mismatch");
+  }
+  const clientOrderIndex = lighterClientOrderIndex(targetWorkOrderCommitment);
+  const orderIndex = exactLighterOrderIndex(expectedOrderIndex);
+  const provider = attempt.provider_ref_seed;
+  if (orderIndex === null || !provider || provider.venue !== "lighter") {
+    return deny("target_provider_lineage_inconsistent");
+  }
+  if (provider.pending === true) return deny("target_provider_lineage_pending");
+  if (provider.client_order_index !== clientOrderIndex
+    || Number(expectedClientOrderIndex) !== clientOrderIndex) {
+    return deny("target_client_order_mismatch");
+  }
+  if (exactLighterOrderIndex(provider.order_index) !== orderIndex) {
+    return deny("target_provider_order_mismatch");
+  }
+  const fingerprint = exactStoredLighterFingerprint(
+    provider.submitted_order_fingerprint,
+    clientOrderIndex,
+  );
+  const instructionFingerprint = exactStoredLighterFingerprint(
+    expectedOrderFingerprint,
+    clientOrderIndex,
+  );
+  if (!fingerprint || canonicalJson(instructionFingerprint) !== canonicalJson(fingerprint)) {
+    return deny("target_fingerprint_mismatch");
+  }
+  if (String(reconcileMarket || "").toUpperCase() !== fingerprint.market) {
+    return deny("target_market_mismatch");
+  }
+  return Object.freeze({
+    eligible: true,
+    reason: null,
+    client_order_index: clientOrderIndex,
+    order_index: orderIndex,
+    fingerprint,
+  });
+}
+
+function deepCanonicalJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => deepCanonicalJson(item)).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => (
+    `${JSON.stringify(key)}:${deepCanonicalJson(value[key])}`
+  )).join(",")}}`;
+}
+
+function lighterReconciliationMaterial(value) {
+  const finalProof = value?.final_proof && typeof value.final_proof === "object"
+    ? { ...value.final_proof }
+    : value?.final_proof || null;
+  if (finalProof && typeof finalProof === "object") delete finalProof.checked_at;
+  return deepCanonicalJson({
+    status: value?.status || null,
+    provider_ref_seed: value?.provider_ref_seed || null,
+    result_seed: value?.result_seed || null,
+    fills: Array.isArray(value?.fills) ? value.fills : [],
+    final_proof: finalProof,
+  });
+}
+
+function unsignedDecimalParts(value) {
+  const text = String(value ?? "");
+  if (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(text)) return null;
+  const [whole, fraction = ""] = text.split(".");
+  const trimmedFraction = fraction.replace(/0+$/, "");
+  return {
+    units: BigInt(`${whole}${trimmedFraction}` || "0"),
+    scale: trimmedFraction.length,
+  };
+}
+
+function addUnsignedDecimals(values) {
+  const parts = values.map((value) => unsignedDecimalParts(value));
+  if (parts.some((value) => !value)) return null;
+  const scale = Math.max(0, ...parts.map((value) => value.scale));
+  const units = parts.reduce((sum, value) => (
+    sum + value.units * (10n ** BigInt(scale - value.scale))
+  ), 0n);
+  return { units, scale };
+}
+
+function compareDecimalParts(left, right) {
+  if (!left || !right) return null;
+  const scale = Math.max(left.scale, right.scale);
+  const leftUnits = left.units * (10n ** BigInt(scale - left.scale));
+  const rightUnits = right.units * (10n ** BigInt(scale - right.scale));
+  return leftUnits === rightUnits ? 0 : leftUnits > rightUnits ? 1 : -1;
+}
+
+function lighterFillEvidence(value) {
+  const fills = value?.fills === undefined || value?.fills === null
+    ? []
+    : Array.isArray(value.fills)
+      ? value.fills
+      : null;
+  if (!fills) return null;
+  const base = addUnsignedDecimals(fills.map((fill) => fill?.size));
+  const quote = addUnsignedDecimals(fills.map((fill) => fill?.quote_size));
+  if (!base || !quote) return null;
+  return { count: fills.length, base, quote };
+}
+
+function lighterFilledBaseEvidence(value) {
+  const proofValue = value?.final_proof?.filled_base_size;
+  const proofParts = proofValue === undefined || proofValue === null
+    ? null
+    : unsignedDecimalParts(proofValue);
+  if ((proofValue !== undefined && proofValue !== null) && !proofParts) return null;
+  const fills = lighterFillEvidence(value);
+  if (!fills) return null;
+  if (proofParts && compareDecimalParts(proofParts, fills.base) !== 0) return null;
+  return proofParts || fills.base;
+}
+
+function preservesKnownEvidence(candidate, reference, field) {
+  const known = reference?.[field];
+  if (known === undefined || known === null || known === "") return true;
+  return deepCanonicalJson(candidate?.[field]) === deepCanonicalJson(known);
+}
+
+function safeCount(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function lighterEvidenceDominates(candidate, reference) {
+  const candidateRank = LIGHTER_RECONCILIATION_STATUS_RANK[candidate?.status];
+  const referenceRank = LIGHTER_RECONCILIATION_STATUS_RANK[reference?.status];
+  if (!Number.isInteger(candidateRank) || !Number.isInteger(referenceRank)) return false;
+  if (LIGHTER_TERMINAL_STATUSES.has(reference.status) && candidate.status !== reference.status) {
+    return false;
+  }
+  if (candidateRank < referenceRank || (candidateRank === referenceRank && candidate.status !== reference.status)) {
+    return false;
+  }
+
+  const candidateFills = lighterFillEvidence(candidate);
+  const referenceFills = lighterFillEvidence(reference);
+  const candidateBase = lighterFilledBaseEvidence(candidate);
+  const referenceBase = lighterFilledBaseEvidence(reference);
+  if (!candidateFills || !referenceFills || !candidateBase || !referenceBase) return false;
+  const baseProgress = compareDecimalParts(candidateBase, referenceBase);
+  const fillBaseProgress = compareDecimalParts(candidateFills.base, referenceFills.base);
+  const fillQuoteProgress = compareDecimalParts(candidateFills.quote, referenceFills.quote);
+  if (baseProgress === null || fillBaseProgress === null || fillQuoteProgress === null
+    || baseProgress < 0 || fillBaseProgress < 0 || fillQuoteProgress < 0
+    || candidateFills.count < referenceFills.count) return false;
+  if (LIGHTER_TERMINAL_STATUSES.has(reference.status)
+    && (baseProgress !== 0 || fillBaseProgress !== 0 || fillQuoteProgress !== 0
+      || ((reference?.final_proof?.target_fill_set_complete === true
+        || reference?.final_proof?.fee_exact === true)
+        && candidateFills.count !== referenceFills.count))) return false;
+
+  const candidateProof = candidate?.final_proof || {};
+  const referenceProof = reference?.final_proof || {};
+  for (const field of LIGHTER_MONOTONIC_PROOF_FLAGS) {
+    if (referenceProof[field] === true && candidateProof[field] !== true) return false;
+  }
+  if (reference?.result_seed?.fee_exact === true && candidate?.result_seed?.fee_exact !== true) {
+    return false;
+  }
+  for (const field of [
+    "submitted_order_fingerprint_commitment",
+    "fee_asset",
+    "fee_evidence_kind",
+    "fill_time_provenance",
+    "first_fill_at_ms",
+  ]) {
+    if (!preservesKnownEvidence(candidateProof, referenceProof, field)) return false;
+  }
+  if (!preservesKnownEvidence(
+    candidate?.provider_ref_seed,
+    reference?.provider_ref_seed,
+    "submission_tx_hash",
+  )) return false;
+
+  const candidateTradeCount = safeCount(candidateProof.fee_evidence_trade_count);
+  const referenceTradeCount = safeCount(referenceProof.fee_evidence_trade_count);
+  if (referenceTradeCount !== null
+    && (candidateTradeCount === null || candidateTradeCount < referenceTradeCount)) return false;
+  const sameFillEvidence = baseProgress === 0 && fillBaseProgress === 0 && fillQuoteProgress === 0;
+  if (sameFillEvidence) {
+    for (const field of [
+      "average_fill_price",
+      "fee_quote_amount",
+      "fee_evidence_commitment",
+      "last_fill_at_ms",
+    ]) {
+      if (!preservesKnownEvidence(candidateProof, referenceProof, field)) return false;
+    }
+    if (!preservesKnownEvidence(
+      candidate?.result_seed,
+      reference?.result_seed,
+      "fee_evidence_commitment",
+    )) return false;
+    if (referenceTradeCount !== null && candidateTradeCount !== referenceTradeCount) return false;
+  } else {
+    const candidateLastFill = safeCount(candidateProof.last_fill_at_ms);
+    const referenceLastFill = safeCount(referenceProof.last_fill_at_ms);
+    if (referenceLastFill !== null
+      && (candidateLastFill === null || candidateLastFill < referenceLastFill)) return false;
+  }
+  return true;
+}
+
+export function lighterReconciliationProgress(current, incoming) {
+  const normalizedIncoming = {
+    ...current,
+    provider_ref_seed: {
+      ...current?.provider_ref_seed,
+      ...incoming?.provider_ref_seed,
+      pending: false,
+    },
+    result_seed: incoming?.result_seed,
+    fills: Array.isArray(incoming?.fills) ? incoming.fills : [],
+    final_proof: incoming?.final_proof || null,
+    status: incoming?.status,
+  };
+  const equivalent = lighterReconciliationMaterial(current)
+    === lighterReconciliationMaterial(normalizedIncoming);
+  return Object.freeze({
+    equivalent,
+    current_dominates: equivalent || lighterEvidenceDominates(current, normalizedIncoming),
+    incoming_dominates: equivalent || lighterEvidenceDominates(normalizedIncoming, current),
+  });
+}
+
+function exactLighterReconciliationResult(result) {
+  return LIGHTER_RECONCILED_STATUSES.has(result?.status)
+    && result?.result_seed?.status === result.status
+    && result?.final_proof?.status === result.status
+    && Array.isArray(result?.fills);
+}
+
+async function compareAndSetUnchangedLighterAttempt({
+  state,
+  targetWorkOrderCommitment,
+  expectedAttempt,
+  conflictMessage,
+}) {
+  if (typeof state.compareAndSetExecutionAttempt !== "function") {
+    throw new PrivateExecutionError(
+      "atomic Lighter reconciliation persistence is unavailable",
+      503,
+      "submission_ambiguous",
+    );
+  }
+  const persisted = await state.compareAndSetExecutionAttempt(
+    targetWorkOrderCommitment,
+    expectedAttempt,
+    expectedAttempt,
+  );
+  if (!persisted?.ok) {
+    throw new PrivateExecutionError(
+      conflictMessage,
+      503,
+      "submission_ambiguous",
+    );
+  }
+  return persisted.attempt;
+}
+
+function discoveredLighterOrderIndex(result, eligibility) {
+  const provider = result?.provider_ref_seed;
+  const proof = result?.final_proof;
+  const reconciliation = result?.reconciliation;
+  const orderIndex = exactLighterOrderIndex(provider?.order_index);
+  if (!eligibility?.eligible || orderIndex === null
+    || !exactLighterReconciliationResult(result)
+    || provider?.venue !== "lighter"
+    || provider?.client_order_index !== eligibility.client_order_index
+    || canonicalJson(provider?.submitted_order_fingerprint) !== canonicalJson(eligibility.fingerprint)
+    || result?.result_seed?.kind !== "lighter_exact_reconcile"
+    || proof?.proof_kind !== "lighter_client_order_index_reconciliation_v1"
+    || proof?.venue_id !== "lighter"
+    || proof?.target_client_order_matched !== true
+    || proof?.submitted_order_fingerprint_matched !== true
+    || proof?.target_identifier_collision !== false
+    || proof?.venue_order_lineage_matched !== true
+    || proof?.original_order_target_matched !== true
+    || proof?.original_order_broadcast_proven !== true
+    || proof?.query_broadcast !== false
+    || proof?.broadcast_performed !== false
+    || reconciliation?.reconcileOnly !== true
+    || reconciliation?.submission_retry_count !== 0) {
+    return null;
+  }
+  return orderIndex;
+}
+
+export async function persistLighterDiscoveredLineage({
+  state,
+  targetWorkOrderCommitment,
+  reconcileMarket,
+  accountCommitment = null,
+  eligibility,
+  result,
+}) {
+  const orderIndex = discoveredLighterOrderIndex(result, eligibility);
+  if (orderIndex === null) return null;
+  const current = await state.getExecutionAttempt(targetWorkOrderCommitment);
+  const currentIndex = exactLighterOrderIndex(current?.provider_ref_seed?.order_index);
+  if (currentIndex !== null && currentIndex !== orderIndex) {
+    throw new PrivateExecutionError(
+      "lighter discovered provider lineage conflicts with durable state",
+      503,
+      "submission_ambiguous",
+    );
+  }
+  if (currentIndex !== null) {
+    const bound = lighterBoundLineageEligibility({
+      attempt: current,
+      targetWorkOrderCommitment,
+      reconcileMarket,
+      expectedOrderIndex: orderIndex,
+      expectedClientOrderIndex: eligibility.client_order_index,
+      expectedOrderFingerprint: eligibility.fingerprint,
+      accountCommitment,
+    });
+    if (!bound.eligible) {
+      throw new PrivateExecutionError(
+        "lighter durable lineage changed during discovery",
+        503,
+        "submission_ambiguous",
+      );
+    }
+    const durableProofIndex = discoveredLighterOrderIndex({
+      ...current,
+      reconciliation: {
+        reconcileOnly: true,
+        submission_retry_count: 0,
+      },
+    }, bound);
+    if (durableProofIndex !== currentIndex) {
+      throw new PrivateExecutionError(
+        "lighter durable lineage proof is incomplete",
+        503,
+        "submission_ambiguous",
+      );
+    }
+    const progress = lighterReconciliationProgress(current, result);
+    if (progress.current_dominates) {
+      return compareAndSetUnchangedLighterAttempt({
+        state,
+        targetWorkOrderCommitment,
+        expectedAttempt: current,
+        conflictMessage: "lighter durable reconciliation changed during discovery",
+      });
+    }
+    if (!progress.incoming_dominates) {
+      throw new PrivateExecutionError(
+        "lighter discovered reconciliation conflicts with durable evidence",
+        503,
+        "submission_ambiguous",
+      );
+    }
+    return persistLighterBoundReconciliation({
+      state,
+      targetWorkOrderCommitment,
+      reconcileMarket,
+      accountCommitment,
+      expectedAttempt: current,
+      boundEligibility: bound,
+      result,
+    });
+  }
+  const currentEligibility = lighterLineageDiscoveryEligibility({
+    attempt: current,
+    targetWorkOrderCommitment,
+    reconcileMarket,
+    accountCommitment,
+  });
+  if (!currentEligibility.eligible
+    || canonicalJson(currentEligibility.fingerprint) !== canonicalJson(eligibility.fingerprint)) {
+    throw new PrivateExecutionError(
+      "lighter durable lineage changed during discovery",
+      503,
+      "submission_ambiguous",
+    );
+  }
+  if (!lighterReconciliationProgress(current, result).incoming_dominates) {
+    throw new PrivateExecutionError(
+      "lighter discovered reconciliation does not advance durable evidence",
+      503,
+      "submission_ambiguous",
+    );
+  }
+  const updated = {
+    ...current,
+    provider_ref_seed: {
+      ...current.provider_ref_seed,
+      ...result.provider_ref_seed,
+      venue: "lighter",
+      client_order_index: eligibility.client_order_index,
+      order_index: orderIndex,
+      pending: false,
+      submitted_order_fingerprint: eligibility.fingerprint,
+    },
+    result_seed: result.result_seed,
+    fills: result.fills || [],
+    final_proof: result.final_proof || null,
+    status: result.status,
+    updated_at: new Date().toISOString(),
+  };
+  if (typeof state.compareAndSetExecutionAttempt !== "function") {
+    throw new PrivateExecutionError(
+      "atomic Lighter lineage persistence is unavailable",
+      503,
+      "submission_ambiguous",
+    );
+  }
+  const persisted = await state.compareAndSetExecutionAttempt(
+    targetWorkOrderCommitment,
+    current,
+    updated,
+  );
+  if (!persisted?.ok) {
+    throw new PrivateExecutionError(
+      "lighter durable lineage changed during discovery",
+      503,
+      "submission_ambiguous",
+    );
+  }
+  return persisted.attempt;
+}
+
+export async function persistLighterBoundReconciliation({
+  state,
+  targetWorkOrderCommitment,
+  reconcileMarket,
+  accountCommitment = null,
+  expectedAttempt,
+  boundEligibility,
+  result,
+}) {
+  if (!boundEligibility?.eligible) {
+    throw new PrivateExecutionError(
+      "lighter bound reconciliation lacks durable lineage",
+      503,
+      "submission_ambiguous",
+    );
+  }
+  const currentEligibility = lighterBoundLineageEligibility({
+    attempt: expectedAttempt,
+    targetWorkOrderCommitment,
+    reconcileMarket,
+    expectedOrderIndex: boundEligibility.order_index,
+    expectedClientOrderIndex: boundEligibility.client_order_index,
+    expectedOrderFingerprint: boundEligibility.fingerprint,
+    accountCommitment,
+  });
+  const observedOrderIndex = discoveredLighterOrderIndex(result, boundEligibility);
+  if (!currentEligibility.eligible || observedOrderIndex !== boundEligibility.order_index) {
+    throw new PrivateExecutionError(
+      "lighter bound reconciliation proof is incomplete",
+      503,
+      "submission_ambiguous",
+    );
+  }
+  const progress = lighterReconciliationProgress(expectedAttempt, result);
+  if (progress.equivalent) {
+    return compareAndSetUnchangedLighterAttempt({
+      state,
+      targetWorkOrderCommitment,
+      expectedAttempt,
+      conflictMessage: "lighter durable reconciliation changed concurrently",
+    });
+  }
+  if (!progress.incoming_dominates || progress.current_dominates) {
+    throw new PrivateExecutionError(
+      "lighter reconciliation cannot regress or conflict with durable evidence",
+      503,
+      "submission_ambiguous",
+    );
+  }
+  if (typeof state.compareAndSetExecutionAttempt !== "function") {
+    throw new PrivateExecutionError(
+      "atomic Lighter reconciliation persistence is unavailable",
+      503,
+      "submission_ambiguous",
+    );
+  }
+  const updated = {
+    ...expectedAttempt,
+    provider_ref_seed: {
+      ...expectedAttempt.provider_ref_seed,
+      ...result.provider_ref_seed,
+      pending: false,
+    },
+    result_seed: result.result_seed,
+    fills: result.fills || [],
+    final_proof: result.final_proof || null,
+    status: result.status,
+    updated_at: new Date().toISOString(),
+  };
+  const persisted = await state.compareAndSetExecutionAttempt(
+    targetWorkOrderCommitment,
+    expectedAttempt,
+    updated,
+  );
+  if (!persisted?.ok) {
+    throw new PrivateExecutionError(
+      "lighter durable reconciliation changed concurrently",
+      503,
+      "submission_ambiguous",
+    );
+  }
+  return persisted.attempt;
+}
+
+function withDurableLighterResult(result, attempt) {
+  return {
+    ...result,
+    status: attempt.status,
+    provider_ref_seed: attempt.provider_ref_seed,
+    result_seed: attempt.result_seed,
+    fills: attempt.fills || [],
+    final_proof: attempt.final_proof || null,
+  };
+}
+
 export function commitment(prefix, value) {
   return `${prefix}_${sha256Hex(canonicalJson(value)).slice(0, 48)}`;
 }
@@ -1727,24 +2387,90 @@ export async function reconcileAsterOrder({ body, recipient, state }) {
 export async function reconcileLighterOrder({ body, recipient, state }) {
   const context = await readOnlyReconcileContext({ body, recipient, state, venueId: "lighter" });
   const credential = await lighterCredentialForBody({ body, recipient });
-  const result = await reconcileLighterExecution({
+  const reconcileMarket = context.instruction.reconcile?.target_market ||
+    context.instruction.reconcile?.market ||
+    context.instruction.reconcile?.product_id;
+  const expectedOrderIndex = exactLighterOrderIndex(
+    context.instruction.reconcile?.expected_order_index,
+  );
+  const lineageDiscovery = expectedOrderIndex === null
+    ? lighterLineageDiscoveryEligibility({
+      attempt: context.attempt,
+      targetWorkOrderCommitment: context.targetWorkOrderCommitment,
+      reconcileMarket,
+      accountCommitment: body.account_commitment || null,
+    })
+    : null;
+  const boundLineage = expectedOrderIndex !== null
+    ? lighterBoundLineageEligibility({
+      attempt: context.attempt,
+      targetWorkOrderCommitment: context.targetWorkOrderCommitment,
+      reconcileMarket,
+      expectedOrderIndex,
+      expectedClientOrderIndex: context.instruction.reconcile?.target_client_order_index,
+      expectedOrderFingerprint: context.instruction.reconcile?.expected_order_fingerprint,
+      accountCommitment: body.account_commitment || null,
+    })
+    : null;
+  if (expectedOrderIndex === null && lineageDiscovery?.eligible !== true) {
+    throw new PrivateExecutionError(
+      "lighter reconciliation requires exact durable original-order lineage",
+      503,
+      "submission_ambiguous",
+    );
+  }
+  if (expectedOrderIndex !== null && boundLineage?.eligible !== true) {
+    throw new PrivateExecutionError(
+      "lighter reconciliation does not match durable original-order lineage",
+      503,
+      "submission_ambiguous",
+    );
+  }
+  let result = await reconcileLighterExecution({
     credential,
     clientOrderIndex: context.instruction.reconcile?.target_client_order_index,
-    market: context.instruction.reconcile?.target_market ||
-      context.instruction.reconcile?.market ||
-      context.instruction.reconcile?.product_id,
+    market: reconcileMarket,
     expectedOrderFingerprint: context.instruction.reconcile?.expected_order_fingerprint,
-    expectedOrderIndex: context.instruction.reconcile?.expected_order_index,
+    expectedOrderIndex,
     submissionTxHash: context.instruction.reconcile?.submission_tx_hash,
   });
-  await persistReadOnlyReconciliation({
-    state,
-    ...context,
-    result,
-    venueId: "lighter",
-    platformClass: "hyperliquid_style_market",
-    executionMode: "byo_api_key",
-  });
+  result = {
+    ...result,
+    reconciliation: {
+      reconcileOnly: true,
+      submission_retry_count: 0,
+      target_client_order_only: true,
+    },
+  };
+  if (lineageDiscovery?.eligible === true) {
+    const persisted = await persistLighterDiscoveredLineage({
+      state,
+      targetWorkOrderCommitment: context.targetWorkOrderCommitment,
+      reconcileMarket,
+      accountCommitment: body.account_commitment || null,
+      eligibility: lineageDiscovery,
+      result,
+    });
+    if (!persisted) {
+      throw new PrivateExecutionError(
+        "lighter discovery proof is incomplete",
+        503,
+        "submission_ambiguous",
+      );
+    }
+    result = withDurableLighterResult(result, persisted);
+  } else {
+    const persisted = await persistLighterBoundReconciliation({
+      state,
+      targetWorkOrderCommitment: context.targetWorkOrderCommitment,
+      reconcileMarket,
+      accountCommitment: body.account_commitment || null,
+      expectedAttempt: context.attempt,
+      boundEligibility: boundLineage,
+      result,
+    });
+    result = withDurableLighterResult(result, persisted);
+  }
   const proven = exactTerminalReconciliationProven(result, {
     venueId: "lighter",
     proofKind: "lighter_client_order_index_reconciliation_v1",
@@ -1953,6 +2679,61 @@ export async function executeLighterOrder({ body, recipient, state, emergencyRis
     session,
   }), { state, venue_id: "lighter", body });
   enforceEmergencyRiskReductionInstruction(instruction, emergencyRiskReductionOnly);
+  const lineageTargetWorkOrderCommitment = readOnlyReconcile
+    ? String(instruction.reconcile?.target_work_order_commitment || "")
+    : "";
+  const lineageReconcileMarket = readOnlyReconcile
+    ? instruction.reconcile?.target_market || instruction.reconcile?.market || instruction.reconcile?.product_id
+    : null;
+  const lineageTargetAttempt = readOnlyReconcile && lineageTargetWorkOrderCommitment
+    ? await state.getExecutionAttempt(lineageTargetWorkOrderCommitment)
+    : null;
+  const lineageExpectedOrderIndex = readOnlyReconcile ? exactLighterOrderIndex(
+    instruction.reconcile?.expected_order_index,
+  ) : null;
+  const lineageDiscovery = readOnlyReconcile && lineageExpectedOrderIndex === null
+    ? lighterLineageDiscoveryEligibility({
+      attempt: lineageTargetAttempt,
+      targetWorkOrderCommitment: lineageTargetWorkOrderCommitment,
+      reconcileMarket: lineageReconcileMarket,
+      accountCommitment: body.account_commitment || null,
+    })
+    : null;
+  const boundLineage = readOnlyReconcile && lineageExpectedOrderIndex !== null
+    ? lighterBoundLineageEligibility({
+      attempt: lineageTargetAttempt,
+      targetWorkOrderCommitment: lineageTargetWorkOrderCommitment,
+      reconcileMarket: lineageReconcileMarket,
+      expectedOrderIndex: lineageExpectedOrderIndex,
+      expectedClientOrderIndex: instruction.reconcile?.target_client_order_index,
+      expectedOrderFingerprint: instruction.reconcile?.expected_order_fingerprint,
+      accountCommitment: body.account_commitment || null,
+    })
+    : null;
+  if (readOnlyReconcile && (
+    !lineageTargetWorkOrderCommitment
+    || lineageTargetWorkOrderCommitment === body.work_order_commitment
+  )) {
+    throw new PrivateExecutionError(
+      "lighter autonomous recovery requires a distinct durable ambiguous target",
+      503,
+      "submission_ambiguous",
+    );
+  }
+  if (lineageDiscovery && lineageDiscovery.eligible !== true) {
+    throw new PrivateExecutionError(
+      "lighter autonomous recovery requires exact durable original-order lineage",
+      503,
+      "submission_ambiguous",
+    );
+  }
+  if (boundLineage && boundLineage.eligible !== true) {
+    throw new PrivateExecutionError(
+      "lighter autonomous recovery does not match durable original-order lineage",
+      503,
+      "submission_ambiguous",
+    );
+  }
   const clientOrderIndex = lighterClientOrderIndex(body.work_order_commitment);
   const createdAt = new Date().toISOString();
   const submittedOrderFingerprint = instruction.operation_class === "limit_order"
@@ -1996,7 +2777,38 @@ export async function executeLighterOrder({ body, recipient, state, emergencyRis
       instruction,
       clientOrderIndex,
       submittedOrderFingerprint,
+      allowLineageDiscovery: lineageDiscovery?.eligible === true,
     });
+    if (lineageDiscovery?.eligible === true) {
+      const persisted = await persistLighterDiscoveredLineage({
+        state,
+        targetWorkOrderCommitment: lineageTargetWorkOrderCommitment,
+        reconcileMarket: lineageReconcileMarket,
+        accountCommitment: body.account_commitment || null,
+        eligibility: lineageDiscovery,
+        result,
+      });
+      if (!persisted) {
+        throw new PrivateExecutionError(
+          "lighter discovery proof is incomplete",
+          503,
+          "submission_ambiguous",
+        );
+      }
+      result = withDurableLighterResult(result, persisted);
+    }
+    if (boundLineage?.eligible === true) {
+      const persisted = await persistLighterBoundReconciliation({
+        state,
+        targetWorkOrderCommitment: lineageTargetWorkOrderCommitment,
+        reconcileMarket: lineageReconcileMarket,
+        accountCommitment: body.account_commitment || null,
+        expectedAttempt: lineageTargetAttempt,
+        boundEligibility: boundLineage,
+        result,
+      });
+      result = withDurableLighterResult(result, persisted);
+    }
   } catch (error) {
     const ambiguous = error?.code === "submission_ambiguous";
     await state.putExecutionAttempt(body.work_order_commitment, {

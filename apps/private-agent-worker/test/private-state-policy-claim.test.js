@@ -247,6 +247,31 @@ test("duplicate concurrent atomic claims charge quota exactly once", async (t) =
   assert.equal(persisted.policy_amounts["notional:test"].amount, 5);
 });
 
+for (const [label, createState] of [
+  ["file", (dir) => createWorkerState(dir)],
+  ["SQLite", (dir) => createSqliteWorkerState(join(dir, "worker.sqlite"))],
+]) {
+  test(`${label} execution-attempt compare-and-set permits exactly one lineage writer`, async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), "ghola-attempt-cas-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const state = createState(dir);
+    const work = "work-lighter-lineage-cas";
+    await state.putExecutionAttempt(work, {
+      status: "ambiguous",
+      submit_count: 1,
+      ambiguity_retry_count: 0,
+    });
+    const expected = await state.getExecutionAttempt(work);
+    const results = await Promise.all([
+      state.compareAndSetExecutionAttempt(work, expected, { ...expected, order_index: "88" }),
+      state.compareAndSetExecutionAttempt(work, expected, { ...expected, order_index: "99" }),
+    ]);
+    assert.equal(results.filter((result) => result.ok).length, 1);
+    assert.equal(results.filter((result) => !result.ok).length, 1);
+    assert.match((await state.getExecutionAttempt(work)).order_index, /^(88|99)$/);
+  });
+}
+
 test("a policy-proven no-submit attempt rearms once after quota permits and preserves lineage", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "ghola-policy-rearm-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

@@ -64,6 +64,7 @@ def as_dict(value):
 def exact_market_order(orders, client_order_index, market_index):
     target_client_order = int(client_order_index)
     target_market = int(market_index)
+    matches = []
     for item in orders if isinstance(orders, list) else []:
         if not isinstance(item, dict):
             continue
@@ -73,8 +74,10 @@ def exact_market_order(orders, client_order_index, market_index):
         except (TypeError, ValueError):
             continue
         if item_client_order == target_client_order and item_market == target_market:
-            return item
-    return None
+            matches.append(item)
+    if len(matches) > 1:
+        fail("lighter target identifier collision", "venue_rejected")
+    return matches[0] if matches else None
 
 
 def scale(value, decimals):
@@ -533,8 +536,9 @@ async def exact_account_order(client, account_index, market_index, client_order_
         client_order_index,
         market_index,
     )
-    if target is not None or not include_inactive:
+    if not include_inactive:
         return target
+    candidates = [target] if target is not None else []
     cursor = None
     seen_cursors = set()
     for _ in range(MAX_INACTIVE_ORDER_PAGES):
@@ -549,13 +553,17 @@ async def exact_account_order(client, account_index, market_index, client_order_
         inactive_response = await client.order_api.account_inactive_orders(**params)
         inactive_orders, next_cursor = order_page_from_response(inactive_response)
         target = exact_market_order(inactive_orders, client_order_index, market_index)
-        if target is not None or next_cursor is None:
-            return target
+        if target is not None:
+            candidates.append(target)
+            if len(candidates) > 1:
+                fail("lighter target identifier collision", "venue_rejected")
+        if next_cursor is None:
+            return candidates[0] if candidates else None
         if next_cursor in seen_cursors:
             fail("lighter inactive-order pagination did not advance")
         seen_cursors.add(next_cursor)
         cursor = next_cursor
-    return None
+    fail("lighter inactive-order pagination exceeded the evidence bound")
 
 
 def signed_order(client, order, market, *, nonce=-1, skip_nonce=0):

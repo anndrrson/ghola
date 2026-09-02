@@ -226,10 +226,549 @@ test("rejects Lighter reconciliation detached from its submitted fingerprint", (
       "False",
       /lighter_runner_fingerprint_market_binding_missing/,
     ],
+    [
+      "lighter",
+      "export async function reconcileLighterExecution({",
+      "function normalizedLighterFeeProof(",
+      "&& result?.target_identifier_collision === false",
+      "true",
+      /lighter_reconcile_fingerprint_collision_gate_missing/,
+    ],
   ];
   for (const [key, start, end, before, after, failure] of cases) {
     const mutated = mutateSection(sources[key], start, end, (section) => section.replace(before, after));
     assert.throws(() => checkCarryExecutionContract({ ...sources, [key]: mutated }), failure);
+  }
+});
+
+test("rejects Lighter cancellation without exact pre-cancel lineage revalidation", () => {
+  const cases = [
+    [
+      "lighter",
+      'if (operationClass === "cancel") {',
+      "const order = normalizeOrder(instruction, clientOrderIndex);",
+      "expected_order_index: expectedOrderIndex",
+      "expected_order_index: null",
+      /lighter_cancel_expected_order_lineage_missing/,
+    ],
+    [
+      "lighter",
+      'if (operationClass === "cancel") {',
+      "const order = normalizeOrder(instruction, clientOrderIndex);",
+      "result?.target_identifier_collision !== false",
+      "false",
+      /lighter_cancel_collision_refusal_missing/,
+    ],
+    [
+      "lighter",
+      'if (operationClass === "cancel") {',
+      "const order = normalizeOrder(instruction, clientOrderIndex);",
+      "result?.target_fingerprint_checked !== true",
+      "false",
+      /lighter_cancel_fingerprint_check_proof_missing/,
+    ],
+    [
+      "lighter",
+      'if (operationClass === "cancel") {',
+      "const order = normalizeOrder(instruction, clientOrderIndex);",
+      "result?.target_fingerprint_matched !== true",
+      "false",
+      /lighter_cancel_fingerprint_match_proof_missing/,
+    ],
+    [
+      "lighterRunner",
+      'if action == "cancel":',
+      'if action == "reconcile":',
+      "expected_order_index=expected_order_index",
+      "expected_order_index=None",
+      /lighter_cancel_reread_lineage_binding_missing/,
+    ],
+    [
+      "lighterRunner",
+      'if action == "cancel":',
+      'if action == "reconcile":',
+      'fail("lighter cancel target lineage changed", "venue_rejected")',
+      "pass",
+      /lighter_cancel_lineage_change_fail_closed_missing/,
+    ],
+    [
+      "lighterRunner",
+      'if action == "cancel":',
+      'if action == "reconcile":',
+      "include_inactive=False",
+      "include_inactive=True",
+      /lighter_cancel_active_inventory_only_missing/,
+    ],
+    [
+      "lighterRunner",
+      'if action == "cancel":',
+      'if action == "reconcile":',
+      "submitted_order_fingerprint_matches(",
+      "bool(",
+      /lighter_cancel_runner_fingerprint_match_missing/,
+    ],
+    [
+      "lighterRunner",
+      'if action == "cancel":',
+      'if action == "reconcile":',
+      "order_index=exact_order_index",
+      "order_index=target",
+      /lighter_cancel_provider_order_index_binding_missing/,
+    ],
+  ];
+  for (const [key, start, end, before, after, failure] of cases) {
+    const mutated = mutateSection(sources[key], start, end, (section) => section.replace(before, after));
+    assert.throws(() => checkCarryExecutionContract({ ...sources, [key]: mutated }), failure);
+  }
+});
+
+test("rejects Lighter cancellation that accepts duplicate active targets", () => {
+  const mutated = mutateSection(
+    sources.lighterRunner,
+    "def exact_market_order(",
+    "def scale(",
+    (section) => section.replace("if len(matches) > 1:", "if False:"),
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, lighterRunner: mutated }),
+    /lighter_runner_duplicate_target_gate_missing/,
+  );
+});
+
+test("rejects Lighter explicit reconciliation without original provider lineage gates", () => {
+  const cases = [
+    [
+      'if (operationClass === "reconcile") {',
+      'if (operationClass === "cancel") {',
+      "if (expectedOrderIndex === null)",
+      "if (false)",
+      /lighter_explicit_reconcile_lineage_gate_missing/,
+    ],
+    [
+      "export async function submitAndReconcileLighterExecution({",
+      "export async function reconcileLighterExecution({",
+      "allowLineageDiscovery = false",
+      "allowLineageDiscovery = true",
+      /lighter_lineage_discovery_default_closed_missing/,
+    ],
+    [
+      "export async function submitAndReconcileLighterExecution({",
+      "export async function reconcileLighterExecution({",
+      "reconcileOnly && expectedOrderIndex === null && allowLineageDiscovery !== true",
+      "if (false)",
+      /lighter_lineage_discovery_exact_boolean_gate_missing/,
+    ],
+  ];
+  for (const [start, end, before, after, failure] of cases) {
+    const mutated = mutateSection(sources.lighter, start, end, (section) => section.replace(before, after));
+    assert.throws(
+      () => checkCarryExecutionContract({ ...sources, lighter: mutated }),
+      failure,
+    );
+  }
+});
+
+test("rejects weakened durable Lighter lineage discovery", () => {
+  const cases = [
+    [
+      "export function lighterLineageDiscoveryEligibility({",
+      "function discoveredLighterOrderIndex(",
+      "attempt.submit_count !== 1 || attempt.ambiguity_retry_count !== 0",
+      "attempt.submit_count < 1",
+      /worker_lighter_lineage_single_submit_gate_missing/,
+    ],
+    [
+      "export function lighterLineageDiscoveryEligibility({",
+      "function discoveredLighterOrderIndex(",
+      'provider.venue !== "lighter" || provider.pending !== true',
+      'provider.venue !== "lighter" || !provider.pending',
+      /worker_lighter_lineage_pending_provider_gate_missing/,
+    ],
+    [
+      "function discoveredLighterOrderIndex(",
+      "export async function persistLighterDiscoveredLineage({",
+      "!exactLighterReconciliationResult(result)",
+      "false",
+      /worker_lighter_lineage_exact_result_gate_missing/,
+    ],
+    [
+      "function discoveredLighterOrderIndex(",
+      "export async function persistLighterDiscoveredLineage({",
+      'proof?.proof_kind !== "lighter_client_order_index_reconciliation_v1"',
+      "false",
+      /worker_lighter_lineage_exact_proof_kind_missing/,
+    ],
+    [
+      "function discoveredLighterOrderIndex(",
+      "export async function persistLighterDiscoveredLineage({",
+      "proof?.original_order_target_matched !== true",
+      "false",
+      /worker_lighter_lineage_original_target_proof_missing/,
+    ],
+    [
+      "function discoveredLighterOrderIndex(",
+      "export async function persistLighterDiscoveredLineage({",
+      "reconciliation?.reconcileOnly !== true",
+      "!reconciliation?.reconcileOnly",
+      /worker_lighter_lineage_read_only_metadata_missing/,
+    ],
+    [
+      "const LIGHTER_MONOTONIC_PROOF_FLAGS",
+      "function exactLighterOrderIndex(",
+      '"target_fill_set_complete"',
+      '"removed_target_fill_set_complete"',
+      /worker_lighter_monotonic_proof_flag_missing:target_fill_set_complete/,
+    ],
+    [
+      "function deepCanonicalJson(",
+      "function discoveredLighterOrderIndex(",
+      "Object.keys(value).sort()",
+      "Object.keys(value)",
+      /worker_lighter_reconciliation_deep_canonical_missing/,
+    ],
+    [
+      "function deepCanonicalJson(",
+      "function discoveredLighterOrderIndex(",
+      "lighterReconciliationMaterial(normalizedIncoming)",
+      "JSON.stringify(normalizedIncoming)",
+      /worker_lighter_reconciliation_deep_material_incoming_missing/,
+    ],
+    [
+      "function deepCanonicalJson(",
+      "function discoveredLighterOrderIndex(",
+      "result?.result_seed?.status === result.status",
+      "Boolean(result?.result_seed?.status)",
+      /worker_lighter_reconciliation_result_status_binding_missing/,
+    ],
+    [
+      "function deepCanonicalJson(",
+      "function discoveredLighterOrderIndex(",
+      "result?.final_proof?.status === result.status",
+      "Boolean(result?.final_proof?.status)",
+      /worker_lighter_reconciliation_proof_status_binding_missing/,
+    ],
+    [
+      "function deepCanonicalJson(",
+      "function discoveredLighterOrderIndex(",
+      "baseProgress < 0 || fillBaseProgress < 0 || fillQuoteProgress < 0",
+      "false",
+      /worker_lighter_reconciliation_fill_amount_nondecrease_missing/,
+    ],
+    [
+      "function deepCanonicalJson(",
+      "function discoveredLighterOrderIndex(",
+      "referenceProof[field] === true && candidateProof[field] !== true",
+      "false",
+      /worker_lighter_reconciliation_proof_flag_nondecrease_missing/,
+    ],
+    [
+      "function deepCanonicalJson(",
+      "function discoveredLighterOrderIndex(",
+      "reference?.final_proof?.target_fill_set_complete === true",
+      "true",
+      /worker_lighter_reconciliation_terminal_fill_complete_gate_missing/,
+    ],
+    [
+      "function deepCanonicalJson(",
+      "function discoveredLighterOrderIndex(",
+      "reference?.final_proof?.fee_exact === true",
+      "true",
+      /worker_lighter_reconciliation_terminal_fee_exact_gate_missing/,
+    ],
+    [
+      "async function compareAndSetUnchangedLighterAttempt({",
+      "function discoveredLighterOrderIndex(",
+      "targetWorkOrderCommitment,\n    expectedAttempt,\n    expectedAttempt,",
+      "targetWorkOrderCommitment,\n    expectedAttempt,\n    { ...expectedAttempt },",
+      /worker_lighter_unchanged_persistence_identity_cas_missing/,
+    ],
+    [
+      "export function lighterBoundLineageEligibility({",
+      "function discoveredLighterOrderIndex(",
+      "exactLighterOrderIndex(provider.order_index) !== orderIndex",
+      "false",
+      /worker_lighter_bound_lineage_provider_index_gate_missing/,
+    ],
+    [
+      "export async function persistLighterDiscoveredLineage({",
+      "export async function persistLighterBoundReconciliation({",
+      "const durableProofIndex = discoveredLighterOrderIndex({",
+      "const durableProofIndex = exactLighterOrderIndex(currentIndex); void ({",
+      /worker_lighter_lineage_same_index_exact_proof_missing/,
+    ],
+    [
+      "export async function persistLighterDiscoveredLineage({",
+      "export async function persistLighterBoundReconciliation({",
+      "if (progress.current_dominates) {",
+      "if (false) {",
+      /worker_lighter_lineage_same_index_idempotence_missing/,
+    ],
+    [
+      "export async function persistLighterDiscoveredLineage({",
+      "export async function persistLighterBoundReconciliation({",
+      "return compareAndSetUnchangedLighterAttempt({",
+      "return current; void ({",
+      /worker_lighter_lineage_same_index_idempotent_cas_missing/,
+    ],
+    [
+      "export async function persistLighterDiscoveredLineage({",
+      "export async function persistLighterBoundReconciliation({",
+      "return persistLighterBoundReconciliation({",
+      "return current; void ({",
+      /worker_lighter_lineage_same_index_stronger_cas_missing/,
+    ],
+    [
+      "export async function persistLighterDiscoveredLineage({",
+      "export async function persistLighterBoundReconciliation({",
+      "lighterReconciliationProgress(current, result).incoming_dominates",
+      "true",
+      /worker_lighter_lineage_initial_progress_gate_missing/,
+    ],
+    [
+      "export async function persistLighterDiscoveredLineage({",
+      "export function commitment(",
+      "await state.compareAndSetExecutionAttempt(",
+      "await state.putExecutionAttempt(",
+      /worker_lighter_lineage_atomic_persistence_missing/,
+    ],
+    [
+      "export async function persistLighterDiscoveredLineage({",
+      "export function commitment(",
+      "throw new PrivateExecutionError(",
+      "return new PrivateExecutionError(",
+      /worker_lighter_lineage_throw_semantics_missing/,
+    ],
+    [
+      "export async function persistLighterBoundReconciliation({",
+      "export function commitment(",
+      "const observedOrderIndex = discoveredLighterOrderIndex(result, boundEligibility)",
+      "const observedOrderIndex = boundEligibility.order_index",
+      /worker_lighter_bound_persistence_exact_proof_missing/,
+    ],
+    [
+      "export async function persistLighterBoundReconciliation({",
+      "export function commitment(",
+      "if (progress.equivalent) {",
+      "if (false) {",
+      /worker_lighter_bound_persistence_idempotence_missing/,
+    ],
+    [
+      "export async function persistLighterBoundReconciliation({",
+      "export function commitment(",
+      "return compareAndSetUnchangedLighterAttempt({",
+      "return expectedAttempt; void ({",
+      /worker_lighter_bound_persistence_idempotent_cas_missing/,
+    ],
+    [
+      "export async function persistLighterBoundReconciliation({",
+      "export function commitment(",
+      "!progress.incoming_dominates || progress.current_dominates",
+      "false",
+      /worker_lighter_bound_persistence_monotonicity_missing/,
+    ],
+    [
+      "export async function persistLighterBoundReconciliation({",
+      "export function commitment(",
+      "const progress = lighterReconciliationProgress(expectedAttempt, result)",
+      "const priorTerminal = true;\n  const progress = lighterReconciliationProgress(expectedAttempt, result)",
+      /worker_lighter_bound_legacy_terminal_gate_present/,
+    ],
+    [
+      "export async function persistLighterBoundReconciliation({",
+      "export function commitment(",
+      "await state.compareAndSetExecutionAttempt(",
+      "await state.putExecutionAttempt(",
+      /worker_lighter_bound_persistence_atomic_write_missing/,
+    ],
+    [
+      "export async function reconcileLighterOrder({",
+      "export async function executeAsterOrder({",
+      "await persistLighterBoundReconciliation({",
+      "await persistReadOnlyReconciliation({",
+      /worker_lighter_reconcile_generic_persistence_forbidden/,
+    ],
+    [
+      "export async function reconcileLighterOrder({",
+      "export async function executeAsterOrder({",
+      "result = withDurableLighterResult(result, persisted)",
+      "void withDurableLighterResult(result, persisted)",
+      /worker_lighter_reconcile_durable_result_binding_missing/,
+    ],
+    [
+      "function withDurableLighterResult(",
+      "export function commitment(",
+      "status: attempt.status",
+      "status: result.status",
+      /worker_lighter_durable_result_status_binding_missing/,
+    ],
+    [
+      "export async function executeLighterOrder({",
+      "export async function verifyLighterOrderNoSubmit({",
+      "await state.getExecutionAttempt(lineageTargetWorkOrderCommitment)",
+      "state.getExecutionAttempt(lineageTargetWorkOrderCommitment)",
+      /worker_lighter_lineage_durable_attempt_read_missing/,
+    ],
+    [
+      "export async function executeLighterOrder({",
+      "export async function verifyLighterOrderNoSubmit({",
+      "!lineageTargetWorkOrderCommitment",
+      "false",
+      /worker_lighter_lineage_nonempty_recovery_target_missing/,
+    ],
+    [
+      "export async function executeLighterOrder({",
+      "export async function verifyLighterOrderNoSubmit({",
+      "allowLineageDiscovery: lineageDiscovery?.eligible === true",
+      "allowLineageDiscovery: Boolean(lineageDiscovery?.eligible)",
+      /worker_lighter_lineage_exact_boolean_opt_in_missing/,
+    ],
+    [
+      "export async function executeLighterOrder({",
+      "export async function verifyLighterOrderNoSubmit({",
+      "boundLineage.eligible !== true",
+      "false",
+      /worker_lighter_bound_lineage_durable_eligibility_gate_missing/,
+    ],
+    [
+      "export async function executeLighterOrder({",
+      "export async function verifyLighterOrderNoSubmit({",
+      "if (!persisted) {",
+      "if (false) {",
+      /worker_lighter_lineage_incomplete_discovery_throw_missing/,
+    ],
+    [
+      "export async function executeLighterOrder({",
+      "export async function verifyLighterOrderNoSubmit({",
+      "await persistLighterBoundReconciliation({",
+      "await persistReadOnlyReconciliation({",
+      /worker_lighter_bound_reconciliation_persistence_missing/,
+    ],
+    [
+      "export async function executeLighterOrder({",
+      "export async function verifyLighterOrderNoSubmit({",
+      "result = withDurableLighterResult(result, persisted)",
+      "void withDurableLighterResult(result, persisted)",
+      /worker_lighter_execution_durable_result_binding_missing/,
+    ],
+    [
+      "export async function executeLighterOrder({",
+      "export async function verifyLighterOrderNoSubmit({",
+      "throw error;",
+      "return error;",
+      /worker_lighter_lineage_error_rethrow_missing/,
+    ],
+  ];
+  for (const [start, end, before, after, failure] of cases) {
+    const mutated = mutateSection(sources.privateExecution, start, end, (section) => section.replace(before, after));
+    assert.throws(
+      () => checkCarryExecutionContract({ ...sources, privateExecution: mutated }),
+      failure,
+    );
+  }
+});
+
+test("requires original Lighter lineage persistence before the recovery result", () => {
+  const mutated = mutateSection(
+    sources.privateExecution,
+    "export async function executeLighterOrder({",
+    "export async function verifyLighterOrderNoSubmit({",
+    (section) => {
+      const persistStart = section.indexOf("      const persisted = await persistLighterDiscoveredLineage({");
+      assert.notEqual(persistStart, -1);
+      const persistEnd = section.indexOf("\n      });", persistStart);
+      assert.notEqual(persistEnd, -1);
+      const callEnd = persistEnd + "\n      });".length;
+      const call = section.slice(persistStart, callEnd);
+      const withoutCall = `${section.slice(0, persistStart)}${section.slice(callEnd)}`;
+      const receiptStart = withoutCall.indexOf("\n  const receipt = executionReceipt({");
+      assert.notEqual(receiptStart, -1);
+      return `${withoutCall.slice(0, receiptStart)}\n${call}${withoutCall.slice(receiptStart)}`;
+    },
+  );
+  assert.throws(
+    () => checkCarryExecutionContract({ ...sources, privateExecution: mutated }),
+    /worker_lighter_lineage_original_persistence_order_missing/,
+  );
+});
+
+test("rejects removal of durable Lighter lineage regressions", () => {
+  for (const [before, failure, replaceEveryOccurrence = false] of [
+    ["accepts known Lighter lineage only when every durable identifier matches", /worker_lighter_bound_lineage_test_missing/],
+    ["allows Lighter lineage discovery only from an exact durable ambiguous submission", /worker_lighter_lineage_eligibility_test_missing/],
+    ["persists a uniquely proven Lighter provider index onto the original attempt", /worker_lighter_lineage_persistence_test_missing/],
+    ["does not persist unproven or conflicting discovered Lighter lineage", /worker_lighter_lineage_conflict_test_missing/],
+    ["requires durable exact proof before treating a discovered index as idempotent", /worker_lighter_lineage_idempotence_proof_test_missing/],
+    ["atomically persists known Lighter reconciliation and rejects stale writers", /worker_lighter_bound_persistence_test_missing/],
+    ["never regresses terminal proof, fill evidence, or partial status", /worker_lighter_monotonic_regression_test_missing/],
+    ["upgrades stronger same-index discovery evidence exactly once", /worker_lighter_same_index_upgrade_test_missing/],
+    ["treats checked-at-only same-index evidence as idempotent", /worker_lighter_checked_at_idempotence_test_missing/],
+    ["atomically rejects equivalent evidence after a concurrent terminal advance", /worker_lighter_equivalent_cas_race_test_missing/],
+    ["enriches an aggregate terminal fill without changing its exact totals", /worker_lighter_terminal_fill_enrichment_test_missing/],
+    ["assert.deepEqual(writes, [TARGET])", /worker_lighter_lineage_original_target_assertion_missing/],
+    ['error.code === "submission_ambiguous"', /worker_lighter_lineage_throw_code_test_missing/, true],
+    ['throw new Error("must not write")', /worker_lighter_exact_proof_no_write_test_missing/, true],
+    ["assert.equal(compareAndSetCalls, 2)", /worker_lighter_same_index_cas_count_test_missing/],
+    ["assert.equal(compareAndSetCalls, 1)", /worker_lighter_checked_at_cas_count_test_missing/, true],
+    ["assert.equal(persisted.final_proof.target_fill_set_complete, true)", /worker_lighter_terminal_fill_enrichment_proof_test_missing/],
+    ["assert.equal(persisted.fills.length, 2)", /worker_lighter_terminal_fill_enrichment_count_test_missing/],
+  ]) {
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        lighterLineageDiscoveryTest: replaceEveryOccurrence
+          ? sources.lighterLineageDiscoveryTest.replaceAll(before, "removed regression")
+          : sources.lighterLineageDiscoveryTest.replace(before, "removed regression"),
+      }),
+      failure,
+    );
+  }
+});
+
+test("rejects removal of the Lighter replacement-order collision regression", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      lighterTest: sources.lighterTest.replace(
+        "revalidates Lighter provider lineage immediately before canceling a reused client index",
+        "checks a Lighter cancel",
+      ),
+    }),
+    /lighter_cancel_replacement_collision_test_missing/,
+  );
+});
+
+test("rejects removal of Lighter cancel single-submit and lineage regressions", () => {
+  for (const [before, failure] of [
+    ["submits an ambiguous Lighter cancel exactly once through reconciliation exhaustion", /lighter_cancel_no_retry_test_missing/],
+    ["refuses a Lighter cancel before any venue call when original provider lineage is absent", /lighter_cancel_missing_lineage_test_missing/],
+    ["discovers explicit Lighter lineage only through the opt-in restart path", /lighter_explicit_reconcile_lineage_test_missing/],
+  ]) {
+    assert.throws(
+      () => checkCarryExecutionContract({
+        ...sources,
+        lighterTest: sources.lighterTest.replace(before, "checks Lighter behavior"),
+      }),
+      failure,
+    );
+  }
+});
+
+test("rejects removal of Lighter cancel single-submit assertions", () => {
+  const cases = [
+    ["assert.equal(cancelCalls, 1)", "assert.ok(cancelCalls)", /lighter_cancel_single_submission_assertion_missing/],
+    ["assert.equal(result.reconciliation.submission_retry_count, 0)", "assert.ok(result.reconciliation)", /lighter_cancel_no_retry_assertion_missing/],
+  ];
+  for (const [before, after, failure] of cases) {
+    const mutated = mutateSection(
+      sources.lighterTest,
+      'test("recovers an ambiguous Lighter cancel against only its original target"',
+      'test("submits an ambiguous Lighter cancel exactly once through reconciliation exhaustion"',
+      (section) => section.replace(before, after),
+    );
+    assert.throws(
+      () => checkCarryExecutionContract({ ...sources, lighterTest: mutated }),
+      failure,
+    );
   }
 });
 
