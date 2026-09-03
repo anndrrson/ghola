@@ -3,7 +3,6 @@ import { createPublicKey, generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import { CARRY_EXECUTION_VENUES } from "@ghola/execution-core";
 import {
-  isTransientWorkerProbeError,
   verifyPreviewProductRuntimeConfig,
   verifyPrivateWorkerRuntimeAuthorization,
   verifyPrivateWorkerRuntimeConfig,
@@ -340,22 +339,20 @@ test("blocks deployment when worker authorization drifts", async () => {
   );
 });
 
-test("defers only transient Preview worker transport outages", async () => {
+test("keeps transient Preview worker transport outages fail-closed", async () => {
   const socketError = Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" });
   const fetchError = new TypeError("fetch failed", { cause: socketError });
-  assert.equal(isTransientWorkerProbeError(fetchError), true);
 
-  const result = await verifyVercelBuildRuntimeConfig({
-    ...productEnv(),
-    ...vercelEnv(),
-    VERCEL_ENV: "preview",
-  }, async () => {
-    throw fetchError;
-  });
-
-  assert.equal(result.worker_authorization, "deferred_transient");
-  assert.equal(result.worker_host, "worker.example");
-  assert.equal(result.product_runtime.persistence, "postgres");
+  await assert.rejects(
+    verifyVercelBuildRuntimeConfig({
+      ...productEnv(),
+      ...vercelEnv(),
+      VERCEL_ENV: "preview",
+    }, async () => {
+      throw fetchError;
+    }),
+    /fetch failed/,
+  );
 });
 
 test("keeps Production and semantic Preview failures fail-closed", async () => {

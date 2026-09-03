@@ -617,6 +617,7 @@ async function phalaProvider(): Promise<ConfidentialComputeProviderStatus> {
     "GHOLA_TEE_ATTESTATION_VERIFIER_URL",
   );
   const imageDigestConfigured = envSet(
+    "GHOLA_PRIVATE_AGENT_WORKER_IMAGE_DIGEST",
     "PHALA_CVM_IMAGE_DIGEST",
     "GHOLA_PRIVATE_AGENT_IMAGE_DIGEST",
   );
