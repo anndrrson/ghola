@@ -32,7 +32,8 @@ const requiredGoogleRedirectSources = [
   {
     file: "pnpm-workspace.yaml",
     patterns: [
-      { label: "Turnkey OTP patched dependency declaration", pattern: /'@turnkey\/react-wallet-kit@2\.4\.3':\s*patches\/@turnkey__react-wallet-kit@2\.4\.2\.patch/ },
+      { label: "Turnkey core patched dependency declaration", pattern: /'@turnkey\/core@2\.8\.1':\s*patches\/@turnkey__core@2\.8\.1\.patch/ },
+      { label: "Turnkey OTP patched dependency declaration", pattern: /'@turnkey\/react-wallet-kit@2\.4\.3':\s*patches\/@turnkey__react-wallet-kit@2\.4\.3\.patch/ },
     ],
   },
   {
@@ -66,13 +67,13 @@ const requiredGoogleRedirectSources = [
     ],
   },
   {
-    file: "patches/@turnkey__core@2.8.0.patch",
+    file: "patches/@turnkey__core@2.8.1.patch",
     patterns: [
       { label: "Turnkey platform authenticator selection", pattern: /this\.config\.withPlatformKey[\s\S]*?["']platform["']/ },
     ],
   },
   {
-    file: "patches/@turnkey__react-wallet-kit@2.4.2.patch",
+    file: "patches/@turnkey__react-wallet-kit@2.4.3.patch",
     patterns: [
       { label: "fresh OTP fields after resend", pattern: /disabled:\s*submitting \|\| verificationAttempted[\s\S]*?otpId/ },
       { label: "single OTP attempt per challenge", pattern: /if \(verificationAttemptedRef\.current\) return/ },

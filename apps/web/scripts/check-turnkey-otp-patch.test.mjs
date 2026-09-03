@@ -49,6 +49,14 @@ test("installed Turnkey OTP runtime contains the safety patch", async () => {
   assert.match(workspaceConfig, /'@turnkey\/react-wallet-kit@2\.4\.3':\s*patches\/@turnkey__react-wallet-kit@2\.4\.3\.patch/);
 });
 
+test("auth bundle guard tracks the installed Turnkey patch versions", async () => {
+  const guard = await readFile(new URL("./check-auth-client-bundle.mjs", import.meta.url), "utf8");
+
+  assert.match(guard, /patches\/@turnkey__core@2\.8\.1\.patch/);
+  assert.match(guard, /patches\/@turnkey__react-wallet-kit@2\.4\.3\.patch/);
+  assert.doesNotMatch(guard, /patches\/@turnkey__(?:core@2\.8\.0|react-wallet-kit@2\.4\.2)\.patch/);
+});
+
 test("release installs preserve the pinned Turnkey patches", async () => {
   const [ci, siteCanary, supplyChain, packageJson, reproducibleBuild, siteSmoke] = await Promise.all([
     readFile(new URL("../../../.github/workflows/ci.yml", import.meta.url), "utf8"),
