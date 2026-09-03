@@ -12,6 +12,7 @@ const required = [
   /deferred:\s*true/,
   /\[Turnkey OTP\] verification rejected/,
   /Start over; do not retry it/,
+  /publicKey/,
 ];
 
 const requiredCaptchaSafety = [
@@ -68,6 +69,12 @@ export async function verifyTurnkeyOtpInstall(root = process.cwd()) {
     if (!/beginOtpInitialization/.test(source)) {
       throw new Error(`${path.relative(root, file)} permits overlapping OTP initialization`);
     }
+    if (!/publicKey\s*=\s*await createApiKeyPair\(\)[\s\S]*?await initOtp/.test(source)) {
+      throw new Error(`${path.relative(root, file)} sends an OTP before secure key storage passes`);
+    }
+    if (!/publicKey:\s*publicKey/.test(source)) {
+      throw new Error(`${path.relative(root, file)} does not reuse the preflighted key for OTP completion`);
+    }
   }
 
   const modalFiles = [
@@ -101,6 +108,22 @@ export async function verifyTurnkeyOtpInstall(root = process.cwd()) {
     );
     if (!/withPlatformKey[\s\S]*?\?\s*["']platform["'][\s\S]*?:\s*this\.config\.withSecurityKey[\s\S]*?\?\s*["']cross-platform["']/.test(passkeySource)) {
       throw new Error(`Turnkey passkey ${extension} runtime is missing platform/security-key routing`);
+    }
+
+    const indexedDbSource = await readFile(
+      path.resolve(kitRoot, `../core/dist/__stampers__/api/web/stamper.${extension}`),
+      "utf8",
+    );
+    for (const pattern of [
+      /indexedDB\.open\(DB_NAME\)/,
+      /objectStoreNames\.contains\(DB_STORE\)/,
+      /indexedDB\.open\(DB_NAME, nextVersion\)/,
+      /onversionchange\s*=\s*\(\)\s*=>\s*.*\.close\(\)/,
+      /tx\.onabort/,
+    ]) {
+      if (!pattern.test(indexedDbSource)) {
+        throw new Error(`Turnkey IndexedDB ${extension} runtime is missing key-store recovery`);
+      }
     }
   }
 }

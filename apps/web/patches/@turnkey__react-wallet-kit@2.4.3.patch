@@ -1,5 +1,5 @@
 diff --git a/dist/components/auth/OTP.js b/dist/components/auth/OTP.js
-index 6ac2a9c22d3ba290b9f1a2650e82f455af470910..7b6cf11e2dd7beb37cb590b3067fbb1eec7e2bbe 100644
+index 6ac2a9c22d3ba290b9f1a2650e82f455af470910..f92641684bc1302daffd9238c229fe513b99e036 100644
 --- a/dist/components/auth/OTP.js
 +++ b/dist/components/auth/OTP.js
 @@ -13,6 +13,49 @@ var freeSolidSvgIcons = require('@fortawesome/free-solid-svg-icons');
@@ -52,7 +52,15 @@ index 6ac2a9c22d3ba290b9f1a2650e82f455af470910..7b6cf11e2dd7beb37cb590b3067fbb1e
  function OtpVerification(props) {
    const {
      contact,
-@@ -38,6 +81,8 @@ function OtpVerification(props) {
+@@ -21,6 +64,7 @@ function OtpVerification(props) {
+     alphanumeric = true,
+     formattedContact,
+     sessionKey,
++    publicKey,
+     onContinue = null // Default to null if not provided
+   } = props;
+   const {
+@@ -38,6 +82,8 @@ function OtpVerification(props) {
    const [otpEncryptionTargetBundle, setOtpEncryptionTargetBundle] = react.useState(props.otpEncryptionTargetBundle);
    const [error, setError] = react.useState(null);
    const [shaking, setShaking] = react.useState(false);
@@ -61,7 +69,7 @@ index 6ac2a9c22d3ba290b9f1a2650e82f455af470910..7b6cf11e2dd7beb37cb590b3067fbb1e
    // Deferred: entering the code doesn't need a captcha, only resending does. The
    // widget stays unmounted until the user actually asks for a new code.
    const {
-@@ -55,14 +100,19 @@ function OtpVerification(props) {
+@@ -55,17 +101,23 @@ function OtpVerification(props) {
      setTimeout(() => setShaking(false), 250);
    };
    const handleContinue = async otpCode => {
@@ -83,7 +91,11 @@ index 6ac2a9c22d3ba290b9f1a2650e82f455af470910..7b6cf11e2dd7beb37cb590b3067fbb1e
            otpEncryptionTargetBundle,
            contact,
            otpType,
-@@ -73,10 +123,9 @@ function OtpVerification(props) {
++          publicKey,
+           ...(sessionKey && {
+             sessionKey
+           })
+@@ -73,10 +125,9 @@ function OtpVerification(props) {
          closeModal();
        }
      } catch (error) {
@@ -96,7 +108,7 @@ index 6ac2a9c22d3ba290b9f1a2650e82f455af470910..7b6cf11e2dd7beb37cb590b3067fbb1e
      } finally {
        setSubmitting(false);
      }
-@@ -100,9 +149,15 @@ function OtpVerification(props) {
+@@ -100,9 +151,15 @@ function OtpVerification(props) {
        });
        setOtpId(otpId);
        setOtpEncryptionTargetBundle(otpEncryptionTargetBundle);
@@ -113,7 +125,7 @@ index 6ac2a9c22d3ba290b9f1a2650e82f455af470910..7b6cf11e2dd7beb37cb590b3067fbb1e
      } finally {
        setResending(false);
      }
-@@ -128,8 +183,9 @@ function OtpVerification(props) {
+@@ -128,8 +185,9 @@ function OtpVerification(props) {
          children: jsxRuntime.jsx(OtpInput, {
            otpLength: otpLength,
            onContinue: handleContinue,
@@ -125,7 +137,7 @@ index 6ac2a9c22d3ba290b9f1a2650e82f455af470910..7b6cf11e2dd7beb37cb590b3067fbb1e
        }), error && jsxRuntime.jsx("div", {
          className: "text-red-400 text-center text-sm",
          children: error
-@@ -157,7 +213,8 @@ function OtpInput(props) {
+@@ -157,7 +215,8 @@ function OtpInput(props) {
    const {
      otpLength,
      onContinue,
@@ -135,7 +147,7 @@ index 6ac2a9c22d3ba290b9f1a2650e82f455af470910..7b6cf11e2dd7beb37cb590b3067fbb1e
    } = props;
    const {
      isMobile
-@@ -165,6 +222,7 @@ function OtpInput(props) {
+@@ -165,6 +224,7 @@ function OtpInput(props) {
    const [values, setValues] = react.useState(Array(otpLength).fill(""));
    const inputsRef = react.useRef([]);
    const handleChange = (index, value) => {
@@ -143,7 +155,7 @@ index 6ac2a9c22d3ba290b9f1a2650e82f455af470910..7b6cf11e2dd7beb37cb590b3067fbb1e
      if (!alphanumeric) value = value.replace(/[^0-9]/g, "");else value = value.replace(/[^a-zA-Z0-9]/g, "");
      const newValues = [...values];
      newValues[index] = value.slice(-1); // only last char
-@@ -177,6 +235,7 @@ function OtpInput(props) {
+@@ -177,6 +237,7 @@ function OtpInput(props) {
      }
    };
    const handleKeyDown = (e, index) => {
@@ -151,7 +163,7 @@ index 6ac2a9c22d3ba290b9f1a2650e82f455af470910..7b6cf11e2dd7beb37cb590b3067fbb1e
      if (e.key === "Backspace" && !values[index] && index > 0) {
        inputsRef.current[index - 1]?.focus();
      }
-@@ -186,12 +245,13 @@ function OtpInput(props) {
+@@ -186,12 +247,13 @@ function OtpInput(props) {
      if (e.key === "ArrowRight" && index < otpLength - 1) {
        inputsRef.current[index + 1]?.focus();
      }
@@ -166,7 +178,7 @@ index 6ac2a9c22d3ba290b9f1a2650e82f455af470910..7b6cf11e2dd7beb37cb590b3067fbb1e
      const paste = e.clipboardData.getData("text").trim();
      const cleaned = alphanumeric ? paste.replace(/[^a-zA-Z0-9]/g, "") : paste.replace(/[^0-9]/g, "");
      const sliced = cleaned.slice(0, otpLength).split("");
-@@ -206,7 +266,7 @@ function OtpInput(props) {
+@@ -206,7 +268,7 @@ function OtpInput(props) {
      // Focus the last filled box
      const lastIndex = Math.min(sliced.length, otpLength - 1);
      inputsRef.current[lastIndex]?.focus();
@@ -175,7 +187,7 @@ index 6ac2a9c22d3ba290b9f1a2650e82f455af470910..7b6cf11e2dd7beb37cb590b3067fbb1e
    };
    return jsxRuntime.jsx("div", {
      className: clsx("flex items-center justify-center space-x-2", isMobile ? "w-[95%]" : "w-full"),
-@@ -219,6 +279,7 @@ function OtpInput(props) {
+@@ -219,6 +281,7 @@ function OtpInput(props) {
          maxLength: 1,
          value: values[i]?.toUpperCase(),
          autoComplete: "off",
@@ -183,14 +195,14 @@ index 6ac2a9c22d3ba290b9f1a2650e82f455af470910..7b6cf11e2dd7beb37cb590b3067fbb1e
          onChange: e => handleChange(i, e.target.value.toUpperCase()),
          onKeyDown: e => handleKeyDown(e, i),
          onPaste: handlePaste,
-@@ -231,4 +292,5 @@ function OtpInput(props) {
+@@ -231,4 +294,5 @@ function OtpInput(props) {
  
  exports.OtpInput = OtpInput;
  exports.OtpVerification = OtpVerification;
 +exports.normalizeOtpCode = normalizeOtpCode;
  //# sourceMappingURL=OTP.js.map
 diff --git a/dist/components/auth/OTP.mjs b/dist/components/auth/OTP.mjs
-index 6b42b8e645d2c42aba72a6680e4c76c35e8fc912..e49cd814bf3eccfc08c5f8d65d94b30855a6824a 100644
+index 6b42b8e645d2c42aba72a6680e4c76c35e8fc912..6c0f6509b2af261131624861a25a154768dbe17a 100644
 --- a/dist/components/auth/OTP.mjs
 +++ b/dist/components/auth/OTP.mjs
 @@ -12,6 +12,46 @@ import { faEnvelope, faPhone } from '@fortawesome/free-solid-svg-icons';
@@ -240,7 +252,15 @@ index 6b42b8e645d2c42aba72a6680e4c76c35e8fc912..e49cd814bf3eccfc08c5f8d65d94b308
  function OtpVerification(props) {
    var contact = props.contact,
      otpType = props.otpType,
-@@ -57,6 +97,11 @@ function OtpVerification(props) {
+@@ -21,6 +61,7 @@ function OtpVerification(props) {
+     alphanumeric = _props$alphanumeric === void 0 ? true : _props$alphanumeric,
+     formattedContact = props.formattedContact,
+     sessionKey = props.sessionKey,
++    publicKey = props.publicKey,
+     _props$onContinue = props.onContinue,
+     onContinue = _props$onContinue === void 0 ? null : _props$onContinue;
+   var _useTurnkey = useTurnkey(),
+@@ -57,6 +98,11 @@ function OtpVerification(props) {
      _useState12 = _slicedToArray(_useState11, 2),
      shaking = _useState12[0],
      setShaking = _useState12[1];
@@ -252,7 +272,7 @@ index 6b42b8e645d2c42aba72a6680e4c76c35e8fc912..e49cd814bf3eccfc08c5f8d65d94b308
    // Deferred: entering the code doesn't need a captcha, only resending does. The
    // widget stays unmounted until the user actually asks for a new code.
    var _useTurnstile = useTurnstile({
-@@ -76,10 +121,15 @@ function OtpVerification(props) {
+@@ -76,10 +122,15 @@ function OtpVerification(props) {
    };
    var handleContinue = /*#__PURE__*/function () {
      var _ref = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee(otpCode) {
@@ -269,7 +289,7 @@ index 6b42b8e645d2c42aba72a6680e4c76c35e8fc912..e49cd814bf3eccfc08c5f8d65d94b308
              _context.p = 0;
              setSubmitting(true);
              if (!onContinue) {
-@@ -87,7 +137,7 @@ function OtpVerification(props) {
+@@ -87,7 +138,7 @@ function OtpVerification(props) {
                break;
              }
              _context.n = 1;
@@ -278,7 +298,7 @@ index 6b42b8e645d2c42aba72a6680e4c76c35e8fc912..e49cd814bf3eccfc08c5f8d65d94b308
            case 1:
              _context.n = 4;
              break;
-@@ -95,7 +145,7 @@ function OtpVerification(props) {
+@@ -95,10 +146,11 @@ function OtpVerification(props) {
              _context.n = 3;
              return completeOtp(_objectSpread2({
                otpId: otpId,
@@ -286,8 +306,13 @@ index 6b42b8e645d2c42aba72a6680e4c76c35e8fc912..e49cd814bf3eccfc08c5f8d65d94b308
 +              otpCode: normalizedOtpCode,
                otpEncryptionTargetBundle: otpEncryptionTargetBundle,
                contact: contact,
-               otpType: otpType
-@@ -110,10 +160,11 @@ function OtpVerification(props) {
+-              otpType: otpType
++              otpType: otpType,
++              publicKey: publicKey
+             }, sessionKey && {
+               sessionKey: sessionKey
+             }));
+@@ -110,10 +162,11 @@ function OtpVerification(props) {
            case 5:
              _context.p = 5;
              _t = _context.v;
@@ -302,7 +327,7 @@ index 6b42b8e645d2c42aba72a6680e4c76c35e8fc912..e49cd814bf3eccfc08c5f8d65d94b308
            case 6:
              _context.p = 6;
              setSubmitting(false);
-@@ -158,13 +209,20 @@ function OtpVerification(props) {
+@@ -158,13 +211,20 @@ function OtpVerification(props) {
              _otpEncryptionTargetBundle = _yield$initOtp.otpEncryptionTargetBundle;
              setOtpId(_otpId);
              setOtpEncryptionTargetBundle(_otpEncryptionTargetBundle);
@@ -324,7 +349,7 @@ index 6b42b8e645d2c42aba72a6680e4c76c35e8fc912..e49cd814bf3eccfc08c5f8d65d94b308
            case 6:
              _context2.p = 6;
              setResending(false);
-@@ -199,8 +257,9 @@ function OtpVerification(props) {
+@@ -199,8 +259,9 @@ function OtpVerification(props) {
          children: jsx(OtpInput, {
            otpLength: otpLength,
            onContinue: handleContinue,
@@ -336,7 +361,7 @@ index 6b42b8e645d2c42aba72a6680e4c76c35e8fc912..e49cd814bf3eccfc08c5f8d65d94b308
        }), error && jsx("div", {
          className: "text-red-400 text-center text-sm",
          children: error
-@@ -228,15 +287,18 @@ function OtpInput(props) {
+@@ -228,15 +289,18 @@ function OtpInput(props) {
    var otpLength = props.otpLength,
      onContinue = props.onContinue,
      _props$alphanumeric2 = props.alphanumeric,
@@ -360,7 +385,7 @@ index 6b42b8e645d2c42aba72a6680e4c76c35e8fc912..e49cd814bf3eccfc08c5f8d65d94b308
      if (!alphanumeric) value = value.replace(/[^0-9]/g, "");else value = value.replace(/[^a-zA-Z0-9]/g, "");
      var newValues = _toConsumableArray(values);
      newValues[index] = value.slice(-1); // only last char
-@@ -252,6 +314,7 @@ function OtpInput(props) {
+@@ -252,6 +316,7 @@ function OtpInput(props) {
      }
    };
    var handleKeyDown = function handleKeyDown(e, index) {
@@ -368,7 +393,7 @@ index 6b42b8e645d2c42aba72a6680e4c76c35e8fc912..e49cd814bf3eccfc08c5f8d65d94b308
      if (e.key === "Backspace" && !values[index] && index > 0) {
        var _inputsRef$current2;
        (_inputsRef$current2 = inputsRef.current[index - 1]) === null || _inputsRef$current2 === void 0 ? void 0 : _inputsRef$current2.focus();
-@@ -264,13 +327,16 @@ function OtpInput(props) {
+@@ -264,13 +329,16 @@ function OtpInput(props) {
        var _inputsRef$current4;
        (_inputsRef$current4 = inputsRef.current[index + 1]) === null || _inputsRef$current4 === void 0 ? void 0 : _inputsRef$current4.focus();
      }
@@ -386,7 +411,7 @@ index 6b42b8e645d2c42aba72a6680e4c76c35e8fc912..e49cd814bf3eccfc08c5f8d65d94b308
      var paste = e.clipboardData.getData("text").trim();
      var cleaned = alphanumeric ? paste.replace(/[^a-zA-Z0-9]/g, "") : paste.replace(/[^0-9]/g, "");
      var sliced = cleaned.slice(0, otpLength).split("");
-@@ -287,7 +353,9 @@ function OtpInput(props) {
+@@ -287,7 +355,9 @@ function OtpInput(props) {
      // Focus the last filled box
      var lastIndex = Math.min(sliced.length, otpLength - 1);
      (_inputsRef$current$la = inputsRef.current[lastIndex]) === null || _inputsRef$current$la === void 0 ? void 0 : _inputsRef$current$la.focus();
@@ -397,7 +422,7 @@ index 6b42b8e645d2c42aba72a6680e4c76c35e8fc912..e49cd814bf3eccfc08c5f8d65d94b308
    };
    return jsx("div", {
      className: clsx("flex items-center justify-center space-x-2", isMobile ? "w-[95%]" : "w-full"),
-@@ -301,6 +369,7 @@ function OtpInput(props) {
+@@ -301,6 +371,7 @@ function OtpInput(props) {
          maxLength: 1,
          value: (_values$i = values[i]) === null || _values$i === void 0 ? void 0 : _values$i.toUpperCase(),
          autoComplete: "off",
@@ -405,7 +430,7 @@ index 6b42b8e645d2c42aba72a6680e4c76c35e8fc912..e49cd814bf3eccfc08c5f8d65d94b308
          onChange: function onChange(e) {
            return handleChange(i, e.target.value.toUpperCase());
          },
-@@ -317,5 +386,5 @@ function OtpInput(props) {
+@@ -317,5 +388,5 @@ function OtpInput(props) {
    });
  }
  
@@ -453,7 +478,7 @@ index 0f4c161f58bc38e0c1a0f6bca4f11f66229d86bd..5fc3b555f9cf68e726fdfca4a4a092e1
              // Timed out with no token — ensure gated actions stay disabled.
              if (turnstileConfigured && !("captchaToken" in result)) {
 diff --git a/dist/components/auth/index.js b/dist/components/auth/index.js
-index 5ee5880fabef3171a3790eaa483ea3834c157962..231123232546f1b3a673e30d32c70ced4f9c00fd 100644
+index 5ee5880fabef3171a3790eaa483ea3834c157962..18ed29ed0985bb9c0bda0dbcbdaa7c4ac705c5d3 100644
 --- a/dist/components/auth/index.js
 +++ b/dist/components/auth/index.js
 @@ -1,6 +1,7 @@
@@ -464,7 +489,16 @@ index 5ee5880fabef3171a3790eaa483ea3834c157962..231123232546f1b3a673e30d32c70ced
  var reactFontawesome = require('@fortawesome/react-fontawesome');
  var freeBrandsSvgIcons = require('@fortawesome/free-brands-svg-icons');
  var core = require('@turnkey/core');
-@@ -50,6 +51,16 @@ function AuthComponent({
+@@ -37,6 +38,8 @@ function AuthComponent({
+     handleXOauth,
+     handleDiscordOauth,
+     initOtp,
++    createApiKeyPair,
++    deleteApiKeyPair,
+     loginWithPasskey,
+     signUpWithPasskey
+   } = Hook.useTurnkey();
+@@ -50,6 +53,16 @@ function AuthComponent({
      consumeToken,
      authEnabled
    } = TurnstileWidget.useTurnstile();
@@ -481,28 +515,60 @@ index 5ee5880fabef3171a3790eaa483ea3834c157962..231123232546f1b3a673e30d32c70ced
    if (!config || clientState === base.ClientState.Loading) {
      // Don't check ClientState.Error here. We already check in the modal root
      return jsxRuntime.jsx("div", {
-@@ -65,7 +76,7 @@ function AuthComponent({
+@@ -65,8 +78,10 @@ function AuthComponent({
      methodOrder = [],
      oauthOrder = []
    } = config.ui?.authModal || {};
 -  const handleEmailSubmit = async email => {
 +  const handleEmailSubmit = email => beginOtpInitialization(async () => {
++    let publicKey;
      try {
++      publicKey = await createApiKeyPair();
        const {
          otpId,
-@@ -93,8 +104,8 @@ function AuthComponent({
+         otpEncryptionTargetBundle
+@@ -81,6 +96,7 @@ function AuthComponent({
+           contact: email,
+           otpId: otpId,
+           otpEncryptionTargetBundle: otpEncryptionTargetBundle,
++          publicKey: publicKey,
+           otpType: core.OtpType.Email,
+           otpLength: config.auth?.otpLength !== undefined ? Number(config.auth.otpLength) : undefined,
+           alphanumeric: config.auth?.otpAlphanumeric,
+@@ -91,11 +107,16 @@ function AuthComponent({
+         showTitle: false
+       });
      } catch (error) {
++      if (publicKey) await deleteApiKeyPair({
++        publicKey
++      }).catch(() => undefined);
        throw new Error(`Error initializing OTP: ${error}`);
      }
 -  };
 -  const handlePhoneSubmit = async (phone, formattedPhone) => {
 +  });
 +  const handlePhoneSubmit = (phone, formattedPhone) => beginOtpInitialization(async () => {
++    let publicKey;
      try {
++      publicKey = await createApiKeyPair();
        const {
          otpId,
-@@ -124,7 +135,7 @@ function AuthComponent({
+         otpEncryptionTargetBundle
+@@ -112,6 +133,7 @@ function AuthComponent({
+           formattedContact: formattedPhone,
+           otpId: otpId,
+           otpEncryptionTargetBundle: otpEncryptionTargetBundle,
++          publicKey: publicKey,
+           otpType: core.OtpType.Sms,
+           otpLength: config.auth?.otpLength !== undefined ? Number(config.auth.otpLength) : undefined,
+           alphanumeric: config.auth?.otpAlphanumeric,
+@@ -122,9 +144,12 @@ function AuthComponent({
+         showTitle: false
+       });
      } catch (error) {
++      if (publicKey) await deleteApiKeyPair({
++        publicKey
++      }).catch(() => undefined);
        throw new Error(`Error initializing OTP: ${error}`);
      }
 -  };
@@ -511,7 +577,7 @@ index 5ee5880fabef3171a3790eaa483ea3834c157962..231123232546f1b3a673e30d32c70ced
      pushPage({
        key: "Passkey Login",
 diff --git a/dist/components/auth/index.mjs b/dist/components/auth/index.mjs
-index 3671f707007f3779aa7da942aafbe4e1eb818a66..04d571883cab4614c35846acc0c3cfe5d827c292 100644
+index 3671f707007f3779aa7da942aafbe4e1eb818a66..3dbc5b113e50695f1721b5b7f98f28e70bd8e89e 100644
 --- a/dist/components/auth/index.mjs
 +++ b/dist/components/auth/index.mjs
 @@ -1,5 +1,6 @@
@@ -521,7 +587,16 @@ index 3671f707007f3779aa7da942aafbe4e1eb818a66..04d571883cab4614c35846acc0c3cfe5
  import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
  import { faDiscord, faXTwitter, faFacebook, faApple, faGoogle } from '@fortawesome/free-brands-svg-icons';
  import { OtpType } from '@turnkey/core';
-@@ -46,6 +47,16 @@ function AuthComponent(_ref) {
+@@ -36,6 +37,8 @@ function AuthComponent(_ref) {
+     handleXOauth = _useTurnkey.handleXOauth,
+     handleDiscordOauth = _useTurnkey.handleDiscordOauth,
+     initOtp = _useTurnkey.initOtp,
++    createApiKeyPair = _useTurnkey.createApiKeyPair,
++    deleteApiKeyPair = _useTurnkey.deleteApiKeyPair,
+     loginWithPasskey = _useTurnkey.loginWithPasskey,
+     signUpWithPasskey = _useTurnkey.signUpWithPasskey;
+   var _useModal = useModal(),
+@@ -46,6 +49,16 @@ function AuthComponent(_ref) {
      turnstile = _useTurnstile.turnstile,
      consumeToken = _useTurnstile.consumeToken,
      authEnabled = _useTurnstile.authEnabled;
@@ -538,43 +613,180 @@ index 3671f707007f3779aa7da942aafbe4e1eb818a66..04d571883cab4614c35846acc0c3cfe5
    if (!config || clientState === ClientState.Loading) {
      // Don't check ClientState.Error here. We already check in the modal root
      return jsx("div", {
-@@ -63,7 +74,7 @@ function AuthComponent(_ref) {
+@@ -63,110 +76,77 @@ function AuthComponent(_ref) {
      methodOrder = _ref2$methodOrder === void 0 ? [] : _ref2$methodOrder,
      _ref2$oauthOrder = _ref2.oauthOrder,
      oauthOrder = _ref2$oauthOrder === void 0 ? [] : _ref2$oauthOrder;
 -  var handleEmailSubmit = /*#__PURE__*/function () {
-+  var startEmailOtp = /*#__PURE__*/function () {
-     var _ref3 = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee(email) {
-       var _config$auth, _config$auth2, _yield$initOtp, otpId, otpEncryptionTargetBundle, _t, _t2, _t3, _t4;
-       return _regenerator().w(function (_context) {
-@@ -110,11 +121,16 @@ function AuthComponent(_ref) {
-         }
-       }, _callee, null, [[0, 3]]);
-     }));
+-    var _ref3 = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee(email) {
+-      var _config$auth, _config$auth2, _yield$initOtp, otpId, otpEncryptionTargetBundle, _t, _t2, _t3, _t4;
+-      return _regenerator().w(function (_context) {
+-        while (1) switch (_context.p = _context.n) {
+-          case 0:
+-            _context.p = 0;
+-            _t = initOtp;
+-            _t2 = _objectSpread2;
+-            _t3 = {
+-              otpType: OtpType.Email,
+-              contact: email
+-            };
+-            _context.n = 1;
+-            return consumeToken();
+-          case 1:
+-            _context.n = 2;
+-            return _t(_t2(_t3, _context.v));
+-          case 2:
+-            _yield$initOtp = _context.v;
+-            otpId = _yield$initOtp.otpId;
+-            otpEncryptionTargetBundle = _yield$initOtp.otpEncryptionTargetBundle;
+-            pushPage({
+-              key: "Verify OTP",
+-              content: jsx(OtpVerification, _objectSpread2({
+-                contact: email,
+-                otpId: otpId,
+-                otpEncryptionTargetBundle: otpEncryptionTargetBundle,
+-                otpType: OtpType.Email,
+-                otpLength: ((_config$auth = config.auth) === null || _config$auth === void 0 ? void 0 : _config$auth.otpLength) !== undefined ? Number(config.auth.otpLength) : undefined,
+-                alphanumeric: (_config$auth2 = config.auth) === null || _config$auth2 === void 0 ? void 0 : _config$auth2.otpAlphanumeric
+-              }, sessionKey && {
+-                sessionKey: sessionKey
+-              })),
+-              showTitle: false
+-            });
+-            _context.n = 4;
+-            break;
+-          case 3:
+-            _context.p = 3;
+-            _t4 = _context.v;
+-            throw new Error("Error initializing OTP: ".concat(_t4));
+-          case 4:
+-            return _context.a(2);
+-        }
+-      }, _callee, null, [[0, 3]]);
+-    }));
 -    return function handleEmailSubmit(_x) {
-+    return function startEmailOtp(_x) {
-       return _ref3.apply(this, arguments);
-     };
-   }();
+-      return _ref3.apply(this, arguments);
+-    };
+-  }();
 -  var handlePhoneSubmit = /*#__PURE__*/function () {
+-    var _ref4 = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee2(phone, formattedPhone) {
+-      var _config$auth3, _config$auth4, _yield$initOtp2, otpId, otpEncryptionTargetBundle, _t5, _t6, _t7, _t8;
+-      return _regenerator().w(function (_context2) {
+-        while (1) switch (_context2.p = _context2.n) {
+-          case 0:
+-            _context2.p = 0;
+-            _t5 = initOtp;
+-            _t6 = _objectSpread2;
+-            _t7 = {
+-              otpType: OtpType.Sms,
+-              contact: phone
+-            };
+-            _context2.n = 1;
+-            return consumeToken();
+-          case 1:
+-            _context2.n = 2;
+-            return _t5(_t6(_t7, _context2.v));
+-          case 2:
+-            _yield$initOtp2 = _context2.v;
+-            otpId = _yield$initOtp2.otpId;
+-            otpEncryptionTargetBundle = _yield$initOtp2.otpEncryptionTargetBundle;
+-            pushPage({
+-              key: "Verify OTP",
+-              content: jsx(OtpVerification, _objectSpread2({
+-                contact: phone,
+-                // Pass in the formatted phone number seperately. In the case that some weird formatting occurs, we don't want to send it into the initOtp request
+-                formattedContact: formattedPhone,
+-                otpId: otpId,
+-                otpEncryptionTargetBundle: otpEncryptionTargetBundle,
+-                otpType: OtpType.Sms,
+-                otpLength: ((_config$auth3 = config.auth) === null || _config$auth3 === void 0 ? void 0 : _config$auth3.otpLength) !== undefined ? Number(config.auth.otpLength) : undefined,
+-                alphanumeric: (_config$auth4 = config.auth) === null || _config$auth4 === void 0 ? void 0 : _config$auth4.otpAlphanumeric
+-              }, sessionKey && {
+-                sessionKey: sessionKey
+-              })),
+-              showTitle: false
+-            });
+-            _context2.n = 4;
+-            break;
+-          case 3:
+-            _context2.p = 3;
+-            _t8 = _context2.v;
+-            throw new Error("Error initializing OTP: ".concat(_t8));
+-          case 4:
+-            return _context2.a(2);
+-        }
+-      }, _callee2, null, [[0, 3]]);
+-    }));
+-    return function handlePhoneSubmit(_x2, _x3) {
+-      return _ref4.apply(this, arguments);
+-    };
+-  }();
++  var startEmailOtp = async function startEmailOtp(email) {
++    var publicKey;
++    try {
++      publicKey = await createApiKeyPair();
++      var _yield$initOtp = await initOtp(_objectSpread2({
++          otpType: OtpType.Email,
++          contact: email
++        }, await consumeToken())),
++        otpId = _yield$initOtp.otpId,
++        otpEncryptionTargetBundle = _yield$initOtp.otpEncryptionTargetBundle;
++      pushPage({
++        key: "Verify OTP",
++        content: jsx(OtpVerification, _objectSpread2({
++          contact: email,
++          otpId: otpId,
++          otpEncryptionTargetBundle: otpEncryptionTargetBundle,
++          publicKey: publicKey,
++          otpType: OtpType.Email,
++          otpLength: config.auth?.otpLength !== undefined ? Number(config.auth.otpLength) : undefined,
++          alphanumeric: config.auth?.otpAlphanumeric
++        }, sessionKey && {
++          sessionKey: sessionKey
++        })),
++        showTitle: false
++      });
++    } catch (error) {
++      if (publicKey) await deleteApiKeyPair({ publicKey: publicKey }).catch(function () {});
++      throw new Error("Error initializing OTP: ".concat(error));
++    }
++  };
 +  var handleEmailSubmit = function handleEmailSubmit(email) {
 +    return beginOtpInitialization(function () {
 +      return startEmailOtp(email);
 +    });
 +  };
-+  var startPhoneOtp = /*#__PURE__*/function () {
-     var _ref4 = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee2(phone, formattedPhone) {
-       var _config$auth3, _config$auth4, _yield$initOtp2, otpId, otpEncryptionTargetBundle, _t5, _t6, _t7, _t8;
-       return _regenerator().w(function (_context2) {
-@@ -163,10 +179,15 @@ function AuthComponent(_ref) {
-         }
-       }, _callee2, null, [[0, 3]]);
-     }));
--    return function handlePhoneSubmit(_x2, _x3) {
-+    return function startPhoneOtp(_x2, _x3) {
-       return _ref4.apply(this, arguments);
-     };
-   }();
++  var startPhoneOtp = async function startPhoneOtp(phone, formattedPhone) {
++    var publicKey;
++    try {
++      publicKey = await createApiKeyPair();
++      var _yield$initOtp2 = await initOtp(_objectSpread2({
++          otpType: OtpType.Sms,
++          contact: phone
++        }, await consumeToken())),
++        otpId = _yield$initOtp2.otpId,
++        otpEncryptionTargetBundle = _yield$initOtp2.otpEncryptionTargetBundle;
++      pushPage({
++        key: "Verify OTP",
++        content: jsx(OtpVerification, _objectSpread2({
++          contact: phone,
++          formattedContact: formattedPhone,
++          otpId: otpId,
++          otpEncryptionTargetBundle: otpEncryptionTargetBundle,
++          publicKey: publicKey,
++          otpType: OtpType.Sms,
++          otpLength: config.auth?.otpLength !== undefined ? Number(config.auth.otpLength) : undefined,
++          alphanumeric: config.auth?.otpAlphanumeric
++        }, sessionKey && {
++          sessionKey: sessionKey
++        })),
++        showTitle: false
++      });
++    } catch (error) {
++      if (publicKey) await deleteApiKeyPair({ publicKey: publicKey }).catch(function () {});
++      throw new Error("Error initializing OTP: ".concat(error));
++    }
++  };
 +  var handlePhoneSubmit = function handlePhoneSubmit(phone, formattedPhone) {
 +    return beginOtpInitialization(function () {
 +      return startPhoneOtp(phone, formattedPhone);

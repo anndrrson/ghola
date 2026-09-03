@@ -1,0 +1,258 @@
+diff --git a/dist/__stampers__/api/web/stamper.js b/dist/__stampers__/api/web/stamper.js
+index b4de8a19473b5a11efca8cb6cc03ee30b8f1550e..21e4d1dff861ae08d1065839ace714befd2e6773 100644
+--- a/dist/__stampers__/api/web/stamper.js
++++ b/dist/__stampers__/api/web/stamper.js
+@@ -80,29 +80,66 @@ class IndexedDbStamper {
+     }
+     async openDb() {
+         return new Promise((resolve, reject) => {
+-            const request = indexedDB.open(DB_NAME, 1);
++            const request = indexedDB.open(DB_NAME);
+             request.onupgradeneeded = (event) => {
+                 const db = event.target.result;
+                 if (!db.objectStoreNames.contains(DB_STORE)) {
+                     db.createObjectStore(DB_STORE);
+                 }
+             };
+-            request.onsuccess = () => resolve(request.result);
++            request.onsuccess = () => {
++                const db = request.result;
++                db.onversionchange = () => db.close();
++                if (db.objectStoreNames.contains(DB_STORE)) {
++                    resolve(db);
++                    return;
++                }
++                const nextVersion = db.version + 1;
++                db.close();
++                const repairRequest = indexedDB.open(DB_NAME, nextVersion);
++                repairRequest.onupgradeneeded = (event) => {
++                    const repairDb = event.target.result;
++                    if (!repairDb.objectStoreNames.contains(DB_STORE)) {
++                        repairDb.createObjectStore(DB_STORE);
++                    }
++                };
++                repairRequest.onsuccess = () => {
++                    const repairDb = repairRequest.result;
++                    repairDb.onversionchange = () => repairDb.close();
++                    resolve(repairDb);
++                };
++                repairRequest.onerror = () => reject(repairRequest.error);
++                repairRequest.onblocked = () => reject(new DOMException("Turnkey key storage upgrade was blocked by another tab.", "InvalidStateError"));
++            };
+             request.onerror = () => reject(request.error);
+         });
+     }
+     async storeKeyPair(publicKeyHex, privateKey) {
+         const db = await this.openDb();
+         return new Promise((resolve, reject) => {
+-            const tx = db.transaction(DB_STORE, "readwrite");
+-            const store = tx.objectStore(DB_STORE);
+-            store.put(privateKey, publicKeyHex);
++            let tx;
++            try {
++                tx = db.transaction(DB_STORE, "readwrite");
++                const store = tx.objectStore(DB_STORE);
++                store.put(privateKey, publicKeyHex);
++            }
++            catch (error) {
++                db.close();
++                reject(error);
++                return;
++            }
+             tx.oncomplete = () => {
+                 db.close();
+                 resolve();
+             };
+-            tx.onerror = () => reject(tx.error);
+-            tx.onabort = () => reject(tx.error);
++            tx.onerror = () => {
++                db.close();
++                reject(tx.error);
++            };
++            tx.onabort = () => {
++                db.close();
++                reject(tx.error);
++            };
+         });
+     }
+     async getPrivateKey(publicKeyHex) {
+@@ -160,14 +197,29 @@ class IndexedDbStamper {
+     async deleteKeyPair(publicKeyHex) {
+         const db = await this.openDb();
+         return new Promise((resolve, reject) => {
+-            const tx = db.transaction(DB_STORE, "readwrite");
+-            const store = tx.objectStore(DB_STORE);
+-            store.delete(publicKeyHex);
++            let tx;
++            try {
++                tx = db.transaction(DB_STORE, "readwrite");
++                const store = tx.objectStore(DB_STORE);
++                store.delete(publicKeyHex);
++            }
++            catch (error) {
++                db.close();
++                reject(error);
++                return;
++            }
+             tx.oncomplete = () => {
+                 db.close();
+                 resolve();
+             };
+-            tx.onerror = () => reject(tx.error);
++            tx.onerror = () => {
++                db.close();
++                reject(tx.error);
++            };
++            tx.onabort = () => {
++                db.close();
++                reject(tx.error);
++            };
+         });
+     }
+     async sign(payload, publicKeyHex, format) {
+diff --git a/dist/__stampers__/api/web/stamper.mjs b/dist/__stampers__/api/web/stamper.mjs
+index 0b8f26d46b0da3ac3ff9d46eb264131be1faf29c..34f870aafc1f013f2efab2dd42481f01b9601ecf 100644
+--- a/dist/__stampers__/api/web/stamper.mjs
++++ b/dist/__stampers__/api/web/stamper.mjs
+@@ -78,29 +78,66 @@ class IndexedDbStamper {
+     }
+     async openDb() {
+         return new Promise((resolve, reject) => {
+-            const request = indexedDB.open(DB_NAME, 1);
++            const request = indexedDB.open(DB_NAME);
+             request.onupgradeneeded = (event) => {
+                 const db = event.target.result;
+                 if (!db.objectStoreNames.contains(DB_STORE)) {
+                     db.createObjectStore(DB_STORE);
+                 }
+             };
+-            request.onsuccess = () => resolve(request.result);
++            request.onsuccess = () => {
++                const db = request.result;
++                db.onversionchange = () => db.close();
++                if (db.objectStoreNames.contains(DB_STORE)) {
++                    resolve(db);
++                    return;
++                }
++                const nextVersion = db.version + 1;
++                db.close();
++                const repairRequest = indexedDB.open(DB_NAME, nextVersion);
++                repairRequest.onupgradeneeded = (event) => {
++                    const repairDb = event.target.result;
++                    if (!repairDb.objectStoreNames.contains(DB_STORE)) {
++                        repairDb.createObjectStore(DB_STORE);
++                    }
++                };
++                repairRequest.onsuccess = () => {
++                    const repairDb = repairRequest.result;
++                    repairDb.onversionchange = () => repairDb.close();
++                    resolve(repairDb);
++                };
++                repairRequest.onerror = () => reject(repairRequest.error);
++                repairRequest.onblocked = () => reject(new DOMException("Turnkey key storage upgrade was blocked by another tab.", "InvalidStateError"));
++            };
+             request.onerror = () => reject(request.error);
+         });
+     }
+     async storeKeyPair(publicKeyHex, privateKey) {
+         const db = await this.openDb();
+         return new Promise((resolve, reject) => {
+-            const tx = db.transaction(DB_STORE, "readwrite");
+-            const store = tx.objectStore(DB_STORE);
+-            store.put(privateKey, publicKeyHex);
++            let tx;
++            try {
++                tx = db.transaction(DB_STORE, "readwrite");
++                const store = tx.objectStore(DB_STORE);
++                store.put(privateKey, publicKeyHex);
++            }
++            catch (error) {
++                db.close();
++                reject(error);
++                return;
++            }
+             tx.oncomplete = () => {
+                 db.close();
+                 resolve();
+             };
+-            tx.onerror = () => reject(tx.error);
+-            tx.onabort = () => reject(tx.error);
++            tx.onerror = () => {
++                db.close();
++                reject(tx.error);
++            };
++            tx.onabort = () => {
++                db.close();
++                reject(tx.error);
++            };
+         });
+     }
+     async getPrivateKey(publicKeyHex) {
+@@ -158,14 +195,29 @@ class IndexedDbStamper {
+     async deleteKeyPair(publicKeyHex) {
+         const db = await this.openDb();
+         return new Promise((resolve, reject) => {
+-            const tx = db.transaction(DB_STORE, "readwrite");
+-            const store = tx.objectStore(DB_STORE);
+-            store.delete(publicKeyHex);
++            let tx;
++            try {
++                tx = db.transaction(DB_STORE, "readwrite");
++                const store = tx.objectStore(DB_STORE);
++                store.delete(publicKeyHex);
++            }
++            catch (error) {
++                db.close();
++                reject(error);
++                return;
++            }
+             tx.oncomplete = () => {
+                 db.close();
+                 resolve();
+             };
+-            tx.onerror = () => reject(tx.error);
++            tx.onerror = () => {
++                db.close();
++                reject(tx.error);
++            };
++            tx.onabort = () => {
++                db.close();
++                reject(tx.error);
++            };
+         });
+     }
+     async sign(payload, publicKeyHex, format) {
+diff --git a/dist/__stampers__/passkey/base.js b/dist/__stampers__/passkey/base.js
+index c51ca4bd724f1d076f9d36272329ee39b152d1f1..d711e96dc3ab87238b251421c69202129beb13a5 100644
+--- a/dist/__stampers__/passkey/base.js
++++ b/dist/__stampers__/passkey/base.js
+@@ -53,7 +53,11 @@ class CrossPlatformPasskeyStamper {
+                     },
+                     authenticatorSelection: {
+                         authenticatorAttachment: config.publicKey?.authenticatorSelection?.authenticatorAttachment ??
+-                            undefined, // default to empty
++                            (this.config.withPlatformKey
++                                ? "platform"
++                                : this.config.withSecurityKey
++                                    ? "cross-platform"
++                                    : undefined),
+                         requireResidentKey: config.publicKey?.authenticatorSelection?.requireResidentKey ??
+                             true,
+                         residentKey: config.publicKey?.authenticatorSelection?.residentKey ?? "required",
+diff --git a/dist/__stampers__/passkey/base.mjs b/dist/__stampers__/passkey/base.mjs
+index 2e42e892ddaee9e7d1c971b1649ccdab921d53f9..ff1286f4e448bda96d425818682351fbf7af25e7 100644
+--- a/dist/__stampers__/passkey/base.mjs
++++ b/dist/__stampers__/passkey/base.mjs
+@@ -49,7 +49,11 @@ class CrossPlatformPasskeyStamper {
+                     },
+                     authenticatorSelection: {
+                         authenticatorAttachment: config.publicKey?.authenticatorSelection?.authenticatorAttachment ??
+-                            undefined, // default to empty
++                            (this.config.withPlatformKey
++                                ? "platform"
++                                : this.config.withSecurityKey
++                                    ? "cross-platform"
++                                    : undefined),
+                         requireResidentKey: config.publicKey?.authenticatorSelection?.requireResidentKey ??
+                             true,
+                         residentKey: config.publicKey?.authenticatorSelection?.residentKey ?? "required",

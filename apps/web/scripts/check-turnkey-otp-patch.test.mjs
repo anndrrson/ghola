@@ -4,7 +4,8 @@ import test from "node:test";
 
 import { verifyTurnkeyOtpInstall } from "./check-turnkey-otp-install.mjs";
 
-const patchPath = new URL("../patches/@turnkey__react-wallet-kit@2.4.2.patch", import.meta.url);
+const patchPath = new URL("../patches/@turnkey__react-wallet-kit@2.4.3.patch", import.meta.url);
+const corePatchPath = new URL("../patches/@turnkey__core@2.8.1.patch", import.meta.url);
 
 test("Turnkey OTP patch prevents stale or repeated verification", async () => {
   const source = await readFile(patchPath, "utf8");
@@ -15,12 +16,25 @@ test("Turnkey OTP patch prevents stale or repeated verification", async () => {
   assert.match(source, /normalizeOtpCode[\s\S]*?\.toUpperCase\(\)/);
   assert.match(source, /otpCode:\s*normalizedOtpCode/);
   assert.match(source, /beginOtpInitialization/);
+  assert.match(source, /publicKey\s*=\s*await createApiKeyPair\(\)[\s\S]*?await initOtp/);
+  assert.match(source, /publicKey:\s*publicKey/);
   assert.match(source, /dispatchEvent\(new Event\(["']ghola:turnkey-auth-modal-closed["']\)\)/);
   assert.match(source, /\[Turnkey OTP\] verification rejected/);
   assert.match(source, /Start over; do not retry it/);
   assert.doesNotMatch(source, /detail\.includes\(["']not found["']\)/);
   assert.match(source, /if \(!turnstileConfigured\) return \{\}/);
   assert.doesNotMatch(source, /^\+.*throw new Error\(["`]Error completing OTP/gm);
+});
+
+test("Turnkey key-store patch repairs stale Preview databases", async () => {
+  const source = await readFile(corePatchPath, "utf8");
+
+  assert.match(source, /indexedDB\.open\(DB_NAME\)/);
+  assert.match(source, /objectStoreNames\.contains\(DB_STORE\)/);
+  assert.match(source, /indexedDB\.open\(DB_NAME, nextVersion\)/);
+  assert.match(source, /onversionchange\s*=\s*\(\)\s*=>\s*.*\.close\(\)/);
+  assert.match(source, /tx\.onabort/);
+  assert.doesNotMatch(source, /^\+.*indexedDB\.open\(DB_NAME, 1\)/gm);
 });
 
 test("installed Turnkey OTP runtime contains the safety patch", async () => {
@@ -31,7 +45,8 @@ test("installed Turnkey OTP runtime contains the safety patch", async () => {
   const workspaceConfig = await readFile(new URL("../pnpm-workspace.yaml", import.meta.url), "utf8");
   assert.match(vercelConfig, /"installCommand":\s*"ONNXRUNTIME_NODE_INSTALL=skip corepack pnpm@10\.34\.5 install --frozen-lockfile"/);
   assert.match(packageJson, /check-turnkey-otp-install\.mjs/);
-  assert.match(workspaceConfig, /'@turnkey\/react-wallet-kit@2\.4\.3':\s*patches\/@turnkey__react-wallet-kit@2\.4\.2\.patch/);
+  assert.match(workspaceConfig, /'@turnkey\/core@2\.8\.1':\s*patches\/@turnkey__core@2\.8\.1\.patch/);
+  assert.match(workspaceConfig, /'@turnkey\/react-wallet-kit@2\.4\.3':\s*patches\/@turnkey__react-wallet-kit@2\.4\.3\.patch/);
 });
 
 test("release installs preserve the pinned Turnkey patches", async () => {
