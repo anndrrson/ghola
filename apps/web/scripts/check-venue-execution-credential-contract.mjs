@@ -508,6 +508,8 @@ export function checkLighterUniversalDepositBoundary({
     [envSource, "GHOLA_TURNKEY_QUERY_API_PRIVATE_KEY=", "lighter_turnkey_query_private_key_env_required"],
   ];
   for (const [source, value, code] of required) if (!source.includes(value)) failures.push(code);
+  const destinationChainDriftGuard = /if\s*\(\s*normalizeChainId\(resolved\.toChainId\)\s*!==\s*LIGHTER_UDA_CHAIN_ID\s*\)\s*\{\s*throw\s+lighterUdaError\(\s*"lighter_uda_create_destination_chain_mismatch"\s*,\s*502\s*\);\s*\}/.test(serverSource);
+  if (!destinationChainDriftGuard) failures.push("lighter_uda_destination_chain_drift_guard_required");
   const retryBranch = setupSource.indexOf("{retryForbidden ? (");
   const reconcileButton = setupSource.indexOf("onClick={onReconcile}", retryBranch);
   const generationBranch = setupSource.indexOf(") : (", retryBranch);

@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LIGHTER_FUNDING_ELIGIBILITY_ATTESTATION } from "@/lib/lighter-funding-eligibility";
+import { LighterDepositDestinationError } from "@/lib/lighter-universal-deposit-address.client";
 import { CarryAccountSetup } from "./CarryAccountSetup";
 
 const state = vi.hoisted(() => ({
@@ -460,6 +461,36 @@ describe("CarryAccountSetup", () => {
     expect(container.querySelector('[data-lighter-deposit-verified="false"]')).toBeTruthy();
     expect(container.textContent).toContain("Ghola's Lighter funding connection is not enabled yet. Do not send USDC.");
     expect(container.querySelector('[data-lighter-deposit-verified="true"]')).toBeNull();
+  });
+
+  it("explains provider destination-chain drift without blaming sign-in or allowing a retry", async () => {
+    const ownerAddress = `0x${"22".repeat(20)}`;
+    const storageKey = `ghola_lighter_uda_retry_forbidden_v1:${ownerAddress.toLowerCase()}`;
+    state.perpsAuthenticated = true;
+    state.recovery = {
+      account_commitment: "carry:account:test:0001",
+      lighter_activation: { owner_address: ownerAddress, reason: "venue_account_not_found" },
+    };
+    api.fetchLighterActivationReadiness.mockResolvedValue(lighterReadiness(ownerAddress));
+    api.fetchVerifiedLighterDepositDestination.mockRejectedValue(
+      new LighterDepositDestinationError("lighter_uda_create_destination_chain_mismatch", true),
+    );
+
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=lighter");
+    await flush();
+    await act(async () => container.querySelector<HTMLInputElement>("#lighter-funding-eligibility-consent")?.click());
+    const generate = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent === "Generate verified deposit address");
+    await act(async () => {
+      generate?.click();
+      await flush();
+    });
+
+    expect(api.fetchVerifiedLighterDepositDestination).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Lighter returned an unverified destination chain. Ghola sign-in succeeded and is not the issue. Funding is locked; do not retry or send USDC.");
+    expect(container.textContent).toContain("Check provider status");
+    expect(container.textContent).not.toContain("Generate verified deposit address");
+    expect(window.localStorage.getItem(storageKey)).toBe("1");
   });
 
   it("replays a previously persisted verified address only after fresh consent", async () => {

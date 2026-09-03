@@ -375,7 +375,11 @@ export function CarryAccountSetup({
           } catch {
             // In-memory lock still prevents another attempt in this session.
           }
-          setLighterDepositDestinationError("Address generation returned an ambiguous result. Generation is locked. A read-only status check can restore only a previously saved direct verification; provider history alone stays locked. Do not send USDC.");
+          setLighterDepositDestinationError(
+            caught instanceof Error && caught.message === "lighter_uda_create_destination_chain_mismatch"
+              ? "Lighter returned an unverified destination chain. Ghola sign-in succeeded and is not the issue. Funding is locked; do not retry or send USDC."
+              : "Address generation returned an ambiguous result. Generation is locked. A read-only status check can restore only a previously saved direct verification; provider history alone stays locked. Do not send USDC.",
+          );
         } else {
           setLighterDepositDestinationError(lighterDepositDestinationFailureMessage(caught));
         }

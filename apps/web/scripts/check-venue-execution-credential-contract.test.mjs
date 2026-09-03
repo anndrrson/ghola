@@ -446,6 +446,18 @@ test("rejects retrying or creating a Lighter destination before owner verificati
   );
 });
 
+test("rejects removing the Lighter UDA destination-chain drift guard", () => {
+  assert.throws(
+    () => lighterUdaBoundary({
+      serverSource: lighterUdaServer.replace(
+        "normalizeChainId(resolved.toChainId) !== LIGHTER_UDA_CHAIN_ID",
+        "false",
+      ),
+    }),
+    /lighter_uda_destination_chain_drift_guard_required/,
+  );
+});
+
 test("rejects removing the durable one-shot Lighter destination claim", () => {
   assert.throws(
     () => lighterUdaBoundary({

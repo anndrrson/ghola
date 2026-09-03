@@ -105,10 +105,12 @@ export async function createLighterUniversalDepositAddress({
   if (
     body.blocked !== false ||
     !resolved ||
-    resolved.actionType !== LIGHTER_UDA_ACTION_TYPE ||
-    normalizeChainId(resolved.toChainId) !== LIGHTER_UDA_CHAIN_ID
+    resolved.actionType !== LIGHTER_UDA_ACTION_TYPE
   ) {
     throw lighterUdaError("lighter_uda_create_response_invalid", 502);
+  }
+  if (normalizeChainId(resolved.toChainId) !== LIGHTER_UDA_CHAIN_ID) {
+    throw lighterUdaError("lighter_uda_create_destination_chain_mismatch", 502);
   }
   const responseOwner = validatedResponseAddress(resolved.userId);
   const depositAddress = validatedResponseAddress(body.depositAddr);

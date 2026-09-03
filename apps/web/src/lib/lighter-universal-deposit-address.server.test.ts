@@ -88,7 +88,7 @@ describe("Lighter Universal Deposit Address server boundary", () => {
     ["owner mismatch", OWNER, "lighter_uda_create_response_invalid", { userId: "0x1111111111111111111111111111111111111111" }, {}],
     ["blocked address", OWNER, "lighter_uda_create_response_invalid", {}, { blocked: true }],
     ["wrong action", OWNER, "lighter_uda_create_response_invalid", { actionType: "LIGHTER_SPOT" }, {}],
-    ["wrong chain", OWNER, "lighter_uda_create_response_invalid", { toChainId: "1" }, {}],
+    ["provider destination-chain drift", OWNER, "lighter_uda_create_destination_chain_mismatch", { toChainId: "1" }, {}],
     ["wrong token", OWNER, "lighter_uda_create_response_invalid", { toTokenAddress: "0x1111111111111111111111111111111111111111" }, {}],
     ["mismatched address recipient", OWNER, "lighter_uda_create_response_invalid", { recipientAddr: "0x1111111111111111111111111111111111111111" }, {}],
     ["numeric recipient", OWNER, "lighter_uda_create_response_invalid", { recipientAddr: 123 }, {}],

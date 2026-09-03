@@ -296,6 +296,32 @@ describe("POST /api/carry/lighter-deposit-destination", () => {
     expect(udaCalls(fetchSpy)).toHaveLength(1);
   });
 
+  it("locks funding and never retries when Lighter returns the wrong destination chain", async () => {
+    const fetchSpy = mockProfileAndUda("user-1", {
+      resolved: { toChainId: "1" },
+      private_provider_detail: SECRET,
+    });
+    const signed = await signedBody();
+    const first = await POST(destinationRequest(signed));
+    expect(first.status).toBe(502);
+    const firstText = await first.text();
+    expect(JSON.parse(firstText)).toEqual({
+      error: "lighter_uda_create_destination_chain_mismatch",
+      ambiguity: true,
+      retry_forbidden: true,
+      manual_reconciliation_required: true,
+      deposit_destination_verified: false,
+      funding_action_enabled: false,
+    });
+    expect(firstText).not.toContain(SECRET);
+    expect(udaCalls(fetchSpy)).toHaveLength(1);
+
+    const second = await POST(destinationRequest(signed));
+    expect(second.status).toBe(409);
+    expect((await second.json()).error).toBe("lighter_uda_attempt_ambiguous");
+    expect(udaCalls(fetchSpy)).toHaveLength(1);
+  });
+
   it("fails closed before Lighter when the server secret is absent", async () => {
     delete process.env.GHOLA_PRIVATE_ACCOUNT_REQUEST_PROOF_SECRET;
     const fetchSpy = mockProfileAndUda();
