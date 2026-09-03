@@ -172,6 +172,28 @@ export interface PrivateCoordinatorLockRecordV1 {
   expires_at: string;
 }
 
+export type PrivateAsterOwnerActivationAttemptStatus =
+  | "pending"
+  | "submitted"
+  | "accepted"
+  | "ambiguous"
+  | "rejected";
+
+export interface PrivateAsterOwnerActivationAttemptRecordV1 {
+  version: 1;
+  activation_id: string;
+  owner_commitment: string;
+  account_commitment: string;
+  owner_address: `0x${string}`;
+  nonce: string;
+  status: PrivateAsterOwnerActivationAttemptStatus;
+  provider_uid_commitment: string | null;
+  failure_code: string | null;
+  created_at: string;
+  expires_at: string;
+  updated_at: string;
+}
+
 export type PrivateLighterUdaAttemptStatus = "pending" | "verified" | "ambiguous";
 
 export interface PrivateLighterUdaDestinationV1 {
@@ -954,6 +976,9 @@ type SettlementRow = Omit<PrivateSettlementRecordV1, "version" | "evidence"> & {
 type CoordinatorLockRow = Omit<PrivateCoordinatorLockRecordV1, "version"> & {
   version?: number;
 };
+type AsterOwnerActivationAttemptRow = Omit<PrivateAsterOwnerActivationAttemptRecordV1, "version"> & {
+  version?: number;
+};
 type LighterUdaAttemptRow = Omit<PrivateLighterUdaAttemptRecordV1, "version" | "destination"> & {
   version?: number;
   destination: unknown;
@@ -1180,6 +1205,8 @@ const auctionOrders = new Map<string, PrivateAuctionOrderRecordV1>();
 const auctionClearings = new Map<string, PrivateAuctionClearingRecordV1>();
 const auctionPreparedTransactions = new Map<string, PrivateAuctionPreparedTransactionRecordV1>();
 const coordinatorLocks = new Map<string, PrivateCoordinatorLockRecordV1>();
+const asterOwnerActivationAttemptsByOwner = new Map<string, PrivateAsterOwnerActivationAttemptRecordV1>();
+const asterOwnerActivationAttemptsById = new Map<string, PrivateAsterOwnerActivationAttemptRecordV1>();
 const lighterUdaAttemptsByOwner = new Map<string, PrivateLighterUdaAttemptRecordV1>();
 const lighterUdaAttemptsByWallet = new Map<string, PrivateLighterUdaAttemptRecordV1>();
 const lighterDepositExpectationsByHash = new Map<string, PrivateLighterDepositExpectationRecordV1>();
@@ -3566,6 +3593,10 @@ export async function acquirePrivateCoordinatorLock(input: {
   };
   const sql = await getSql();
   if (!sql) {
+    const current = coordinatorLocks.get(lock.lock_id);
+    if (current && new Date(current.expires_at).getTime() > input.now.getTime()) {
+      return { acquired: false, lock: current };
+    }
     coordinatorLocks.set(lock.lock_id, lock);
     return { acquired: true, lock };
   }
@@ -3624,6 +3655,273 @@ export async function getPrivateCoordinatorLock(
     LIMIT 1
   `) as CoordinatorLockRow[];
   return rows[0] ? coordinatorLockRow(rows[0]) : null;
+}
+
+export async function getPrivateAsterOwnerActivationAttempt(input: {
+  owner_commitment: string;
+  owner_address: `0x${string}`;
+  activation_id?: string;
+}): Promise<PrivateAsterOwnerActivationAttemptRecordV1 | null> {
+  const ownerAddress = input.owner_address.toLowerCase() as `0x${string}`;
+  const sql = await getSql();
+  if (sql) {
+    await ensureSchema(sql);
+    const rows = input.activation_id
+      ? (await sql`
+          SELECT * FROM private_account_aster_owner_activation_attempts
+          WHERE owner_commitment = ${input.owner_commitment}
+            AND owner_address = ${ownerAddress}
+            AND activation_id = ${input.activation_id}
+          LIMIT 1
+        `) as AsterOwnerActivationAttemptRow[]
+      : (await sql`
+          SELECT * FROM private_account_aster_owner_activation_attempts
+          WHERE owner_commitment = ${input.owner_commitment}
+            AND owner_address = ${ownerAddress}
+          LIMIT 1
+        `) as AsterOwnerActivationAttemptRow[];
+    return rows[0] ? asterOwnerActivationAttemptRow(rows[0]) : null;
+  }
+  if (process.env.NODE_ENV !== "test") {
+    throw asterOwnerActivationLedgerError("aster_owner_activation_attempt_ledger_unconfigured", 503);
+  }
+  const record = input.activation_id
+    ? asterOwnerActivationAttemptsById.get(input.activation_id) ?? null
+    : asterOwnerActivationAttemptsByOwner.get(asterOwnerActivationKey(input.owner_commitment, ownerAddress)) ?? null;
+  if (
+    !record ||
+    record.owner_commitment !== input.owner_commitment ||
+    record.owner_address.toLowerCase() !== ownerAddress
+  ) return null;
+  return record;
+}
+
+export async function createPrivateAsterOwnerActivationAttempt(input: {
+  activation_id: string;
+  owner_commitment: string;
+  account_commitment: string;
+  owner_address: `0x${string}`;
+  nonce: string;
+  now: Date;
+  ttl_ms: number;
+}): Promise<{
+  created: boolean;
+  record: PrivateAsterOwnerActivationAttemptRecordV1;
+}> {
+  const ownerAddress = input.owner_address.toLowerCase() as `0x${string}`;
+  const now = input.now.toISOString();
+  const record: PrivateAsterOwnerActivationAttemptRecordV1 = {
+    version: 1,
+    activation_id: input.activation_id,
+    owner_commitment: input.owner_commitment,
+    account_commitment: input.account_commitment,
+    owner_address: ownerAddress,
+    nonce: input.nonce,
+    status: "pending",
+    provider_uid_commitment: null,
+    failure_code: null,
+    created_at: now,
+    expires_at: new Date(input.now.getTime() + input.ttl_ms).toISOString(),
+    updated_at: now,
+  };
+  const sql = await getSql();
+  if (sql) {
+    await ensureSchema(sql);
+    const rows = (await sql`
+      INSERT INTO private_account_aster_owner_activation_attempts (
+        activation_id,
+        owner_commitment,
+        account_commitment,
+        owner_address,
+        nonce,
+        status,
+        provider_uid_commitment,
+        failure_code,
+        created_at,
+        expires_at,
+        updated_at
+      ) VALUES (
+        ${record.activation_id},
+        ${record.owner_commitment},
+        ${record.account_commitment},
+        ${record.owner_address},
+        ${record.nonce},
+        'pending',
+        NULL,
+        NULL,
+        ${record.created_at},
+        ${record.expires_at},
+        ${record.updated_at}
+      )
+      ON CONFLICT (owner_commitment, owner_address) DO UPDATE SET
+        activation_id = EXCLUDED.activation_id,
+        account_commitment = EXCLUDED.account_commitment,
+        nonce = EXCLUDED.nonce,
+        status = 'pending',
+        provider_uid_commitment = NULL,
+        failure_code = NULL,
+        created_at = EXCLUDED.created_at,
+        expires_at = EXCLUDED.expires_at,
+        updated_at = EXCLUDED.updated_at
+      WHERE private_account_aster_owner_activation_attempts.status = 'rejected'
+        OR (
+          private_account_aster_owner_activation_attempts.status = 'pending'
+          AND private_account_aster_owner_activation_attempts.expires_at <= ${now}
+        )
+      RETURNING *
+    `) as AsterOwnerActivationAttemptRow[];
+    if (rows[0]) return { created: true, record: asterOwnerActivationAttemptRow(rows[0]) };
+    const existing = await getPrivateAsterOwnerActivationAttempt({
+      owner_commitment: input.owner_commitment,
+      owner_address: ownerAddress,
+    });
+    if (!existing) {
+      throw asterOwnerActivationLedgerError("aster_owner_activation_attempt_ledger_unavailable", 503);
+    }
+    return { created: false, record: existing };
+  }
+  if (process.env.NODE_ENV !== "test") {
+    throw asterOwnerActivationLedgerError("aster_owner_activation_attempt_ledger_unconfigured", 503);
+  }
+  const key = asterOwnerActivationKey(input.owner_commitment, ownerAddress);
+  const existing = asterOwnerActivationAttemptsByOwner.get(key);
+  if (
+    existing &&
+    existing.status !== "rejected" &&
+    !(existing.status === "pending" && new Date(existing.expires_at).getTime() <= input.now.getTime())
+  ) return { created: false, record: existing };
+  if (existing) asterOwnerActivationAttemptsById.delete(existing.activation_id);
+  cachePrivateAsterOwnerActivationAttempt(record);
+  return { created: true, record };
+}
+
+export async function claimPrivateAsterOwnerActivationSubmission(input: {
+  activation_id: string;
+  owner_commitment: string;
+  account_commitment: string;
+  owner_address: `0x${string}`;
+  nonce: string;
+  now: Date;
+}): Promise<{
+  claimed: boolean;
+  record: PrivateAsterOwnerActivationAttemptRecordV1 | null;
+}> {
+  const ownerAddress = input.owner_address.toLowerCase() as `0x${string}`;
+  const updatedAt = input.now.toISOString();
+  const sql = await getSql();
+  if (sql) {
+    await ensureSchema(sql);
+    const rows = (await sql`
+      UPDATE private_account_aster_owner_activation_attempts
+      SET status = 'submitted', updated_at = ${updatedAt}
+      WHERE activation_id = ${input.activation_id}
+        AND owner_commitment = ${input.owner_commitment}
+        AND account_commitment = ${input.account_commitment}
+        AND owner_address = ${ownerAddress}
+        AND nonce = ${input.nonce}
+        AND status = 'pending'
+        AND expires_at > ${updatedAt}
+      RETURNING *
+    `) as AsterOwnerActivationAttemptRow[];
+    if (rows[0]) return { claimed: true, record: asterOwnerActivationAttemptRow(rows[0]) };
+    return {
+      claimed: false,
+      record: await getPrivateAsterOwnerActivationAttempt({
+        owner_commitment: input.owner_commitment,
+        owner_address: ownerAddress,
+        activation_id: input.activation_id,
+      }),
+    };
+  }
+  if (process.env.NODE_ENV !== "test") {
+    throw asterOwnerActivationLedgerError("aster_owner_activation_attempt_ledger_unconfigured", 503);
+  }
+  const current = await getPrivateAsterOwnerActivationAttempt({
+    owner_commitment: input.owner_commitment,
+    owner_address: ownerAddress,
+    activation_id: input.activation_id,
+  });
+  if (
+    !current ||
+    current.account_commitment !== input.account_commitment ||
+    current.nonce !== input.nonce ||
+    current.status !== "pending" ||
+    new Date(current.expires_at).getTime() <= input.now.getTime()
+  ) return { claimed: false, record: current };
+  const claimed: PrivateAsterOwnerActivationAttemptRecordV1 = {
+    ...current,
+    status: "submitted",
+    updated_at: updatedAt,
+  };
+  cachePrivateAsterOwnerActivationAttempt(claimed);
+  return { claimed: true, record: claimed };
+}
+
+export async function settlePrivateAsterOwnerActivationAttempt(input: {
+  activation_id: string;
+  owner_commitment: string;
+  account_commitment: string;
+  owner_address: `0x${string}`;
+  nonce: string;
+  status: "accepted" | "ambiguous" | "rejected";
+  provider_uid_commitment: string | null;
+  failure_code: string | null;
+  now: Date;
+}): Promise<PrivateAsterOwnerActivationAttemptRecordV1> {
+  if (
+    (input.status === "accepted" && (!input.provider_uid_commitment || input.failure_code !== null)) ||
+    (input.status !== "accepted" && (input.provider_uid_commitment !== null || !input.failure_code))
+  ) {
+    throw asterOwnerActivationLedgerError("aster_owner_activation_attempt_settlement_invalid", 500);
+  }
+  const ownerAddress = input.owner_address.toLowerCase() as `0x${string}`;
+  const updatedAt = input.now.toISOString();
+  const sql = await getSql();
+  if (sql) {
+    await ensureSchema(sql);
+    const rows = (await sql`
+      UPDATE private_account_aster_owner_activation_attempts
+      SET
+        status = ${input.status},
+        provider_uid_commitment = ${input.provider_uid_commitment},
+        failure_code = ${input.failure_code},
+        updated_at = ${updatedAt}
+      WHERE activation_id = ${input.activation_id}
+        AND owner_commitment = ${input.owner_commitment}
+        AND account_commitment = ${input.account_commitment}
+        AND owner_address = ${ownerAddress}
+        AND nonce = ${input.nonce}
+        AND status = 'submitted'
+      RETURNING *
+    `) as AsterOwnerActivationAttemptRow[];
+    if (rows[0]) return asterOwnerActivationAttemptRow(rows[0]);
+    throw asterOwnerActivationLedgerError("aster_owner_activation_attempt_settlement_conflict", 409);
+  }
+  if (process.env.NODE_ENV !== "test") {
+    throw asterOwnerActivationLedgerError("aster_owner_activation_attempt_ledger_unconfigured", 503);
+  }
+  const current = await getPrivateAsterOwnerActivationAttempt({
+    owner_commitment: input.owner_commitment,
+    owner_address: ownerAddress,
+    activation_id: input.activation_id,
+  });
+  if (
+    !current ||
+    current.account_commitment !== input.account_commitment ||
+    current.nonce !== input.nonce ||
+    current.status !== "submitted"
+  ) {
+    throw asterOwnerActivationLedgerError("aster_owner_activation_attempt_settlement_conflict", 409);
+  }
+  const settled: PrivateAsterOwnerActivationAttemptRecordV1 = {
+    ...current,
+    status: input.status,
+    provider_uid_commitment: input.provider_uid_commitment,
+    failure_code: input.failure_code,
+    updated_at: updatedAt,
+  };
+  cachePrivateAsterOwnerActivationAttempt(settled);
+  return settled;
 }
 
 export async function claimPrivateLighterUdaAttempt(input: {
@@ -3914,6 +4212,18 @@ export function resetPrivateLighterUdaAttemptsForTests() {
   lighterUdaAttemptsByOwner.clear();
   lighterUdaAttemptsByWallet.clear();
   lighterDepositExpectationsByHash.clear();
+}
+
+function asterOwnerActivationKey(ownerCommitment: string, ownerAddress: string) {
+  return `${ownerCommitment}:${ownerAddress.toLowerCase()}`;
+}
+
+function cachePrivateAsterOwnerActivationAttempt(record: PrivateAsterOwnerActivationAttemptRecordV1) {
+  asterOwnerActivationAttemptsByOwner.set(
+    asterOwnerActivationKey(record.owner_commitment, record.owner_address),
+    record,
+  );
+  asterOwnerActivationAttemptsById.set(record.activation_id, record);
 }
 
 function cachePrivateLighterUdaAttempt(record: PrivateLighterUdaAttemptRecordV1) {
@@ -6143,6 +6453,8 @@ export async function resetPrivateAccountStoreForTests() {
   auctionClearings.clear();
   auctionPreparedTransactions.clear();
   coordinatorLocks.clear();
+  asterOwnerActivationAttemptsByOwner.clear();
+  asterOwnerActivationAttemptsById.clear();
   lighterUdaAttemptsByOwner.clear();
   lighterUdaAttemptsByWallet.clear();
   lighterDepositExpectationsByHash.clear();
@@ -6884,6 +7196,34 @@ async function ensureSchema(sql: NeonSql): Promise<void> {
       acquired_at TIMESTAMPTZ NOT NULL,
       expires_at TIMESTAMPTZ NOT NULL
     )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS private_account_aster_owner_activation_attempts (
+      activation_id TEXT PRIMARY KEY,
+      owner_commitment TEXT NOT NULL,
+      account_commitment TEXT NOT NULL,
+      owner_address TEXT NOT NULL,
+      nonce TEXT NOT NULL,
+      status TEXT NOT NULL,
+      provider_uid_commitment TEXT,
+      failure_code TEXT,
+      created_at TIMESTAMPTZ NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      CHECK (activation_id ~ '^aster_owner_activation_[0-9a-f]{64}$'),
+      CHECK (owner_address ~ '^0x[0-9a-f]{40}$'),
+      CHECK (nonce ~ '^[0-9]{1,32}$'),
+      CHECK (status IN ('pending', 'submitted', 'accepted', 'ambiguous', 'rejected')),
+      CHECK (
+        (status = 'accepted' AND provider_uid_commitment IS NOT NULL AND failure_code IS NULL)
+        OR (status IN ('ambiguous', 'rejected') AND provider_uid_commitment IS NULL AND failure_code IS NOT NULL)
+        OR (status IN ('pending', 'submitted') AND provider_uid_commitment IS NULL AND failure_code IS NULL)
+      )
+    )
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS private_account_aster_owner_activation_owner_unique
+    ON private_account_aster_owner_activation_attempts (owner_commitment, owner_address)
   `;
   await sql`
     CREATE TABLE IF NOT EXISTS private_account_lighter_uda_attempts (
@@ -7844,6 +8184,48 @@ function coordinatorLockRow(row: CoordinatorLockRow): PrivateCoordinatorLockReco
   };
 }
 
+function asterOwnerActivationAttemptRow(
+  row: AsterOwnerActivationAttemptRow,
+): PrivateAsterOwnerActivationAttemptRecordV1 {
+  const ownerAddress = typeof row.owner_address === "string" && /^0x[0-9a-f]{40}$/.test(row.owner_address)
+    ? row.owner_address as `0x${string}`
+    : null;
+  const createdAt = persistedDateString(row.created_at);
+  const expiresAt = persistedDateString(row.expires_at);
+  const updatedAt = persistedDateString(row.updated_at);
+  const status = row.status;
+  const accepted = status === "accepted";
+  const failed = status === "ambiguous" || status === "rejected";
+  if (
+    !/^aster_owner_activation_[0-9a-f]{64}$/.test(row.activation_id) ||
+    typeof row.owner_commitment !== "string" || !row.owner_commitment ||
+    typeof row.account_commitment !== "string" || !row.account_commitment ||
+    !ownerAddress ||
+    !/^[0-9]{1,32}$/.test(row.nonce) ||
+    (status !== "pending" && status !== "submitted" && !accepted && !failed) ||
+    !createdAt || !expiresAt || !updatedAt ||
+    (accepted && (typeof row.provider_uid_commitment !== "string" || !/^sha256:[0-9a-f]{64}$/.test(row.provider_uid_commitment) || row.failure_code !== null)) ||
+    (failed && (row.provider_uid_commitment !== null || typeof row.failure_code !== "string" || !/^aster_owner_activation_[a-z0-9_]{3,100}$/.test(row.failure_code))) ||
+    (!accepted && !failed && (row.provider_uid_commitment !== null || row.failure_code !== null))
+  ) {
+    throw asterOwnerActivationLedgerError("aster_owner_activation_attempt_ledger_corrupt", 503);
+  }
+  return {
+    version: 1,
+    activation_id: row.activation_id,
+    owner_commitment: row.owner_commitment,
+    account_commitment: row.account_commitment,
+    owner_address: ownerAddress,
+    nonce: row.nonce,
+    status,
+    provider_uid_commitment: accepted ? row.provider_uid_commitment as string : null,
+    failure_code: failed ? row.failure_code as string : null,
+    created_at: createdAt,
+    expires_at: expiresAt,
+    updated_at: updatedAt,
+  };
+}
+
 function lighterUdaAttemptRow(row: LighterUdaAttemptRow): PrivateLighterUdaAttemptRecordV1 {
   const record = lighterUdaAttemptRecord({ ...row, version: 1 });
   if (!record) throw lighterUdaLedgerError("lighter_uda_attempt_ledger_corrupt", 503);
@@ -8060,6 +8442,10 @@ function persistedDateString(value: unknown): string | null {
 }
 
 function lighterUdaLedgerError(code: string, status: number) {
+  return Object.assign(new Error(code), { code, status });
+}
+
+function asterOwnerActivationLedgerError(code: string, status: number) {
   return Object.assign(new Error(code), { code, status });
 }
 

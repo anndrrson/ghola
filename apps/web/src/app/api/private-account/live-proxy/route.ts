@@ -23,6 +23,13 @@ type ProxyBody = {
 export async function POST(req: Request) {
   const startedAt = Date.now();
   const correlationId = liveCorrelationId(req.headers.get("x-ghola-correlation-id"));
+  const requestOrigin = new URL(req.url).origin;
+  if (req.headers.get("origin") !== requestOrigin) {
+    return json({ error: "live_proxy_cross_origin_forbidden" }, 403);
+  }
+  if (!isApplicationJson(req.headers.get("content-type"))) {
+    return json({ error: "live_proxy_json_required" }, 415);
+  }
   const owner = await privateAccountOwnerFromRequest(req);
   if (!owner) return unauthorized();
 
@@ -91,7 +98,8 @@ export async function POST(req: Request) {
   } catch (error) {
     const durationMs = Date.now() - startedAt;
     const ambiguous = target.pathname === "/v1/private-account/actions/execute" ||
-      target.pathname === "/v1/private-account/connectors/submit";
+      target.pathname === "/v1/private-account/connectors/submit" ||
+      target.pathname === "/v1/private-account/platforms/aster/activate/complete";
     console.error(JSON.stringify({
       level: "error",
       message: "private_account_live_proxy_failed",
@@ -101,14 +109,18 @@ export async function POST(req: Request) {
       error_name: error instanceof Error ? error.name : "unknown",
     }));
     await emitOperationalAlert({
-      code: ambiguous ? "connector_submit_ambiguous" : "private_account_live_proxy_unavailable",
+      code: target.pathname === "/v1/private-account/platforms/aster/activate/complete"
+        ? "aster_owner_activation_outcome_ambiguous"
+        : ambiguous ? "connector_submit_ambiguous" : "private_account_live_proxy_unavailable",
       route: target.pathname,
       severity: "critical",
       correlation_id: correlationId,
       duration_ms: durationMs,
     });
     return new Response(JSON.stringify({
-      error: ambiguous ? "connector_submit_ambiguous" : "private_account_live_proxy_unavailable",
+      error: target.pathname === "/v1/private-account/platforms/aster/activate/complete"
+        ? "aster_owner_activation_outcome_ambiguous"
+        : ambiguous ? "connector_submit_ambiguous" : "private_account_live_proxy_unavailable",
       correlation_id: correlationId,
       retry_forbidden: ambiguous,
     }), {
@@ -128,6 +140,10 @@ function liveCorrelationId(value: string | null): string {
   return /^[a-zA-Z0-9._:-]{12,96}$/.test(normalized)
     ? normalized
     : `ghola-${randomUUID()}`;
+}
+
+function isApplicationJson(value: string | null): boolean {
+  return value?.split(";", 1)[0]?.trim().toLowerCase() === "application/json";
 }
 
 function readProxyBody(value: unknown): ProxyBody | null {

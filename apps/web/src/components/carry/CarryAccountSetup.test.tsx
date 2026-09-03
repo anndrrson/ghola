@@ -23,6 +23,10 @@ const api = vi.hoisted(() => ({
   checkLighterDepositReconciliation: vi.fn(),
   verifyLighterOwnerRecoveryReadiness: vi.fn(),
   signLighterRecoveryReadiness: vi.fn(),
+  ensureWalletPair: vi.fn(),
+  signAsterOwnerActivation: vi.fn(),
+  prepareAsterOwnerActivation: vi.fn(),
+  completeAsterOwnerActivation: vi.fn(),
   prepareAsterProgrammaticCredential: vi.fn(),
   prepareLighterProgrammaticCredential: vi.fn(),
 }));
@@ -74,12 +78,13 @@ vi.mock("@/lib/perps-turnkey-provider", () => ({
     configured: true,
     hasPasskey: true,
     loading: false,
-    ensureWalletPair: vi.fn(),
+    ensureWalletPair: api.ensureWalletPair,
     login: api.loginPerps,
     logout: vi.fn(),
     createPasskey: vi.fn(),
     replaceWalletPair: vi.fn(),
     signAsterAgentApproval: vi.fn(),
+    signAsterOwnerActivation: api.signAsterOwnerActivation,
     signLighterApiKeyAssociation: vi.fn(),
     signLighterDepositAuthorization: vi.fn(),
     signLighterRecoveryReadiness: api.signLighterRecoveryReadiness,
@@ -89,8 +94,10 @@ vi.mock("@/lib/private-account-client", () => ({
   getHyperliquidExecutionVaultStatus: api.getHyperliquidExecutionVaultStatus,
   getPrivateAgentPassport: api.getPrivateAgentPassport,
   linkPrivateAgentPlatform: vi.fn(),
+  completeAsterOwnerActivation: api.completeAsterOwnerActivation,
   completeAsterProgrammaticCredential: vi.fn(),
   completeLighterProgrammaticCredential: vi.fn(),
+  prepareAsterOwnerActivation: api.prepareAsterOwnerActivation,
   prepareAsterProgrammaticCredential: api.prepareAsterProgrammaticCredential,
   prepareLighterProgrammaticCredential: api.prepareLighterProgrammaticCredential,
 }));
@@ -170,6 +177,27 @@ describe("CarryAccountSetup", () => {
     api.reconcileExistingLighterDepositDestination.mockReset();
     api.checkLighterDepositReconciliation.mockReset();
     api.verifyLighterOwnerRecoveryReadiness.mockReset();
+    api.ensureWalletPair.mockReset().mockResolvedValue({
+      owner: { address: `0x${"22".repeat(20)}`, path: "m/44'/60'/0'/0/0" },
+    });
+    api.signAsterOwnerActivation.mockReset().mockResolvedValue(`0x${"11".repeat(65)}`);
+    api.prepareAsterOwnerActivation.mockReset().mockResolvedValue({
+      version: 1,
+      activation_id: `aster_owner_activation_${"ab".repeat(32)}`,
+      account_commitment: "carry:account:test:0001",
+      venue_id: "aster",
+      owner_address: `0x${"22".repeat(20)}`,
+      challenge: {
+        version: 1,
+        venue: "aster",
+        ownerAddress: `0x${"22".repeat(20)}`,
+        nonce: "501182",
+        message: "You are signing into Astherus 501182",
+        chainId: 56,
+        setup: { mayDeposit: false, mayTrade: false, mayTransfer: false, mayWithdraw: false },
+      },
+    });
+    api.completeAsterOwnerActivation.mockReset().mockResolvedValue({ status: "owner_login_accepted" });
     api.signLighterRecoveryReadiness.mockReset();
     api.prepareAsterProgrammaticCredential.mockReset();
     api.prepareLighterProgrammaticCredential.mockReset();
@@ -367,8 +395,9 @@ describe("CarryAccountSetup", () => {
     expect(container.querySelector('a[href="https://app.lighter.xyz/"]')).toBeNull();
   });
 
-  it("surfaces external activation only when that venue is required by the pair", async () => {
+  it("activates the exact Aster owner in-app without opening Aster or registering an agent", async () => {
     state.search = "long_venue=aster&short_venue=lighter";
+    state.perpsAuthenticated = true;
     state.recovery = {
       account_commitment: "carry:account:test:0001",
       aster_activation: {
@@ -379,8 +408,19 @@ describe("CarryAccountSetup", () => {
 
     await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=aster&short_venue=lighter");
 
-    expect(container.querySelector('a[href="https://www.asterdex.com/en"]')).toBeTruthy();
+    expect(container.querySelector('a[href="https://www.asterdex.com/en"]')).toBeNull();
     expect(container.querySelector('a[href="https://app.lighter.xyz/"]')).toBeNull();
+    const activate = [...container.querySelectorAll("button")]
+      .find((button) => button.textContent?.trim() === "Activate Aster owner securely");
+    expect(activate).toBeTruthy();
+    await act(async () => {
+      activate?.click();
+      await flush();
+    });
+    expect(api.prepareAsterOwnerActivation).toHaveBeenCalledOnce();
+    expect(api.signAsterOwnerActivation).toHaveBeenCalledOnce();
+    expect(api.completeAsterOwnerActivation).toHaveBeenCalledOnce();
+    expect(api.prepareAsterProgrammaticCredential).not.toHaveBeenCalled();
   });
 
   it("keeps Lighter address generation disabled until explicit eligibility consent", async () => {

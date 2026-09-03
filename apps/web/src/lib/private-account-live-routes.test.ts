@@ -22,6 +22,7 @@ describe("private-account live routes", () => {
     expect(allowsSerializedOwnerTransaction("/v1/private-account/platforms/lighter/complete")).toBe(true);
     expect(allowsSerializedOwnerTransaction("/v1/private-account/platforms/lighter/recovery/prepare")).toBe(false);
     expect(allowsSerializedOwnerTransaction("/v1/private-account/platforms/aster/complete")).toBe(false);
+    expect(allowsSerializedOwnerTransaction("/v1/private-account/platforms/aster/activate/complete")).toBe(false);
   });
 
   it("allows only the no-submit Lighter recovery preparation endpoint", () => {

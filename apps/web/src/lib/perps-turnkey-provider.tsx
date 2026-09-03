@@ -52,8 +52,10 @@ import {
 import type { AsterV3AgentApprovalTypedData } from "./aster-agent-onboarding";
 import {
   signAsterAgentApprovalWithTurnkey,
+  signAsterOwnerActivationWithTurnkey,
   TURNKEY_PERPS_OWNER_PATH,
 } from "./perps-turnkey-aster-signing";
+import type { AsterOwnerActivationChallenge } from "./aster-owner-activation";
 import type { LighterChangePubKeyTransactionPlan } from "./lighter-agent-association";
 import { signLighterChangePubKeyWithTurnkey } from "./perps-turnkey-lighter-signing";
 import { signLighterRecoveryReadinessWithTurnkey } from "./perps-turnkey-lighter-recovery-signing";
@@ -242,6 +244,7 @@ interface PerpsTurnkeyContextValue {
   signCarryCollateralReview: (review: unknown) => Promise<`0x${string}`>;
   signAgentBinding: (message: string) => Promise<`0x${string}`>;
   signAsterAgentApproval: (typedData: AsterV3AgentApprovalTypedData) => Promise<`0x${string}`>;
+  signAsterOwnerActivation: (challenge: AsterOwnerActivationChallenge) => Promise<`0x${string}`>;
   signLighterKeyAssociation: (transactionPlan: LighterChangePubKeyTransactionPlan) => Promise<{
     raw_transaction: `0x02${string}`;
     transaction_hash: `0x${string}`;
@@ -284,6 +287,7 @@ const PerpsTurnkeyContext = createContext<PerpsTurnkeyContextValue>({
   signCarryCollateralReview: unavailable,
   signAgentBinding: unavailable,
   signAsterAgentApproval: unavailable,
+  signAsterOwnerActivation: unavailable,
   signLighterKeyAssociation: unavailable,
   signSealingBytes: unavailable,
   configureHyperliquid: unavailable,
@@ -365,6 +369,7 @@ const CONTEXT_DEFAULTS = {
   signCarryCollateralReview: unavailable,
   signAgentBinding: unavailable,
   signAsterAgentApproval: unavailable,
+  signAsterOwnerActivation: unavailable,
   signLighterKeyAssociation: unavailable,
   signSealingBytes: unavailable,
   configureHyperliquid: unavailable,
@@ -977,6 +982,21 @@ function PerpsTurnkeySession({ children }: { children: ReactNode }) {
     });
   }, [ensureWalletPair, turnkey.httpClient]);
 
+  const signAsterOwnerActivation = useCallback(async (challenge: AsterOwnerActivationChallenge) => {
+    const client = turnkey.httpClient;
+    if (!client) throw new Error("Turnkey signing client is unavailable.");
+    return withOneStableTurnkeyRefresh({
+      load: () => ensureWalletPair(),
+      account: (pair) => pair.owner,
+      execute: (pair) => signAsterOwnerActivationWithTurnkey({
+        client,
+        organizationId: pair.organizationId,
+        owner: pair.owner,
+        challenge,
+      }),
+    });
+  }, [ensureWalletPair, turnkey.httpClient]);
+
   const signLighterKeyAssociation = useCallback(async (
     transactionPlan: LighterChangePubKeyTransactionPlan,
   ) => {
@@ -1075,6 +1095,7 @@ function PerpsTurnkeySession({ children }: { children: ReactNode }) {
     signCarryCollateralReview,
     signAgentBinding,
     signAsterAgentApproval,
+    signAsterOwnerActivation,
     signLighterKeyAssociation,
     signSealingBytes,
     configureHyperliquid,
@@ -1100,6 +1121,7 @@ function PerpsTurnkeySession({ children }: { children: ReactNode }) {
     signCarryCollateralReview,
     signAgentBinding,
     signAsterAgentApproval,
+    signAsterOwnerActivation,
     signLighterKeyAssociation,
     signSealingBytes,
   ]);

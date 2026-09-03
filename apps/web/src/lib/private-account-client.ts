@@ -21,6 +21,7 @@ import type { AsterEncryptedExecutionVaultBundle } from "./aster-vault-seal";
 import type { LighterEncryptedExecutionVaultBundle } from "./lighter-vault-seal";
 import type { AsterV3AgentOnboardingContract } from "./aster-agent-onboarding";
 import type { LighterChangePubKeyTransactionPlan } from "./lighter-agent-association";
+import type { AsterOwnerActivationChallenge } from "./aster-owner-activation";
 import { defaultHyperliquidMarketAllowlist } from "./private-account-hyperliquid-policy";
 import { isPrivateAccountLiveMutationPath } from "./private-account-live-routes";
 import {
@@ -759,6 +760,49 @@ export interface AsterPublicRegistrationReceipt {
   permissions: Record<string, unknown>;
   setup: Record<string, unknown>;
   registered_at: string | null;
+}
+
+export interface AsterOwnerActivationPreparation {
+  version: 1;
+  activation_id: string;
+  account_commitment: string;
+  venue_id: "aster";
+  owner_address: `0x${string}`;
+  challenge: AsterOwnerActivationChallenge;
+  setup: {
+    nonce_requested: true;
+    login_submitted: false;
+    may_deposit: false;
+    may_trade: false;
+    may_transfer: false;
+    may_withdraw: false;
+  };
+}
+
+export async function prepareAsterOwnerActivation(input: {
+  owner_address: string;
+}): Promise<AsterOwnerActivationPreparation> {
+  return privateAccountFetch("/v1/private-account/platforms/aster/activate/prepare", {
+    method: "POST",
+    body: JSON.stringify({ version: 1, owner_address: input.owner_address }),
+  }) as Promise<AsterOwnerActivationPreparation>;
+}
+
+export async function completeAsterOwnerActivation(input: {
+  preparation: AsterOwnerActivationPreparation;
+  signature: `0x${string}`;
+}) {
+  return privateAccountFetch("/v1/private-account/platforms/aster/activate/complete", {
+    method: "POST",
+    body: JSON.stringify({
+      version: 1,
+      activation_id: input.preparation.activation_id,
+      owner_address: input.preparation.owner_address,
+      nonce: input.preparation.challenge.nonce,
+      message: input.preparation.challenge.message,
+      signature: input.signature,
+    }),
+  });
 }
 
 export async function prepareAsterProgrammaticCredential(input: {

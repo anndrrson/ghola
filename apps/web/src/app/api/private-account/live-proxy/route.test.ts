@@ -51,8 +51,69 @@ describe("private account live proxy", () => {
   });
 
   it.each([
+    ["missing", undefined],
+    ["cross-origin", "https://hostile.ghola.example"],
+  ])("rejects %s Origin before authentication or proxying", async (_label, origin) => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+    const request = proxyRequest({
+      path: "/v1/private-account/platforms/aster/activate/complete",
+      body: { version: 1 },
+    });
+    const headers = new Headers(request.headers);
+    if (origin) headers.set("origin", origin);
+    else headers.delete("origin");
+
+    const res = await POST(new Request(request, { headers }));
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "live_proxy_cross_origin_forbidden" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["simple text", "text/plain"],
+    ["JSON lookalike", "application/jsonp"],
+  ])("rejects %s content type before authentication or proxying", async (_label, contentType) => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+    const request = proxyRequest({
+      path: "/v1/private-account/platforms/aster/activate/complete",
+      body: { version: 1 },
+    });
+    const headers = new Headers(request.headers);
+    if (contentType) headers.set("content-type", contentType);
+    else headers.delete("content-type");
+
+    const res = await POST(new Request(request, { headers }));
+
+    expect(res.status).toBe(415);
+    expect(await res.json()).toEqual({ error: "live_proxy_json_required" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("accepts application/json with a charset parameter", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    const request = proxyRequest({
+      path: "/v1/private-account/platforms/aster/activate/prepare",
+      body: { version: 1 },
+    });
+    const headers = new Headers(request.headers);
+    headers.set("content-type", "application/json; charset=utf-8");
+
+    const res = await POST(new Request(request, { headers }));
+
+    expect(res.status).toBe(200);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+
+  it.each([
     "/v1/private-account/platforms/aster/prepare",
     "/v1/private-account/platforms/aster/complete",
+    "/v1/private-account/platforms/aster/activate/prepare",
+    "/v1/private-account/platforms/aster/activate/complete",
     "/v1/private-account/platforms/lighter/prepare",
     "/v1/private-account/platforms/lighter/complete",
     "/v1/private-account/platforms/lighter/recovery/prepare",
@@ -94,6 +155,21 @@ describe("private account live proxy", () => {
       retry_forbidden: true,
     });
     expect(res.headers.get("x-ghola-correlation-id")).toBe("ghola-correlation-test-123");
+  });
+
+  it("never retries an uncertain Aster activation login", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("connection reset"));
+
+    const res = await POST(proxyRequest({
+      path: "/v1/private-account/platforms/aster/activate/complete",
+      body: { version: 1 },
+    }));
+
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({
+      error: "aster_owner_activation_outcome_ambiguous",
+      retry_forbidden: true,
+    });
   });
 
   it("rejects paths outside the live mutation allowlist", async () => {
@@ -150,6 +226,7 @@ function proxyRequest(payload: { path: string; body: Record<string, unknown> }) 
     headers: {
       "content-type": "application/json",
       authorization: "Bearer local-live-user",
+      origin: "https://ghola.example",
       "x-ghola-correlation-id": "ghola-correlation-test-123",
     },
     body: JSON.stringify({

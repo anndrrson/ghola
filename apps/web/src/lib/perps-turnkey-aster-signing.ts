@@ -1,9 +1,13 @@
 import { createAccountWithAddress } from "@turnkey/viem";
-import { hashTypedData, recoverTypedDataAddress, type Hex } from "viem";
+import { hashTypedData, recoverMessageAddress, recoverTypedDataAddress, type Hex } from "viem";
 import {
   asterApprovalSigningDefinition,
   type AsterV3AgentApprovalTypedData,
 } from "./aster-agent-onboarding";
+import {
+  buildAsterOwnerActivationChallenge,
+  type AsterOwnerActivationChallenge,
+} from "./aster-owner-activation";
 
 export const TURNKEY_PERPS_OWNER_PATH = "m/44'/60'/0'/0/0";
 
@@ -57,6 +61,59 @@ export async function signAsterAgentApprovalWithTurnkey(input: {
     }
   }
   throw new Error("Turnkey Aster approval was signed by the wrong wallet.");
+}
+
+export async function signAsterOwnerActivationWithTurnkey(input: {
+  client: TurnkeyViemClient;
+  organizationId: string;
+  owner: { address: string; path?: string | null; organizationId?: string | null };
+  challenge: AsterOwnerActivationChallenge;
+}): Promise<`0x${string}`> {
+  if (!input.organizationId.trim()) throw new Error("Turnkey organization is unavailable.");
+  if (input.owner.path !== TURNKEY_PERPS_OWNER_PATH) {
+    throw new Error("Turnkey Aster activation requires the Ghola perps owner account.");
+  }
+  const signerOrganizationId = input.owner.organizationId?.trim() || input.organizationId.trim();
+  const ownerAddress = input.owner.address.trim().toLowerCase();
+  if (!/^0x[0-9a-f]{40}$/.test(ownerAddress)) {
+    throw new Error("Turnkey Aster owner address is invalid.");
+  }
+  const challenge = buildAsterOwnerActivationChallenge({
+    ownerAddress: input.challenge.ownerAddress,
+    nonce: input.challenge.nonce,
+  });
+  if (
+    challenge.ownerAddress !== ownerAddress ||
+    input.challenge.message !== challenge.message ||
+    input.challenge.chainId !== challenge.chainId
+  ) {
+    throw new Error("Aster owner activation challenge is not bound to the Ghola perps owner.");
+  }
+  const account = createAccountWithAddress({
+    client: input.client,
+    organizationId: signerOrganizationId,
+    signWith: input.owner.address.trim(),
+    ethereumAddress: input.owner.address.trim() as `0x${string}`,
+  });
+  const signature = normalizedSignature(await account.signMessage({ message: challenge.message }));
+  let recovered: string;
+  try {
+    recovered = await recoverMessageAddress({ message: challenge.message, signature });
+  } catch {
+    throw new Error("Turnkey returned an invalid Aster owner activation signature.");
+  }
+  if (recovered.toLowerCase() === ownerAddress) return signature;
+
+  const alternate = alternateParitySignature(signature);
+  if (alternate) {
+    try {
+      recovered = await recoverMessageAddress({ message: challenge.message, signature: alternate });
+      if (recovered.toLowerCase() === ownerAddress) return alternate;
+    } catch {
+      // Preserve the explicit wrong-wallet failure below.
+    }
+  }
+  throw new Error("Turnkey Aster activation was signed by the wrong wallet.");
 }
 
 function normalizedSignature(value: unknown): `0x${string}` {

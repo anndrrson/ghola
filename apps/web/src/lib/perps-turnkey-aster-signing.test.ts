@@ -11,8 +11,10 @@ vi.mock("@turnkey/viem", () => ({
 import { buildAsterV3AgentOnboardingContract } from "./aster-agent-onboarding";
 import {
   signAsterAgentApprovalWithTurnkey,
+  signAsterOwnerActivationWithTurnkey,
   TURNKEY_PERPS_OWNER_PATH,
 } from "./perps-turnkey-aster-signing";
+import { buildAsterOwnerActivationChallenge } from "./aster-owner-activation";
 
 const OWNER = privateKeyToAccount(`0x${"42".repeat(32)}`);
 const WRONG = privateKeyToAccount(`0x${"43".repeat(32)}`);
@@ -155,5 +157,48 @@ describe("Turnkey Aster owner approval", () => {
       typedData: typedData(),
     })).rejects.toThrow("invalid Aster owner signature");
     expect(mocks.createAccountWithAddress).toHaveBeenCalledTimes(2);
+  });
+
+  it("personal-signs the exact Aster login challenge with only the perps owner", async () => {
+    const challenge = buildAsterOwnerActivationChallenge({
+      ownerAddress: OWNER.address,
+      nonce: "501182",
+    });
+    mocks.createAccountWithAddress.mockImplementation(() => ({
+      signMessage: ({ message }: { message: string }) => OWNER.signMessage({ message }),
+    }));
+
+    const signature = await signAsterOwnerActivationWithTurnkey({
+      client: CLIENT,
+      organizationId: "turnkey-session-org",
+      owner: {
+        address: OWNER.address,
+        path: TURNKEY_PERPS_OWNER_PATH,
+        organizationId: "turnkey-resource-org",
+      },
+      challenge,
+    });
+
+    expect(mocks.createAccountWithAddress).toHaveBeenCalledWith({
+      client: CLIENT,
+      organizationId: "turnkey-resource-org",
+      signWith: OWNER.address,
+      ethereumAddress: OWNER.address,
+    });
+    expect(signature).toMatch(/^0x[0-9a-f]{130}$/);
+  });
+
+  it("rejects a cross-owner Aster login challenge before Turnkey signing", async () => {
+    const challenge = buildAsterOwnerActivationChallenge({
+      ownerAddress: WRONG.address,
+      nonce: "501182",
+    });
+    await expect(signAsterOwnerActivationWithTurnkey({
+      client: CLIENT,
+      organizationId: "turnkey-session-org",
+      owner: { address: OWNER.address, path: TURNKEY_PERPS_OWNER_PATH },
+      challenge,
+    })).rejects.toThrow("not bound to the Ghola perps owner");
+    expect(mocks.createAccountWithAddress).not.toHaveBeenCalled();
   });
 });

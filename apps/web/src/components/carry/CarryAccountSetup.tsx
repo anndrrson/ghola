@@ -24,8 +24,10 @@ import {
   getHyperliquidExecutionVaultStatus,
   getPrivateAgentPassport,
   linkPrivateAgentPlatform,
+  completeAsterOwnerActivation,
   completeAsterProgrammaticCredential,
   completeLighterProgrammaticCredential,
+  prepareAsterOwnerActivation,
   prepareAsterProgrammaticCredential,
   prepareLighterProgrammaticCredential,
   type AsterProgrammaticPreparation,
@@ -103,6 +105,7 @@ const HYPERLIQUID_ONBOARDING = getCurrentVenueCredentialOnboardingPath("hyperliq
 const ASTER_ONBOARDING = getCurrentVenueCredentialOnboardingPath("aster");
 const LIGHTER_ONBOARDING = getCurrentVenueCredentialOnboardingPath("lighter");
 const LIGHTER_UDA_RETRY_FORBIDDEN_STORAGE_PREFIX = "ghola_lighter_uda_retry_forbidden_v1:";
+const ASTER_ACTIVATION_SUBMISSION_STORAGE_PREFIX = "ghola:aster-owner-activation-submission:v1:";
 
 function lighterUdaRetryForbiddenStorageKey(ownerAddress: string) {
   return `${LIGHTER_UDA_RETRY_FORBIDDEN_STORAGE_PREFIX}${ownerAddress.toLowerCase()}`;
@@ -176,6 +179,8 @@ export function CarryAccountSetup({
   } | null>(null);
   const accountReadinessGenerationRef = useRef(0);
   const accountReadinessScopeRef = useRef("");
+  const asterActivationInFlightRef = useRef(false);
+  const asterActivationSubmissionRef = useRef<string | null>(null);
   const accountReadinessReady = accountReadinessState === "ready"
     && Boolean(recoveryUserScope)
     && accountReadinessResolvedScope === recoveryUserScope;
@@ -1002,12 +1007,84 @@ export function CarryAccountSetup({
     if (!accountReadinessReady) return;
     const requirement = activationNeeded;
     if (!requirement) return;
+    if (requirement.venue === "aster") {
+      if (!perpsTurnkey.authenticated) {
+        setWorking(true);
+        setError(null);
+        try {
+          await perpsTurnkey.login();
+        } catch (caught) {
+          setError(caught instanceof Error ? caught.message : "Secure wallet authentication failed.");
+        } finally {
+          setWorking(false);
+        }
+        return;
+      }
+      const lockKey = asterActivationSubmissionStorageKey(recoveryUserScope, requirement.ownerAddress);
+      let persistedAttempt = "";
+      try {
+        persistedAttempt = window.localStorage.getItem(lockKey) || "";
+      } catch {
+        // The in-memory lock remains authoritative for this page.
+      }
+      if (asterActivationInFlightRef.current) return;
+      asterActivationInFlightRef.current = true;
+      setWorking(true);
+      setError(null);
+      try {
+        const pair = await perpsTurnkey.ensureWalletPair();
+        if (pair.owner.address.toLowerCase() !== requirement.ownerAddress.toLowerCase()) {
+          throw new Error("Aster activation is not bound to the current Ghola perps owner.");
+        }
+        const preparation = await prepareAsterOwnerActivation({ owner_address: requirement.ownerAddress });
+        if (
+          persistedAttempt &&
+          persistedAttempt !== preparation.activation_id
+        ) {
+          asterActivationSubmissionRef.current = null;
+        }
+        const signature = await perpsTurnkey.signAsterOwnerActivation(preparation.challenge);
+        asterActivationSubmissionRef.current = preparation.activation_id;
+        try {
+          window.localStorage.setItem(lockKey, preparation.activation_id);
+        } catch {
+          // The in-memory lock still prevents a same-page retry.
+        }
+        try {
+          const completed = asRecord(await completeAsterOwnerActivation({ preparation, signature }));
+          if (completed.status !== "owner_login_accepted") throw new Error("Aster owner login receipt was invalid.");
+        } catch (caught) {
+          if (asterActivationAllowsFreshPreparation(caught)) {
+            asterActivationSubmissionRef.current = null;
+            try { window.localStorage.removeItem(lockKey); } catch {}
+          }
+          throw caught;
+        }
+        asterActivationSubmissionRef.current = null;
+        try { window.localStorage.removeItem(lockKey); } catch {}
+        setActivationNeeded(null);
+        setAsterReprepareRequired(true);
+        persistRecovery(accountCommitment, recoveryUserScope, { asterActivation: null });
+      } catch (caught) {
+        if (asterActivationOwnerLoginAlreadyAccepted(caught)) {
+          asterActivationSubmissionRef.current = null;
+          try { window.localStorage.removeItem(lockKey); } catch {}
+          setActivationNeeded(null);
+          setAsterReprepareRequired(true);
+          persistRecovery(accountCommitment, recoveryUserScope, { asterActivation: null });
+          setError(null);
+        } else {
+          setError(caught instanceof Error ? caught.message : "Aster owner activation failed.");
+        }
+      } finally {
+        asterActivationInFlightRef.current = false;
+        setWorking(false);
+      }
+      return;
+    }
     setActivationNeeded(null);
-    persistRecovery(accountCommitment, recoveryUserScope, requirement.venue === "aster"
-      ? { asterActivation: null }
-      : { lighterActivation: null });
-    if (requirement.venue === "aster") await connectAsterProgrammatic(true);
-    else await connectLighterProgrammatic();
+    persistRecovery(accountCommitment, recoveryUserScope, { lighterActivation: null });
+    await connectLighterProgrammatic();
   }
 
   const connectionProgress = carryAccountConnectionProgressForVenues({
@@ -1369,12 +1446,14 @@ export function CarryAccountSetup({
             ) : (
               <p className="mt-2 text-xs leading-5 text-[#8f9aae]">Aster must recognize this exact owner first. Ghola will preserve the same sealed signer, then request one fresh owner approval—never create another signer or retry an ambiguous submission.</p>
             )}
-            <a href={scopedActivationNeeded.venue === "aster" ? "https://www.asterdex.com/en" : LIGHTER_NEW_ACCOUNT_DEPOSIT_SOURCE} target="_blank" rel="noreferrer" className="mt-3 inline-flex rounded-md border border-[#315277] px-3 py-2 text-xs font-semibold text-[#a8d8ff]">
-              {scopedActivationNeeded.venue === "aster" ? "Open Aster" : "View official Lighter requirements"}
-            </a>
-            <button type="button" disabled={working || (scopedActivationNeeded.venue === "lighter" && !lighterReadiness?.ready)} onClick={() => void retryAfterVenueActivation()} className="ml-2 mt-3 inline-flex rounded-md bg-[#4aaef8] px-3 py-2 text-xs font-semibold text-[#06111d] disabled:opacity-50">
+            {scopedActivationNeeded.venue === "lighter" && (
+              <a href={LIGHTER_NEW_ACCOUNT_DEPOSIT_SOURCE} target="_blank" rel="noreferrer" className="mt-3 inline-flex rounded-md border border-[#315277] px-3 py-2 text-xs font-semibold text-[#a8d8ff]">
+                View official Lighter requirements
+              </a>
+            )}
+            <button type="button" disabled={working || (scopedActivationNeeded.venue === "lighter" && !lighterReadiness?.ready)} onClick={() => void retryAfterVenueActivation()} className={`${scopedActivationNeeded.venue === "lighter" ? "ml-2" : ""} mt-3 inline-flex rounded-md bg-[#4aaef8] px-3 py-2 text-xs font-semibold text-[#06111d] disabled:opacity-50`}>
               {scopedActivationNeeded.venue === "aster"
-                ? "I activated it — approve once"
+                ? perpsTurnkey.authenticated ? "Activate Aster owner securely" : "Authenticate secure wallet"
                 : "I activated it — recheck once"}
             </button>
             <Link href={safeReturnTo} className="ml-3 mt-3 inline-flex text-xs font-semibold text-[#8fcaff] hover:text-white">
@@ -1864,4 +1943,22 @@ function persistRecovery(
   } catch {
     // Storage is a convenience layer; the worker remains the submission authority.
   }
+}
+
+function asterActivationSubmissionStorageKey(userScope: string, ownerAddress: string) {
+  return `${ASTER_ACTIVATION_SUBMISSION_STORAGE_PREFIX}${userScope}:${ownerAddress.toLowerCase()}`;
+}
+
+function asterActivationAllowsFreshPreparation(caught: unknown) {
+  if (!caught || typeof caught !== "object") return false;
+  const body = (caught as { body?: unknown }).body;
+  return Boolean(body && typeof body === "object" && !Array.isArray(body) &&
+    (body as Record<string, unknown>).new_preparation_allowed === true);
+}
+
+function asterActivationOwnerLoginAlreadyAccepted(caught: unknown) {
+  if (!caught || typeof caught !== "object") return false;
+  const body = (caught as { body?: unknown }).body;
+  return Boolean(body && typeof body === "object" && !Array.isArray(body) &&
+    (body as Record<string, unknown>).status === "accepted");
 }
