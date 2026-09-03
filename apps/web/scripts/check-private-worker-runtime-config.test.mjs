@@ -3,9 +3,11 @@ import { createPublicKey, generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import { CARRY_EXECUTION_VENUES } from "@ghola/execution-core";
 import {
+  isTransientWorkerProbeError,
   verifyPreviewProductRuntimeConfig,
   verifyPrivateWorkerRuntimeAuthorization,
   verifyPrivateWorkerRuntimeConfig,
+  verifyVercelBuildRuntimeConfig,
 } from "./check-private-worker-runtime-config.mjs";
 
 const IMAGE_DIGEST = `sha256:${"a".repeat(64)}`;
@@ -335,5 +337,48 @@ test("blocks deployment when worker authorization drifts", async () => {
       error_code: "worker_capability_invalid",
     }, { status: 403 })),
     /worker authorization failed \(403\)/,
+  );
+});
+
+test("defers only transient Preview worker transport outages", async () => {
+  const socketError = Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" });
+  const fetchError = new TypeError("fetch failed", { cause: socketError });
+  assert.equal(isTransientWorkerProbeError(fetchError), true);
+
+  const result = await verifyVercelBuildRuntimeConfig({
+    ...productEnv(),
+    ...vercelEnv(),
+    VERCEL_ENV: "preview",
+  }, async () => {
+    throw fetchError;
+  });
+
+  assert.equal(result.worker_authorization, "deferred_transient");
+  assert.equal(result.worker_host, "worker.example");
+  assert.equal(result.product_runtime.persistence, "postgres");
+});
+
+test("keeps Production and semantic Preview failures fail-closed", async () => {
+  const socketError = Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" });
+  const fetchError = new TypeError("fetch failed", { cause: socketError });
+
+  await assert.rejects(
+    verifyVercelBuildRuntimeConfig({
+      ...productEnv(),
+      ...vercelEnv(),
+      VERCEL_ENV: "production",
+    }, async () => {
+      throw fetchError;
+    }),
+    /fetch failed/,
+  );
+
+  await assert.rejects(
+    verifyVercelBuildRuntimeConfig({
+      ...productEnv(),
+      ...vercelEnv(),
+      VERCEL_ENV: "preview",
+    }, async () => Response.json({ authorized: false }, { status: 503 })),
+    /worker authorization failed \(503\)/,
   );
 });

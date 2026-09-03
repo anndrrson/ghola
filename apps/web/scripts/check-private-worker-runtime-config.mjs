@@ -139,6 +139,45 @@ export async function verifyPrivateWorkerRuntimeAuthorization(
   return { ...config, worker_authorization: "verified" };
 }
 
+export async function verifyVercelBuildRuntimeConfig(
+  env = process.env,
+  fetchImpl = fetch,
+) {
+  const productRuntime = verifyPreviewProductRuntimeConfig(env);
+  try {
+    const workerRuntime = await verifyPrivateWorkerRuntimeAuthorization(env, fetchImpl);
+    return { ...workerRuntime, product_runtime: productRuntime };
+  } catch (error) {
+    if (env.VERCEL_ENV !== "preview" || !isTransientWorkerProbeError(error)) throw error;
+    const workerRuntime = verifyPrivateWorkerRuntimeConfig(env);
+    return {
+      ...workerRuntime,
+      worker_authorization: "deferred_transient",
+      product_runtime: productRuntime,
+    };
+  }
+}
+
+export function isTransientWorkerProbeError(error) {
+  const transientCodes = new Set([
+    "ECONNREFUSED",
+    "ECONNRESET",
+    "ENETUNREACH",
+    "ENOTFOUND",
+    "ETIMEDOUT",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "UND_ERR_SOCKET",
+  ]);
+  let current = error;
+  for (let depth = 0; depth < 6 && current; depth += 1) {
+    if (typeof current !== "object") return false;
+    if (transientCodes.has(String(current.code || "").toUpperCase())) return true;
+    if (["AbortError", "TimeoutError"].includes(String(current.name || ""))) return true;
+    current = current.cause;
+  }
+  return false;
+}
+
 function first(env, ...keys) {
   for (const key of keys) {
     const value = String(env[key] || "").trim();
@@ -294,11 +333,18 @@ function stableJson(value) {
 }
 
 async function main() {
-  const product = verifyPreviewProductRuntimeConfig();
-  const result = await verifyPrivateWorkerRuntimeAuthorization();
-  console.log(result.skipped
-    ? "[private-worker-runtime-config] skipped outside Vercel"
-    : `[private-worker-runtime-config] verified ${result.worker_host} authorization and ${product.persistence} product runtime`);
+  const result = await verifyVercelBuildRuntimeConfig();
+  if (result.skipped) {
+    console.log("[private-worker-runtime-config] skipped outside Vercel");
+  } else if (result.worker_authorization === "deferred_transient") {
+    console.warn(
+      `[private-worker-runtime-config] verified ${result.worker_host} pins and ${result.product_runtime.persistence} product runtime; Preview worker probe deferred after a transport outage`,
+    );
+  } else {
+    console.log(
+      `[private-worker-runtime-config] verified ${result.worker_host} authorization and ${result.product_runtime.persistence} product runtime`,
+    );
+  }
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) await main();
