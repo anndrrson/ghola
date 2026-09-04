@@ -611,3 +611,87 @@ index 00ba26c8d1d4e211530507362e576feb9c855631..b3c4a42f1882c3261a42c7efe230cdfb
    };
    var closeSheet = function closeSheet() {
      return setSheet(null);
+diff --git a/dist/providers/client/Provider.js b/dist/providers/client/Provider.js
+--- a/dist/providers/client/Provider.js
++++ b/dist/providers/client/Provider.js
+@@ -543,5 +543,6 @@
+         // Define passkey and wallet config here. If we don't pass it into the client, Mr. Client will assume that we don't want to use passkeys/wallets and not create the stamper!
+         passkeyConfig: {
++          withPlatformKey: masterConfig.passkeyConfig?.withPlatformKey,
+           rpId: masterConfig.passkeyConfig?.rpId,
+           timeout: masterConfig.passkeyConfig?.timeout || 60000,
+           // 60 seconds
+diff --git a/dist/providers/client/Provider.mjs b/dist/providers/client/Provider.mjs
+--- a/dist/providers/client/Provider.mjs
++++ b/dist/providers/client/Provider.mjs
+@@ -741,5 +741,6 @@
+               // Define passkey and wallet config here. If we don't pass it into the client, Mr. Client will assume that we don't want to use passkeys/wallets and not create the stamper!
+               passkeyConfig: {
++                withPlatformKey: masterConfig.passkeyConfig?.withPlatformKey,
+                 rpId: (_masterConfig$passkey = masterConfig.passkeyConfig) === null || _masterConfig$passkey === void 0 ? void 0 : _masterConfig$passkey.rpId,
+                 timeout: ((_masterConfig$passkey2 = masterConfig.passkeyConfig) === null || _masterConfig$passkey2 === void 0 ? void 0 : _masterConfig$passkey2.timeout) || 60000,
+                 // 60 seconds
+diff --git a/dist/components/auth/Passkey.js b/dist/components/auth/Passkey.js
+--- a/dist/components/auth/Passkey.js
++++ b/dist/components/auth/Passkey.js
+@@ -6,10 +6,9 @@
+ function PasskeyButtons(props) {
+   const {
+-    onLogin,
+-    onSignUp
++    onLogin
+   } = props;
+-  return jsxRuntime.jsxs("div", {
++  return jsxRuntime.jsx("div", {
+     className: "flex flex-col gap-2 w-full",
+-    children: [jsxRuntime.jsx(Buttons.ActionButton, {
++    children: jsxRuntime.jsx(Buttons.ActionButton, {
+       name: "passkey-login-button",
+       onClick: onLogin,
+@@ -16,12 +15,6 @@
+       className: "w-full text-inherit bg-button-light dark:bg-button-dark",
+       disabled: props.disabled ?? false,
+-      children: "Log in with passkey"
+-    }), jsxRuntime.jsx(Buttons.ActionButton, {
+-      name: "passkey-signup-button",
+-      onClick: onSignUp,
+-      className: "w-full bg-transparent text-primary-light dark:text-primary-dark border-none",
+-      disabled: props.disabled ?? false,
+-      children: "Sign up with passkey"
+-    })]
++      children: "Use existing Ghola Touch ID"
++    })
+   });
+ }
+diff --git a/dist/components/auth/Passkey.mjs b/dist/components/auth/Passkey.mjs
+--- a/dist/components/auth/Passkey.mjs
++++ b/dist/components/auth/Passkey.mjs
+@@ -4,9 +4,8 @@
+ function PasskeyButtons(props) {
+-  var _props$disabled, _props$disabled2;
+-  var onLogin = props.onLogin,
+-    onSignUp = props.onSignUp;
+-  return jsxs("div", {
++  var _props$disabled;
++  var onLogin = props.onLogin;
++  return jsx("div", {
+     className: "flex flex-col gap-2 w-full",
+-    children: [jsx(ActionButton, {
++    children: jsx(ActionButton, {
+       name: "passkey-login-button",
+       onClick: onLogin,
+@@ -13,12 +12,6 @@
+       className: "w-full text-inherit bg-button-light dark:bg-button-dark",
+       disabled: (_props$disabled = props.disabled) !== null && _props$disabled !== void 0 ? _props$disabled : false,
+-      children: "Log in with passkey"
+-    }), jsx(ActionButton, {
+-      name: "passkey-signup-button",
+-      onClick: onSignUp,
+-      className: "w-full bg-transparent text-primary-light dark:text-primary-dark border-none",
+-      disabled: (_props$disabled2 = props.disabled) !== null && _props$disabled2 !== void 0 ? _props$disabled2 : false,
+-      children: "Sign up with passkey"
+-    })]
++      children: "Use existing Ghola Touch ID"
++    })
+   });
+ }

@@ -768,9 +768,10 @@ export function CarryAccountSetup({
     : nextSetupAction.venueId === "hyperliquid" ? "Continue"
     : nextSetupAction.venueId === "aster"
       ? pendingAsterAuthorization
-        ? working ? "Authenticating…" : "Continue secure authentication"
+        ? working ? "Opening secure sign-in…" : "Authenticate by email"
         : !perpsTurnkey.configured ? "Secure wallet unavailable"
         : perpsTurnkey.loading ? "Restoring secure wallet…"
+        : !perpsTurnkey.authenticated ? "Authenticate by email"
         : working ? "Authorizing…"
         : asterWalletRepairRequested ? "Repair secure wallet"
         : asterRegistrationAmbiguous ? "Aster reconciliation required"
@@ -782,9 +783,10 @@ export function CarryAccountSetup({
             : "Resume Aster signing"
         : "Continue"
       : pendingLighterAuthorization
-        ? working ? "Authenticating…" : "Continue secure authentication"
+        ? working ? "Opening secure sign-in…" : "Authenticate by email"
         : !perpsTurnkey.configured ? "Secure wallet unavailable"
         : perpsTurnkey.loading ? "Restoring secure wallet…"
+        : !perpsTurnkey.authenticated ? "Authenticate by email"
         : pendingLighterAssociation?.submission_ambiguous ? "Reconciliation required"
         : scopedActivationNeeded?.venue === "lighter" ? "Check Lighter activation"
         : working ? "Authorizing…"
@@ -834,6 +836,11 @@ export function CarryAccountSetup({
                     ? pairScoped ? "Run one no-submit check across this pair." : "Run one no-submit check across every venue and pair."
                     : workerPlatform?.message || "Checking the platform before route verification."
                   : `${connectionProgress.missingVenueIds.length} connection${connectionProgress.missingVenueIds.length === 1 ? "" : "s"} remain. Ghola resumes the next safe step.`}</p>
+                {nextSetupAction.kind === "connect_venue" && nextSetupAction.venueId !== "hyperliquid" && !perpsTurnkey.authenticated && (
+                  <p className="mt-2 text-xs leading-5 text-[#a8d8ff]">
+                    First time here? Enter your email in the secure window. Use existing Ghola Touch ID only after adding it on ghola.xyz.
+                  </p>
+                )}
               </div>
               <div className="mt-4 flex shrink-0 items-center gap-3 sm:mt-0">
                 <p className={`font-mono text-sm font-semibold ${connectionProgress.ready ? "text-[#72dfb2]" : "text-[#d9bd74]"}`}>
@@ -911,18 +918,18 @@ export function CarryAccountSetup({
               longVenueId={pairScoped ? returnPair?.longVenueId || null : null}
               shortVenueId={pairScoped ? returnPair?.shortVenueId || null : null}
             />
-            {perpsTurnkey.authenticated && !perpsTurnkey.hasPasskey && (
-              <details className="rounded-lg border border-[#1f2c41] bg-[#080d14] px-4 py-3 text-xs text-[#718097]">
-                <summary className="cursor-pointer select-none font-semibold text-[#8f9aae] hover:text-[#c4e5ff]">
-                  Optional: faster future sign-in
-                </summary>
-                <div className="mt-3 flex items-center justify-between gap-4 border-t border-[#172234] pt-3">
-                  <p className="leading-5">Enable Touch ID for this Ghola address. Turnkey Dashboard passkeys cannot cross domains.</p>
-                  <button type="button" disabled={working} onClick={() => void enableGholaTouchId()} className="shrink-0 rounded-md border border-[#315277] px-3 py-2 font-semibold text-[#a8d8ff] hover:bg-[#102033] disabled:opacity-50">
-                    {working ? "Enabling…" : "Enable Touch ID"}
-                  </button>
+            {perpsTurnkey.authenticated && (
+              <section aria-label="Add Touch ID" className="rounded-lg border border-[#315277] bg-[#0b1624] px-4 py-3 text-xs text-[#8f9aae] sm:flex sm:items-center sm:justify-between sm:gap-4">
+                <div>
+                  <p className="font-semibold text-[#d8eaff]">Add Touch ID on this device (optional)</p>
+                  <p className="mt-1 leading-5">{perpsTurnkey.hasPasskey
+                    ? "Add another ghola.xyz passkey for this device. Existing passkeys may belong to another device."
+                    : "Create a passkey for ghola.xyz on this device. Passkeys from Turnkey Dashboard cannot be reused here."}</p>
                 </div>
-              </details>
+                <button type="button" disabled={working} onClick={() => void enableGholaTouchId()} className="mt-3 shrink-0 rounded-md bg-[#4aaef8] px-3 py-2 font-semibold text-[#06111d] hover:bg-[#72c0fa] disabled:opacity-50 sm:mt-0">
+                  {working ? "Opening Touch ID…" : "Add Touch ID"}
+                </button>
+              </section>
             )}
             {aster !== "connected" && nextSetupAction.kind === "connect_venue" && nextSetupAction.venueId === "aster" && (
               <div className="px-1">

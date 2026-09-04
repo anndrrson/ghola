@@ -2,6 +2,7 @@ import { createHmac, generateKeyPairSync, sign as signEd25519 } from "node:crypt
 import { carryPrivatePrimeWorkerAuthenticationMessage } from "@ghola/execution-core";
 import { describe, expect, it } from "vitest";
 import { verifyCarryPrivatePrimeWorkerAuthentication } from "./carry-private-prime-worker-authentication";
+import { carryPrivatePrimeEvidenceCommitment } from "./carry-private-prime-readiness";
 
 const NOW = 1_800_000_000_000;
 const SECRET = "shared-worker-secret";
@@ -47,13 +48,38 @@ describe("private-prime worker authentication", () => {
   it("authenticates a fresh negative readiness response even when its evidence is expired or unavailable", () => {
     const expired = response();
     expired.private_prime_readiness.expires_at_ms = NOW - 1;
-    resign(expired);
+    recommitAndResign(expired);
     expect(verify(expired)).toEqual({ ok: true });
 
     const unavailable = response();
     unavailable.private_prime_readiness.expires_at_ms = null as unknown as number;
-    resign(unavailable);
+    recommitAndResign(unavailable);
     expect(verify(unavailable)).toEqual({ ok: true });
+  });
+
+  it("accepts an explicitly negative response whose identity remains bound in its signed context", () => {
+    const negative = response();
+    Object.assign(negative.private_prime_readiness, {
+      ready: false,
+      no_submit_ready: false,
+      owner_commitment: null,
+      asset: null,
+    });
+    recommitAndResign(negative);
+    expect(verify(negative)).toEqual({ ok: true });
+
+    const wrongIdentity = response();
+    Object.assign(wrongIdentity.private_prime_readiness, {
+      ready: false,
+      no_submit_ready: false,
+      owner_commitment: "owner_commitment_other",
+    });
+    recommitAndResign(wrongIdentity);
+    expect(verify(wrongIdentity)).toEqual({
+      ok: false,
+      error: "carry_private_prime_worker_authentication_invalid",
+      reason: "request_binding",
+    });
   });
 });
 
@@ -86,10 +112,11 @@ function response() {
   const privatePrimeReadiness = {
     owner_commitment: "owner_commitment_0001",
     asset: "BTC",
-    evidence_commitment: `carry:private-prime:${"a".repeat(40)}`,
+    evidence_commitment: "",
     checked_at_ms: NOW,
     expires_at_ms: NOW + 5_000,
   };
+  privatePrimeReadiness.evidence_commitment = carryPrivatePrimeEvidenceCommitment(privatePrimeReadiness) || "";
   const message = carryPrivatePrimeWorkerAuthenticationMessage({
     route_path: "/carry/readiness",
     ...body(),
@@ -118,6 +145,7 @@ function response() {
 }
 
 function resign(value: ReturnType<typeof response>) {
+  value.private_prime_authentication.context.evidence_commitment = value.private_prime_readiness.evidence_commitment;
   value.private_prime_authentication.context.expires_at_ms = value.private_prime_readiness.expires_at_ms;
   const message = carryPrivatePrimeWorkerAuthenticationMessage(value.private_prime_authentication.context);
   value.private_prime_authentication.mac_hex = createHmac("sha256", SECRET).update(message).digest("hex");
@@ -126,4 +154,11 @@ function resign(value: ReturnType<typeof response>) {
     Buffer.from(message, "utf8"),
     SIGNER.privateKey,
   ).toString("base64");
+}
+
+function recommitAndResign(value: ReturnType<typeof response>) {
+  value.private_prime_readiness.evidence_commitment = carryPrivatePrimeEvidenceCommitment(
+    value.private_prime_readiness,
+  ) || "";
+  resign(value);
 }

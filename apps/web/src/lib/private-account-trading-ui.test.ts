@@ -153,6 +153,10 @@ describe("private account trading UI derivation", () => {
       resolve(process.cwd(), "patches/@turnkey__core@2.8.0.patch"),
       "utf8",
     );
+    const turnkeyWalletKitPatch = readFileSync(
+      resolve(process.cwd(), "patches/@turnkey__react-wallet-kit@2.4.2.patch"),
+      "utf8",
+    );
     expect(cockpitSource).toContain("Start trading on Hyperliquid");
     expect(cockpitSource).toContain('reason="hyperliquid-setup"');
     expect(cockpitSource).toContain("focusedHyperliquidAuthPrompted.current = true;");
@@ -182,16 +186,25 @@ describe("private account trading UI derivation", () => {
     expect(perpsTurnkeySource).toContain("TURNKEY_PENDING_BINDING_STORAGE_KEY");
     expect(perpsTurnkeySource).not.toContain("await turnkey.handleGoogleOauth(");
     expect(perpsTurnkeySource).toContain("await turnkey.handleAddPasskey({");
-    expect(perpsTurnkeySource).toContain('displayName: "Ghola Touch ID"');
+    expect(perpsTurnkeySource).toContain("displayName: GHOLA_TOUCH_ID_AUTHENTICATOR_NAME");
+    expect(perpsTurnkeySource).toContain("hasGholaTouchIdAuthenticator(turnkey.user?.authenticators)");
     expect(carryAccountSetupSource).toContain("await perpsTurnkey.login();");
     expect(carryAccountSetupSource).not.toContain("void perpsTurnkey.login().catch");
-    expect(carryAccountSetupSource).toContain("Continue secure authentication");
-    expect(carryAccountSetupSource).toContain("Enable Touch ID");
+    expect(carryAccountSetupSource).toContain("Authenticate by email");
+    expect(carryAccountSetupSource).toContain("Use existing Ghola Touch ID only after adding it on ghola.xyz.");
+    expect(carryAccountSetupSource).toContain("Add Touch ID on this device (optional)");
+    expect(carryAccountSetupSource).toContain("Add another ghola.xyz passkey for this device.");
+    expect(carryAccountSetupSource).toContain('perpsTurnkey.authenticated && (');
+    expect(carryAccountSetupSource).toContain('working ? "Opening Touch ID…" : "Add Touch ID"');
     expect(carryAccountSetupSource).toContain("Live route intelligence works without a deposit.");
     expect(carryAccountSetupSource).toContain("Explore live routes");
     expect(carryAccountSetupSource).toContain("Capital · later");
     expect(turnkeyCorePatch).toContain("this.config.withPlatformKey");
     expect(turnkeyCorePatch).toContain('? "platform"');
+    expect(turnkeyWalletKitPatch).toContain("withPlatformKey: masterConfig.passkeyConfig?.withPlatformKey");
+    expect(turnkeyWalletKitPatch).toContain("Use existing Ghola Touch ID");
+    expect(turnkeyWalletKitPatch).toContain('-      children: "Sign up with passkey"');
+    expect(turnkeyWalletKitPatch).not.toContain('+      children: "Sign up with passkey"');
   });
 
   it("keeps a Hyperliquid connection error visible until the dialog is reopened", () => {

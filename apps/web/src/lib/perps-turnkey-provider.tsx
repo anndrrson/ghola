@@ -46,6 +46,8 @@ import type { LighterChangePubKeyTransactionPlan } from "./lighter-agent-associa
 import { signLighterChangePubKeyWithTurnkey } from "./perps-turnkey-lighter-signing";
 import {
   createPerpsWalletProvisioningQueue,
+  GHOLA_TOUCH_ID_AUTHENTICATOR_NAME,
+  hasGholaTouchIdAuthenticator,
   PERPS_TURNKEY_AUTH_CONFIG,
   PERPS_TURNKEY_AUTH_METHOD_ORDER,
   perpsWalletProvisioningError,
@@ -170,6 +172,7 @@ const perpsTurnkeyProviderConfig: TurnkeyProviderConfig | null = parentOrganizat
       authProxyConfigId,
       passkeyConfig: {
         withPlatformKey: true,
+        timeout: 30_000,
       },
       autoRefreshManagedState: true,
       auth: PERPS_TURNKEY_AUTH_CONFIG,
@@ -402,7 +405,7 @@ function PerpsTurnkeySession({
 
   const organizationId = boundary.ready ? turnkeyOrganizationId : null;
   const authenticated = boundary.ready;
-  const hasPasskey = (turnkey.user?.authenticators.length || 0) > 0;
+  const hasPasskey = hasGholaTouchIdAuthenticator(turnkey.user?.authenticators);
   const configured = isPerpsTurnkeyClientConfigured(turnkey.clientState);
   const loading =
     isPerpsTurnkeyClientLoading(turnkey.clientState) ||
@@ -467,8 +470,8 @@ function PerpsTurnkeySession({
     }
     await turnkey.handleAddPasskey({
       organizationId,
-      name: "Ghola Touch ID",
-      displayName: "Ghola Touch ID",
+      name: GHOLA_TOUCH_ID_AUTHENTICATOR_NAME,
+      displayName: GHOLA_TOUCH_ID_AUTHENTICATOR_NAME,
       successPageDuration: 1200,
     });
   }, [authenticated, organizationId, turnkey]);

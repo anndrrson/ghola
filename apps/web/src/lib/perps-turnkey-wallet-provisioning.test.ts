@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createPerpsWalletProvisioningQueue,
+  hasGholaTouchIdAuthenticator,
   PERPS_TURNKEY_AUTH_CONFIG,
   PERPS_TURNKEY_AUTH_METHOD_ORDER,
   PerpsTurnkeyOperationTimeoutError,
@@ -16,6 +17,15 @@ describe("Turnkey perps wallet provisioning", () => {
 
   it("defaults to portable email verification while preserving optional passkeys", () => {
     expect(PERPS_TURNKEY_AUTH_METHOD_ORDER).toEqual(["email", "passkey"]);
+  });
+
+  it("does not mistake a passkey from another Turnkey surface for Ghola Touch ID", () => {
+    expect(hasGholaTouchIdAuthenticator([
+      { authenticatorName: "Turnkey Dashboard passkey" },
+    ])).toBe(false);
+    expect(hasGholaTouchIdAuthenticator([
+      { authenticatorName: "Ghola Touch ID" },
+    ])).toBe(true);
   });
 
   it("serializes reconciliation so concurrent consumers cannot create duplicate wallets", async () => {

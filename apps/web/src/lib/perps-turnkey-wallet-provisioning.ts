@@ -14,6 +14,16 @@ export const PERPS_TURNKEY_AUTH_METHOD_ORDER: Array<"email" | "passkey"> = [
   "passkey",
 ];
 
+export const GHOLA_TOUCH_ID_AUTHENTICATOR_NAME = "Ghola Touch ID";
+
+export function hasGholaTouchIdAuthenticator(
+  authenticators: readonly { authenticatorName?: string }[] | null | undefined,
+) {
+  return Boolean(authenticators?.some(
+    (authenticator) => authenticator.authenticatorName === GHOLA_TOUCH_ID_AUTHENTICATOR_NAME,
+  ));
+}
+
 export class PerpsTurnkeyOperationTimeoutError extends Error {
   readonly ambiguous: boolean;
 

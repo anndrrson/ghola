@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { carryPrivatePrimeWorkerAuthenticationMessage } from "@ghola/execution-core";
 import { ed25519 } from "@noble/curves/ed25519";
+import { carryPrivatePrimeEvidenceCommitment } from "./carry-private-prime-readiness";
 
 type VerificationInput = {
   route_path: string;
@@ -69,9 +70,18 @@ export function verifyCarryPrivatePrimeWorkerAuthentication({
   if (checkedAtMs > now_ms + 1_000 || checkedAtMs < now_ms - MAX_AUTHENTICATED_RESPONSE_AGE_MS) {
     return invalid("response_age");
   }
-  const requestBound = Boolean(
+  const readinessIdentityBound = (
     readiness.owner_commitment === ownerCommitment &&
-    readiness.asset === asset &&
+    readiness.asset === asset
+  ) || (
+    readiness.ready === false &&
+    readiness.no_submit_ready === false &&
+    readiness.owner_commitment === null &&
+    readiness.asset === null
+  );
+  const requestBound = Boolean(
+    carryPrivatePrimeEvidenceCommitment(readiness) === evidenceCommitment &&
+    readinessIdentityBound &&
     context.route_path === route_path &&
     context.owner_commitment === ownerCommitment &&
     context.asset === asset &&
