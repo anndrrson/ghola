@@ -38,7 +38,6 @@ import {
   startCarryFundingObservationLoop,
 } from "./execution/carry-funding-persistence.js";
 import {
-  observeCarryShadowQualification,
   readCarryShadowQualification,
 } from "./execution/carry-shadow-qualification.js";
 import { buildCarryRoutingAdvantageEvidence } from "./execution/carry-routing-advantage.js";
@@ -2848,9 +2847,8 @@ export function createPrivateAgentWorkerServer(options = {}) {
           assets,
           now_ms: observedAtMs,
         }),
-        observeCarryShadowQualification({
+        readCarryShadowQualification({
           state,
-          venues,
           assets,
           now_ms: observedAtMs,
         }),

@@ -75,7 +75,132 @@ test("does not qualify rapid source updates before the two-minute observation fl
     });
   }
   assert.equal(result.ready, false);
-  assert.ok(result.failures.includes("shadow_soak_duration_insufficient:2000:120000"));
+  assert.equal(result.completed_samples, 1);
+  assert.ok(result.failures.includes("shadow_soak_samples_insufficient:1:3"));
+});
+
+test("does not let dense observation ticks crowd out the durable window", async () => {
+  const state = stateStore();
+  let result;
+  for (const offsetMs of [0, 1_000, 61_000, 62_000, 122_000, 123_000]) {
+    const nowMs = NOW + offsetMs;
+    result = await observeCarryShadowQualification({
+      state,
+      venues: carryShadowFixture(nowMs),
+      now_ms: nowMs,
+      env: ENV,
+    });
+  }
+  assert.equal(result.ready, true);
+  assert.equal(result.completed_samples, 3);
+  assert.equal(result.duration_ms, 122_000);
+  assert.equal(result.checked_at_ms, NOW + 122_000);
+  assert.deepEqual(result.failures, []);
+});
+
+test("resets immediately when a dense refresh contains a failed venue sample", async () => {
+  const state = stateStore();
+  await observeCarryShadowQualification({ state, venues: carryShadowFixture(NOW), now_ms: NOW, env: ENV });
+  await observeCarryShadowQualification({
+    state,
+    venues: carryShadowFixture(NOW + 60_000),
+    now_ms: NOW + 60_000,
+    env: ENV,
+  });
+  const failed = carryShadowFixture(NOW + 61_000);
+  failed.find((venue) => venue.venue_id === "lighter").ok = false;
+  const result = await observeCarryShadowQualification({
+    state,
+    venues: failed,
+    now_ms: NOW + 61_000,
+    env: ENV,
+  });
+  assert.equal(result.ready, false);
+  assert.equal(result.completed_samples, 0);
+  assert.ok(result.failures.some((failure) => failure.startsWith("venue_fetch_failed:lighter")));
+});
+
+test("keeps a qualified window rolling after old evidence exceeds max age", async () => {
+  const state = stateStore();
+  let result;
+  for (let minute = 0; minute <= 12; minute += 1) {
+    for (const denseOffsetMs of [0, 1_000]) {
+      const offsetMs = minute * 60_000 + denseOffsetMs;
+      const nowMs = NOW + offsetMs;
+      result = await observeCarryShadowQualification({
+        state,
+        venues: carryShadowFixture(nowMs),
+        now_ms: nowMs,
+        env: ENV,
+      });
+      if (offsetMs >= 120_000) {
+        assert.equal(result.ready, true);
+        assert.equal(result.completed_samples, 3);
+        assert.equal(result.duration_ms, 120_000);
+      }
+    }
+  }
+  assert.equal(result.checked_at_ms, NOW + 12 * 60_000);
+});
+
+test("spaces larger qualification policies at the exact durable boundary", async () => {
+  const state = stateStore();
+  const env = { ...ENV, PRIVATE_AGENT_CARRY_SHADOW_QUALIFICATION_SAMPLES: "4" };
+  let result;
+  for (const offsetMs of [0, 39_999, 40_000, 79_999, 80_000, 119_999, 120_000]) {
+    const nowMs = NOW + offsetMs;
+    result = await observeCarryShadowQualification({
+      state,
+      venues: carryShadowFixture(nowMs),
+      now_ms: nowMs,
+      env,
+    });
+  }
+  assert.equal(result.ready, true);
+  assert.equal(result.required_samples, 4);
+  assert.equal(result.completed_samples, 4);
+  assert.equal(result.duration_ms, 120_000);
+});
+
+test("rejects a max-age policy shorter than the required durable window", async () => {
+  const state = stateStore();
+  const env = { ...ENV, PRIVATE_AGENT_CARRY_SHADOW_QUALIFICATION_MAX_AGE_MS: "60000" };
+  let result;
+  for (const offsetMs of [0, 60_000, 120_000]) {
+    const nowMs = NOW + offsetMs;
+    result = await observeCarryShadowQualification({
+      state,
+      venues: carryShadowFixture(nowMs),
+      now_ms: nowMs,
+      env,
+    });
+  }
+  assert.equal(result.ready, true);
+  assert.equal(result.completed_samples, 3);
+  assert.equal(result.duration_ms, 120_000);
+});
+
+test("resumes a spaced qualification window from durable state after restart", async () => {
+  const firstProcess = stateStore();
+  for (const offsetMs of [0, 1_000, 61_000]) {
+    const nowMs = NOW + offsetMs;
+    await observeCarryShadowQualification({
+      state: firstProcess,
+      venues: carryShadowFixture(nowMs),
+      now_ms: nowMs,
+      env: ENV,
+    });
+  }
+  const restartedProcess = stateStore(new Map(firstProcess.rows));
+  const result = await observeCarryShadowQualification({
+    state: restartedProcess,
+    venues: carryShadowFixture(NOW + 122_000),
+    now_ms: NOW + 122_000,
+    env: ENV,
+  });
+  assert.equal(result.ready, true);
+  assert.equal(result.completed_samples, 3);
+  assert.equal(result.duration_ms, 122_000);
 });
 
 test("does not persist wrapper-only samples when venue source observations are unchanged", async () => {
@@ -182,8 +307,7 @@ test("fails closed for stale, tampered, or differently pinned qualification", as
   assert.ok(tampered.failures.includes("shadow_qualification_evidence_invalid"));
 });
 
-function stateStore() {
-  const rows = new Map();
+function stateStore(rows = new Map()) {
   return {
     rows,
     getIdempotency: async (key) => rows.get(key) || null,

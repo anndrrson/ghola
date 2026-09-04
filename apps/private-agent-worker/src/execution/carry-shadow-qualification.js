@@ -28,7 +28,7 @@ export async function observeCarryShadowQualification({
   );
   const maxAgeMs = boundedInteger(
     env.PRIVATE_AGENT_CARRY_SHADOW_QUALIFICATION_MAX_AGE_MS,
-    60_000,
+    REQUIRED_MINIMUM_SPAN_MS,
     24 * 60 * 60_000,
     DEFAULT_MAX_AGE_MS,
   );
@@ -62,8 +62,14 @@ export async function observeCarryShadowQualification({
       && item.checked_at_ms >= nowMs - maxAgeMs
       && item.checked_at_ms < nowMs)
     : [];
+  // Spacing accepted samples prevents dense observation ticks or future callers
+  // from crowding the durable soak window.
   const sampleResults = sample.ok
-    ? appendDistinctSample(retained, sample).slice(-requiredSamples)
+    ? appendDistinctSample(
+      retained,
+      sample,
+      qualificationSampleIntervalMs(requiredSamples),
+    ).slice(-requiredSamples)
     : [];
   const record = {
     version: 1,
@@ -106,7 +112,7 @@ export async function readCarryShadowQualification({
   );
   const maxAgeMs = boundedInteger(
     env.PRIVATE_AGENT_CARRY_SHADOW_QUALIFICATION_MAX_AGE_MS,
-    60_000,
+    REQUIRED_MINIMUM_SPAN_MS,
     24 * 60 * 60_000,
     DEFAULT_MAX_AGE_MS,
   );
@@ -269,10 +275,17 @@ function validRecord(record) {
     && record.evidence_commitment === recordCommitment(record);
 }
 
-function appendDistinctSample(samples, sample) {
+function appendDistinctSample(samples, sample, minimumIntervalMs) {
   if (samples.some((item) => item.sample_commitment === sample.sample_commitment
     || item.source_observation_commitment === sample.source_observation_commitment)) return samples;
+  const previousCheckedAtMs = samples.at(-1)?.checked_at_ms;
+  if (Number.isSafeInteger(previousCheckedAtMs)
+    && sample.checked_at_ms - previousCheckedAtMs < minimumIntervalMs) return samples;
   return [...samples, sample];
+}
+
+function qualificationSampleIntervalMs(requiredSamples) {
+  return Math.ceil(REQUIRED_MINIMUM_SPAN_MS / (requiredSamples - 1));
 }
 
 function recordCommitment(record) {

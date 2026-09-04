@@ -1096,6 +1096,7 @@ export function checkCarryExecutionContract(sources) {
   forbidText("shadowQualification", "value?.venues === 5", "carry_shadow_qualification_venue_count_hardcoded");
   requireText("shadowQualification", "PHALA_CVM_IMAGE_DIGEST", "carry_shadow_qualification_image_binding_missing");
   requireText("shadowQualification", "sample_results: sampleResults", "carry_shadow_qualification_persistence_missing");
+  requireText("shadowQualification", "sample,\n      qualificationSampleIntervalMs(requiredSamples),", "carry_shadow_qualification_spacing_missing");
   requireText("shadowQualification", "source_observation_commitments", "carry_shadow_qualification_source_binding_missing");
   requireText("shadowQualification", "minimum_span_ms: REQUIRED_MINIMUM_SPAN_MS", "carry_shadow_qualification_duration_policy_missing");
   requireText("shadowQualification", "transaction_broadcast: false", "carry_shadow_qualification_no_broadcast_missing");
@@ -1105,6 +1106,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowQualificationTest", "persists three consecutive complete five-venue samples without broadcasting", "carry_shadow_qualification_test_missing");
   requireText("shadowQualificationTest", "does not persist wrapper-only samples when venue source observations are unchanged", "carry_shadow_qualification_wrapper_reuse_test_missing");
   requireText("shadowQualificationTest", "does not qualify rapid source updates before the two-minute observation floor", "carry_shadow_qualification_duration_test_missing");
+  requireText("shadowQualificationTest", "does not let dense observation ticks crowd out the durable window", "carry_shadow_qualification_spacing_test_missing");
   requireText("shadowQualificationTest", "resets consecutive qualification after one failed venue sample", "carry_shadow_qualification_reset_test_missing");
   requireText("shadowQualificationTest", "does not qualify complete-looking samples with degraded venue economics", "carry_shadow_qualification_degraded_test_missing");
   requireText("shadowQualificationTest", "fails closed for stale, tampered, or differently pinned qualification", "carry_shadow_qualification_integrity_test_missing");
@@ -1117,6 +1119,8 @@ export function checkCarryExecutionContract(sources) {
   requireText("shadowSnapshotTest", "serves a fresh commitment-backed five-venue snapshot from the durable observer", "carry_shadow_snapshot_cache_test_missing");
   requireText("shadowSnapshotTest", "rejects stale, tampered, or degraded durable snapshots and forces a live refresh", "carry_shadow_snapshot_fail_closed_test_missing");
   requireText("server", "readCarryShadowSnapshot", "carry_shadow_snapshot_read_path_missing");
+  forbidText("server", "observeCarryShadowQualification", "carry_shadow_http_qualification_mutation_present");
+  requireText("serverTest", "coalesces concurrent cold reads without mutating qualification", "carry_shadow_http_read_only_test_missing");
   requireText("server", 'served_from: "live_fetch"', "carry_shadow_live_fallback_missing");
   requireText("server", "carryShadowRefreshes", "carry_shadow_refresh_singleflight_missing");
   requireText("serverTest", "coalesces concurrent cold reads", "carry_shadow_refresh_singleflight_test_missing");

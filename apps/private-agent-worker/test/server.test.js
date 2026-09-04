@@ -27,6 +27,7 @@ import {
 import { bodyHash } from "../src/auth/capability.js";
 import { createWorkerState } from "../src/state/private-state.js";
 import { authenticateCarryCreationOpportunity } from "../src/execution/carry-opportunity-authentication.js";
+import { carryShadowQualificationKey } from "../src/execution/carry-shadow-qualification.js";
 import {
   asterPreparationId,
   asterRegistrationParameters,
@@ -622,11 +623,14 @@ describe("private agent worker", () => {
     assert.equal(JSON.stringify(body).includes("must-not-leak"), false);
   });
 
-  it("publishes a deterministic five-venue shadow verdict and coalesces concurrent cold reads", async () => {
+  it("publishes a deterministic five-venue shadow verdict and coalesces concurrent cold reads without mutating qualification", async () => {
     await close(server);
     let requested;
     let fetchCount = 0;
+    const state = createWorkerState(dir);
     server = createPrivateAgentWorkerServer({
+      state,
+      startCarryFundingObservationLoop: false,
       fetchPerpShadowSet: async (options) => {
         fetchCount += 1;
         requested = options;
@@ -653,7 +657,7 @@ describe("private agent worker", () => {
     assert.equal(body.readiness.expected_snapshots, 5);
     assert.deepEqual(body.readiness.failures, []);
     assert.equal(body.shadow_qualification.ready, false);
-    assert.equal(body.shadow_qualification.completed_samples, 1);
+    assert.equal(body.shadow_qualification.completed_samples, 0);
     assert.equal(body.shadow_qualification.transaction_broadcast, false);
     assert.equal(body.funding_persistence.transaction_broadcast, false);
     assert.equal(body.funding_persistence.observed_route_count, 6);
@@ -669,6 +673,7 @@ describe("private agent worker", () => {
     assert.equal(joinedBody.served_from, "live_fetch");
     assert.equal(joinedBody.evidence_commitment, body.evidence_commitment);
     assert.equal(fetchCount, 1);
+    assert.equal(await state.getIdempotency(carryShadowQualificationKey(["BTC"])), null);
 
     const cachedResponse = await fetch(`${baseUrl}/carry/shadow?assets=BTC`);
     const cachedBody = await cachedResponse.json();

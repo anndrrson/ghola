@@ -1869,6 +1869,32 @@ test("rejects five-venue shadow qualification without a durable observation span
   );
 });
 
+test("rejects qualification that lets dense refreshes crowd out its durable window", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      shadowQualification: sources.shadowQualification.replace(
+        "sample,\n      qualificationSampleIntervalMs(requiredSamples),",
+        "sample,\n      0,",
+      ),
+    }),
+    /carry_shadow_qualification_spacing_missing/,
+  );
+});
+
+test("rejects public shadow reads that mutate durable qualification", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      server: sources.server.replace(
+        "readCarryShadowQualification({",
+        "observeCarryShadowQualification({",
+      ),
+    }),
+    /carry_shadow_http_qualification_mutation_present/,
+  );
+});
+
 test("rejects the standalone shadow verifier without the durable observation span", () => {
   assert.throws(
     () => checkCarryExecutionContract({
