@@ -61,6 +61,8 @@ export function CarryChartStrip({
   const [clock, setClock] = useState(() => Date.now());
   const [livePatches, setLivePatches] = useState<CarryLiveMarketPatch[]>([]);
   const [executionRouteKey, setExecutionRouteKey] = useState("");
+  const [quoteNotional, setQuoteNotional] = useState("11");
+  const [quoteHorizonDays, setQuoteHorizonDays] = useState("30");
   const loadedOnceRef = useRef(false);
 
   const load = useCallback(async () => {
@@ -142,12 +144,13 @@ export function CarryChartStrip({
     effectivePatches,
     clock,
   ), [clock, data, effectivePatches]);
+  const quoteParameters = carryRouteQuoteParameters(quoteNotional, quoteHorizonDays);
   const pricedCandidates = useMemo(() => rankCarryCandidatesByNet(
     buildPairCandidates(effectiveVenues),
-    10_000,
-    24,
+    quoteParameters.notionalUsd,
+    quoteParameters.horizonHours,
     clock,
-  ), [clock, effectiveVenues]);
+  ), [clock, effectiveVenues, quoteParameters.horizonHours, quoteParameters.notionalUsd]);
   const freshCandidates = useMemo(() => pricedCandidates.filter(({ candidate }) =>
     carryCandidateAgeMs(candidate, clock) <= CARRY_ROUTE_DISPLAY_MAX_AGE_MS
   ), [clock, pricedCandidates]);
@@ -183,6 +186,7 @@ export function CarryChartStrip({
     selected?.candidate || null,
   );
   const marketEvidence = carryMarketQualificationEvidence(data);
+  const initialLoading = loading && data === null && !error;
   const terminalReturn = `/trade?product=perps&venue=hyperliquid&market=${asset}-PERP&carry=open`;
   const setupHref = `/account?setup=carry&return_to=${encodeURIComponent(terminalReturn)}`;
 
@@ -198,6 +202,8 @@ export function CarryChartStrip({
       data-net-evidence={committedSelectedNet ? "committed" : "indicative"}
       data-cost-basis={selected?.quote.exactCosts ? "net" : "gross-only"}
       data-route-age-ms={Number.isFinite(selectedAgeMs) ? Math.round(selectedAgeMs) : undefined}
+      data-ranking-notional-usd={quoteParameters.notionalUsd}
+      data-ranking-horizon-hours={quoteParameters.horizonHours}
     >
       <div className="flex min-h-10 items-center gap-2 px-2.5 sm:px-3">
         <div className="grid min-w-0 flex-1 grid-cols-[7rem_5.5rem_minmax(12rem,1fr)_8.75rem_10rem_6.25rem_6.5rem] items-center gap-x-2 font-mono text-[10px] tabular-nums max-[1023px]:grid-cols-[7rem_5.5rem_minmax(0,1fr)] max-[639px]:grid-cols-[7rem_minmax(0,1fr)]">
@@ -232,9 +238,9 @@ export function CarryChartStrip({
                   className="mr-1.5 text-[#657286]"
                   title={committedSelectedNet
                     ? routingEvidence.detail
-                    : "Indicative point-in-time economics. Live entry requires durable funding evidence."}
+                    : `Indicative ${formatHorizonDays(selected.quote.horizonHours)} horizon economics from the quote used for routing. Live entry requires durable funding evidence.`}
                 >
-                  {committedSelectedNet ? "NET24H✓" : "NET24H*"}
+                  {committedSelectedNet ? "NET/1D✓" : `NET/${formatHorizonDays(selected.quote.horizonHours)}*`}
                 </span>
                 <span className={selected.quote.exactCosts
                   ? selectedHasPositiveNet ? "font-semibold text-[#72dfb2]" : "font-semibold text-[#e27d89]"
@@ -242,7 +248,7 @@ export function CarryChartStrip({
                 >
                   {committedSelectedNet
                     ? formatBps(committedSelectedNet.dailyNetBps)
-                    : selected.quote.exactCosts ? formatBps(selectedDailyBps(selected.candidate, selected.quote)) : "—"}
+                    : selected.quote.exactCosts ? formatHorizonBps(selected.quote) : "—"}
                 </span>
               </p>
               <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">AGE {formatAge(selectedAgeMs)}</p>
@@ -258,12 +264,12 @@ export function CarryChartStrip({
               <p className={error ? "truncate text-[#e27d89]" : "truncate text-[#8e9bad]"}>
                 {error
                   ? "FEED UNAVAILABLE"
-                  : loading
-                    ? "ROUTE —"
+                  : initialLoading
+                    ? "LOADING LIVE ROUTES"
                     : "NO FRESH ROUTE"}
               </p>
               <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">GROSS —</p>
-              <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">NET24H* —</p>
+              <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">NET* —</p>
               <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">AGE —</p>
               <p className="whitespace-nowrap text-[#7d899a] max-[1023px]:hidden">EVID —</p>
             </>
@@ -296,16 +302,23 @@ export function CarryChartStrip({
         <div className="border-t border-[#1d2733] px-2.5 py-2 sm:px-3">
           <div className="mb-1.5 flex min-h-5 items-center gap-2 font-mono text-[9px] tabular-nums">
             <span className="tracking-[0.08em] text-[#657286]">MKT</span>
-            <span className={`font-semibold ${marketEvidenceTone(marketEvidence.status)}`} title={marketEvidence.detail}>
-              {marketEvidence.value}
-            </span>
-            <span className="truncate text-[#657286]">{marketEvidence.detail}</span>
             <span
-              className={`ml-auto shrink-0 font-semibold ${routingAdvantageEvidenceTone(routingEvidence)}`}
-              title={routingEvidence.detail}
+              className={`font-semibold ${initialLoading ? "text-[#8fbae0]" : marketEvidenceTone(marketEvidence.status)}`}
+              title={initialLoading ? "Checking live market qualification." : marketEvidence.detail}
             >
-              {routingEvidence.label} {formatRoutingAdvantage(routingEvidence.advantage.dailyNetAdvantageBps)}
+              {initialLoading ? "LOADING" : marketEvidence.value}
             </span>
+            <span className="truncate text-[#657286]">
+              {initialLoading ? "Checking live market qualification…" : marketEvidence.detail}
+            </span>
+            {!initialLoading ? (
+              <span
+                className={`ml-auto shrink-0 font-semibold ${routingAdvantageEvidenceTone(routingEvidence)}`}
+                title={routingEvidence.detail}
+              >
+                {routingEvidence.label} {formatRoutingAdvantage(routingEvidence.advantage.dailyNetAdvantageBps)}
+              </span>
+            ) : null}
           </div>
           {observedCandidates.length > 0 ? (
             <div className="grid gap-1.5 lg:grid-cols-3">
@@ -342,13 +355,19 @@ export function CarryChartStrip({
             </div>
           ) : (
             <div className="flex min-h-8 items-center gap-3 text-[11px]">
-              <p className="truncate text-[#8995a7]">No fresh cross-venue quote pair · stale and quarantined markets are excluded.</p>
-              <Link
-                href={setupHref}
-                className="shrink-0 rounded border border-[#2b435e] px-2 py-1 font-mono text-[9px] font-semibold tracking-[0.06em] text-[#8fbae0] hover:bg-[#0d1622]"
-              >
-                SET UP CARRY
-              </Link>
+              <p className="truncate text-[#8995a7]">
+                {initialLoading
+                  ? "Loading live cross-venue routes…"
+                  : "No fresh cross-venue quote pair · stale and quarantined markets are excluded."}
+              </p>
+              {!initialLoading ? (
+                <Link
+                  href={setupHref}
+                  className="shrink-0 rounded border border-[#2b435e] px-2 py-1 font-mono text-[9px] font-semibold tracking-[0.06em] text-[#8fbae0] hover:bg-[#0d1622]"
+                >
+                  SET UP CARRY
+                </Link>
+              ) : null}
             </div>
           )}
           {selectedExecution ? (
@@ -372,6 +391,10 @@ export function CarryChartStrip({
               ) : null}
               <CarryTerminalBuilder
                 candidate={selectedExecution.candidate}
+                quoteNotional={quoteNotional}
+                quoteHorizonDays={quoteHorizonDays}
+                onQuoteNotionalChange={setQuoteNotional}
+                onQuoteHorizonDaysChange={setQuoteHorizonDays}
                 autoRunNoSubmit={autoRunNoSubmit}
                 onAutoRunNoSubmitConsumed={onAutoRunNoSubmitConsumed}
               />
@@ -405,15 +428,13 @@ function formatFundingApr(snapshot: CarryCandidate["long"]) {
 
 function formatCarryValue(candidate: CarryCandidate, quote: PricedCarryCandidate["quote"]) {
   const gross = `GROSS ${formatBps(grossDailyBps(candidate))}`;
-  const net = quote.exactCosts ? formatBps(selectedDailyBps(candidate, quote)) : "—";
-  return `${gross} · NET24H* ${net}`;
+  const net = quote.exactCosts ? formatHorizonBps(quote) : "—";
+  return `${gross} · NET/${formatHorizonDays(quote.horizonHours)}* ${net}`;
 }
 
-function selectedDailyBps(candidate: CarryCandidate, quote: PricedCarryCandidate["quote"] | null) {
-  if (quote?.exactCosts && quote.expectedNetDailyUsd != null && quote.notionalUsd > 0) {
-    return quote.expectedNetDailyUsd / quote.notionalUsd * 10_000;
-  }
-  return grossDailyBps(candidate);
+function formatHorizonBps(quote: PricedCarryCandidate["quote"]) {
+  if (quote.expectedNetUsd == null || quote.notionalUsd <= 0) return "—";
+  return formatBpsValue(quote.expectedNetUsd / quote.notionalUsd * 10_000, "BP");
 }
 
 function grossDailyBps(candidate: CarryCandidate) {
@@ -432,14 +453,29 @@ function bestRoutePerAsset(candidates: PricedCarryCandidate[]) {
   return [...best.values()];
 }
 
+export function carryRouteQuoteParameters(notional: string, horizonDays: string) {
+  return {
+    notionalUsd: Math.max(0, Number(notional) || 0),
+    horizonHours: Math.max(1, Number(horizonDays) || 1) * 24,
+  };
+}
+
 function carryRouteKey(candidate: CarryCandidate) {
   return `${candidate.asset}:${candidate.long.venue_id}:${candidate.short.venue_id}`;
 }
 
 function formatBps(value: number) {
+  return formatBpsValue(value, "BP/D");
+}
+
+function formatBpsValue(value: number, suffix: "BP" | "BP/D") {
   const absolute = Math.abs(value);
   const decimals = absolute >= 100 ? 0 : absolute >= 10 ? 1 : 2;
-  return `${value >= 0 ? "+" : "−"}${absolute.toFixed(decimals)}BP/D`;
+  return `${value >= 0 ? "+" : "−"}${absolute.toFixed(decimals)}${suffix}`;
+}
+
+function formatHorizonDays(horizonHours: number) {
+  return `${horizonHours / 24}D`;
 }
 
 function formatAge(value: number) {

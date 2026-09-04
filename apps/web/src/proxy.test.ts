@@ -59,6 +59,16 @@ describe("middleware security hardening", () => {
     expect(prodCsp).not.toContain("https://*.githubusercontent.com");
   });
 
+  it("allows Google Identity styles and does not globally block its iframe", () => {
+    const csp = buildContentSecurityPolicy(false);
+    const headers = new Headers();
+    applySecurityHeaders(headers, { isDev: false, isHttps: true });
+
+    expect(csp).toContain("style-src 'self' 'unsafe-inline' https://accounts.google.com");
+    expect(headers.get("Cross-Origin-Opener-Policy")).toBe("same-origin-allow-popups");
+    expect(headers.get("Cross-Origin-Embedder-Policy")).toBeNull();
+  });
+
   it("allows the exact Cloudflare Turnstile origin on every required directive", () => {
     const prodCsp = buildContentSecurityPolicy(false);
     for (const directive of ["script-src", "connect-src", "frame-src"]) {

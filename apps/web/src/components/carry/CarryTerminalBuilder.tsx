@@ -123,18 +123,30 @@ const CARRY_CREATION_PROOF_FUTURE_TOLERANCE_MS = 5_000;
 
 export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
   candidate,
+  quoteNotional,
+  quoteHorizonDays,
+  onQuoteNotionalChange,
+  onQuoteHorizonDaysChange,
   autoRunNoSubmit = false,
   onAutoRunNoSubmitConsumed,
 }: {
   candidate: CarryCandidate;
+  quoteNotional?: string;
+  quoteHorizonDays?: string;
+  onQuoteNotionalChange?: (value: string) => void;
+  onQuoteHorizonDaysChange?: (value: string) => void;
   autoRunNoSubmit?: boolean;
   onAutoRunNoSubmitConsumed?: () => void;
 }) {
   const perpsTurnkey = usePerpsTurnkey();
   const auth = useThumperAuth();
   const privateSessionReady = auth.authenticated && !auth.loading;
-  const [notional, setNotional] = useState("11");
-  const [days, setDays] = useState("30");
+  const [localNotional, setLocalNotional] = useState("11");
+  const [localDays, setLocalDays] = useState("30");
+  const notional = quoteNotional ?? localNotional;
+  const days = quoteHorizonDays ?? localDays;
+  const setNotional = onQuoteNotionalChange ?? setLocalNotional;
+  const setDays = onQuoteHorizonDaysChange ?? setLocalDays;
   const [proof, setProof] = useState<Record<string, unknown> | null>(null);
   const [executionMatrix, setExecutionMatrix] = useState<Record<string, unknown> | null>(null);
   const [readiness, setReadiness] = useState<Record<string, unknown> | null>(null);
@@ -300,7 +312,7 @@ export const CarryTerminalBuilder = memo(function CarryTerminalBuilder({
       setNotional(exact);
       setProof(null);
     }
-  }, [migrationNotional, notional]);
+  }, [migrationNotional, notional, setNotional]);
   const latestObservation = current?.latest_observation || null;
   const runway = carryRunwaySummary(latestObservation, candidate);
   const carrySignal = carryFundingFlipSummary(current?.position, latestObservation);
@@ -811,8 +823,8 @@ export function carryTerminalEconomics(model: ReturnType<typeof builderModel>, o
       ? `${formatUsd(depth.minimumUsd)} MIN`
       : depth.status.toUpperCase(),
     depthTone: depth.status === "sufficient" ? "good" as const : depth.status === "insufficient" ? "bad" as const : "warn" as const,
-    net: opportunity ? formatVerifiedEconomicUsd(netUsd) : formatEconomicUsd(netUsd),
-    netTone: netUsd != null && netUsd > 0 ? "good" as const : undefined,
+    net: opportunity ? formatVerifiedSignedEconomicUsd(netUsd) : formatSignedEconomicUsd(netUsd),
+    netTone: netUsd == null ? undefined : netUsd > 0 ? "good" as const : netUsd < 0 ? "bad" as const : undefined,
     breakEven: opportunity
       ? proofBreakEvenMs == null ? "UNVERIFIED" : `${(proofBreakEvenMs / 86_400_000).toFixed(1)}D`
       : model.breakEvenDays == null ? "—" : `${model.breakEvenDays.toFixed(1)}D`,
@@ -1308,6 +1320,14 @@ function formatEconomicUsd(value: number | null) {
 
 function formatVerifiedEconomicUsd(value: number | null) {
   return value == null ? "UNVERIFIED" : formatUsd(value);
+}
+
+function formatSignedEconomicUsd(value: number | null) {
+  return value == null ? "ACCOUNT DATA" : `${value >= 0 ? "+" : "−"}${formatUsd(Math.abs(value))}`;
+}
+
+function formatVerifiedSignedEconomicUsd(value: number | null) {
+  return value == null ? "UNVERIFIED" : `${value >= 0 ? "+" : "−"}${formatUsd(Math.abs(value))}`;
 }
 
 function carryRunwaySummary(observation: CarryRecord["latest_observation"] | null, candidate: CarryCandidate) {

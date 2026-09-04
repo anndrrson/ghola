@@ -1,6 +1,6 @@
 /**
  * Single source of truth for CSP `connect-src` hosts and the
- * cross-origin-isolation header set.
+ * cross-origin browser-policy header set.
  *
  * Why this file exists
  * --------------------
@@ -84,16 +84,15 @@ export function connectSrcDirective(): string {
 }
 
 /**
- * Cross-origin isolation headers. COEP `require-corp` + COOP `same-origin`
- * enable `SharedArrayBuffer` (used by the in-browser model runtime). CORP
- * `same-origin` restricts who may embed our subresources. Emitted by BOTH
- * the static config and the runtime Proxy so isolation is uniform.
+ * Google Identity renders its button in a cross-origin iframe, so global
+ * COEP isolation would block sign-in. COOP still isolates the browsing
+ * context while allowing the identity popup; CORP continues to prevent
+ * third-party embedding of Ghola resources.
  */
 export const CROSS_ORIGIN_ISOLATION_HEADERS: ReadonlyArray<{
   key: string;
   value: string;
 }> = [
-  { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
-  { key: "Cross-Origin-Embedder-Policy", value: "require-corp" },
+  { key: "Cross-Origin-Opener-Policy", value: "same-origin-allow-popups" },
   { key: "Cross-Origin-Resource-Policy", value: "same-origin" },
 ];

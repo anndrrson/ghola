@@ -1,13 +1,41 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CarryChartStrip } from "./CarryChartStrip";
+import { CarryChartStrip, carryRouteQuoteParameters } from "./CarryChartStrip";
 import type { CarryShadowResponse, CarryShadowSnapshot } from "@/lib/carry-market";
 
 vi.mock("next/link", () => ({
   default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) => (
     <a href={href} {...props}>{children}</a>
   ),
+}));
+vi.mock("next/dynamic", () => ({
+  default: () => function MockCarryTerminalBuilder({
+    quoteNotional,
+    quoteHorizonDays,
+    onQuoteNotionalChange,
+    onQuoteHorizonDaysChange,
+  }: {
+    quoteNotional?: string;
+    quoteHorizonDays?: string;
+    onQuoteNotionalChange?: (value: string) => void;
+    onQuoteHorizonDaysChange?: (value: string) => void;
+  }) {
+    return (
+      <div aria-label="Carry position builder">
+        <input
+          aria-label="Carry notional per leg"
+          value={quoteNotional ?? ""}
+          onChange={(event) => onQuoteNotionalChange?.(event.target.value)}
+        />
+        <input
+          aria-label="Carry horizon in days"
+          value={quoteHorizonDays ?? ""}
+          onChange={(event) => onQuoteHorizonDaysChange?.(event.target.value)}
+        />
+      </div>
+    );
+  },
 }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -43,6 +71,39 @@ describe("CarryChartStrip", () => {
     );
   });
 
+  it("shows an honest loading state before live routes arrive", async () => {
+    vi.mocked(fetch).mockReturnValue(new Promise<Response>(() => undefined));
+    await act(async () => {
+      root.render(<CarryChartStrip asset="BTC" defaultOpen onAssetSelect={vi.fn()} />);
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("LOADING LIVE ROUTES");
+    expect(container.textContent).toContain("Checking live market qualification…");
+    expect(container.textContent).toContain("Loading live cross-venue routes…");
+    expect(container.textContent).not.toContain("has not started");
+    expect(container.textContent).not.toContain("No fresh cross-venue quote pair");
+  });
+
+  it("uses one quote horizon for route ranking and displayed net sign", async () => {
+    await renderShadow(shadowResponse([
+      snapshot("hyperliquid", 10_000_000),
+      snapshot("lighter", 10_000_001),
+    ]), true);
+
+    const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
+    expect(carryRouteQuoteParameters("11", "30")).toEqual({ notionalUsd: 11, horizonHours: 720 });
+    expect(rail?.getAttribute("data-ranking-notional-usd")).toBe("11");
+    expect(rail?.getAttribute("data-ranking-horizon-hours")).toBe("720");
+    expect(rail?.textContent).toContain("NET/30D*−");
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Carry horizon in days"]')?.value).toBe("30");
+
+    await setInput(container.querySelector<HTMLInputElement>('[aria-label="Carry horizon in days"]'), "1");
+
+    expect(rail?.getAttribute("data-ranking-horizon-hours")).toBe("24");
+    expect(rail?.textContent).toContain("NET/1D*−");
+  });
+
   it("separates observed gross spread from unavailable net economics", async () => {
     await renderShadow(shadowResponse([
       snapshot("hyperliquid", 10_000_000),
@@ -54,7 +115,7 @@ describe("CarryChartStrip", () => {
     expect(rail?.getAttribute("data-edge-evidence")).toBe("indicative");
     expect(rail?.getAttribute("data-cost-basis")).toBe("gross-only");
     expect(rail?.textContent).toContain("GROSS");
-    expect(rail?.textContent).toContain("NET24H*—");
+    expect(rail?.textContent).toContain("NET/30D*—");
     expect(rail?.textContent).not.toContain("DATA");
     expect(rail?.textContent).not.toContain("QUAL");
   });
@@ -69,7 +130,7 @@ describe("CarryChartStrip", () => {
     expect(rail?.getAttribute("data-modeled-net-positive")).toBe("true");
     expect(rail?.getAttribute("data-cost-basis")).toBe("net");
     expect(rail?.textContent).toContain("GROSS");
-    expect(rail?.textContent).toContain("NET24H*+");
+    expect(rail?.textContent).toContain("NET/30D*+");
   });
 
   it("shows modeled routing edge without presenting it as realized P&L", async () => {
@@ -96,13 +157,18 @@ describe("CarryChartStrip", () => {
     body.routing_advantage = routingAdvantageSummary(Date.parse(body.observed_at));
     await renderShadow(body, true);
 
+    expect(container.querySelector('[aria-label="Cross-venue route intelligence"]')
+      ?.getAttribute("data-routing-evidence")).not.toBe("committed");
+    await setInput(container.querySelector<HTMLInputElement>('[aria-label="Carry notional per leg"]'), "10000");
+    await setInput(container.querySelector<HTMLInputElement>('[aria-label="Carry horizon in days"]'), "1");
+
     const edge = [...container.querySelectorAll("span")].find((item) => item.textContent?.includes("EDGE✓"));
     expect(container.querySelector('[aria-label="Cross-venue route intelligence"]')
       ?.getAttribute("data-routing-evidence")).toBe("committed");
     expect(container.querySelector('[aria-label="Cross-venue route intelligence"]')
       ?.getAttribute("data-net-evidence")).toBe("committed");
     expect(container.querySelector('[aria-label="Cross-venue route intelligence"]')
-      ?.firstElementChild?.textContent).toContain("NET24H✓+3.50BP/D");
+      ?.firstElementChild?.textContent).toContain("NET/1D✓+3.50BP/D");
     expect(edge?.textContent).toContain("EDGE✓ +");
     expect(edge?.getAttribute("title")).toContain("worker-committed modeled net");
     expect(edge?.getAttribute("title")).toContain("excludes the account fee tier");
@@ -208,12 +274,12 @@ describe("CarryChartStrip", () => {
   it("shows negative net value without qualifying the route", async () => {
     await renderShadow(shadowResponse([
       snapshot("hyperliquid", 10_000_000),
-      snapshot("lighter", 20_000_000),
+      snapshot("lighter", 10_000_001),
     ]));
 
     const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
     expect(rail?.getAttribute("data-modeled-net-positive")).toBe("false");
-    expect(rail?.textContent).toContain("NET24H*−");
+    expect(rail?.textContent).toContain("NET/30D*−");
   });
 
   it("shows only commitment-backed worker history as durable route evidence", async () => {
@@ -312,6 +378,15 @@ describe("CarryChartStrip", () => {
       root.render(<CarryChartStrip asset="BTC" defaultOpen={defaultOpen} onAssetSelect={vi.fn()} />);
       await Promise.resolve();
       await Promise.resolve();
+    });
+  }
+
+  async function setInput(input: HTMLInputElement | null, value: string) {
+    expect(input).toBeTruthy();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(input, value);
+      input?.dispatchEvent(new Event("input", { bubbles: true }));
     });
   }
 });

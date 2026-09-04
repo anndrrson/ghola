@@ -37,7 +37,7 @@ import { GholaMarketChart } from "@/components/private-account/GholaMarketChart"
 import { CarryChartStrip } from "@/components/carry/CarryChartStrip";
 import { CarryPositionRail } from "@/components/carry/CarryPositionRail";
 import type { CarryLiveMarketPatch } from "@/lib/carry-market";
-import { carryTerminalChrome } from "@/lib/carry-terminal-chrome";
+import { carryMarketStatus, carryTerminalChrome } from "@/lib/carry-terminal-chrome";
 import {
   formatAssetQuantity,
   formatCompactUsd,
@@ -1608,7 +1608,9 @@ function AlternateProductWorkspace({
           <div className="flex items-center gap-2">
             <span className="inline-flex h-9 items-center gap-2 rounded-md border border-[#26313f] bg-[#0b0e13] px-3 text-xs text-[#a8b2c1]">
               <span className={displayedMarketStatus === "live" ? "h-1.5 w-1.5 rounded-full bg-[#62d6a5]" : "h-1.5 w-1.5 rounded-full bg-[#d9b96e]"} />
-              {formatStatus(displayedMarketStatus, Boolean(displayedFrame))}
+              {carryWorkspaceOpen
+                ? carryMarketStatus(displayedMarketStatus, Boolean(displayedFrame))
+                : formatStatus(displayedMarketStatus, Boolean(displayedFrame))}
             </span>
             {product === "perps" && carryChrome.showVenueReadiness && (
               <span className="inline-flex h-9 items-center gap-2 rounded-md border border-[#26313f] bg-[#0b0e13] px-3 text-xs text-[#a8b2c1]" title={hyperliquidReadiness.detail}>

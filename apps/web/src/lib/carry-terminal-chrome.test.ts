@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { carryTerminalChrome } from "./carry-terminal-chrome";
+import { carryMarketStatus, carryTerminalChrome } from "./carry-terminal-chrome";
 
 describe("Carry terminal chrome", () => {
   it("keeps the reference chart while removing venue-owned terminal chrome", () => {
@@ -28,5 +28,11 @@ describe("Carry terminal chrome", () => {
       showVenueOrderTicket: true,
       showReferenceChart: true,
     });
+  });
+
+  it("labels Carry market data without implying execution is live", () => {
+    expect(carryMarketStatus("live", true)).toBe("Live market data · execution locked");
+    expect(carryMarketStatus("reconnecting", false)).toBe("Market data reconnecting · execution locked");
+    expect(carryMarketStatus("stale", true)).toBe("Delayed market data · execution locked");
   });
 });

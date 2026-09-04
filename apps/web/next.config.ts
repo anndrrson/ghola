@@ -11,8 +11,8 @@ import { CROSS_ORIGIN_ISOLATION_HEADERS } from "./src/lib/csp-config";
 // proxy owns CSP so production can use Next's per-request nonce flow
 // without shipping an oversized inline hash allowlist header.
 //
-// Cross-Origin-Embedder / Opener — required for SharedArrayBuffer,
-// which WebLLM uses for fast tensor ops in some configurations.
+// Cross-origin browser policy is shared with the runtime proxy. It keeps
+// Ghola resources non-embeddable without globally blocking Google Identity.
 
 const LOCKED_PERMISSIONS_POLICY =
   "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()";
@@ -32,10 +32,7 @@ export const SECURITY_HEADERS = [
     key: "Strict-Transport-Security",
     value: "max-age=63072000; includeSubDomains; preload",
   },
-  // Cross-origin isolation (COOP + COEP + CORP) lets the in-browser model
-  // runtime use SharedArrayBuffer. Shared with the runtime Proxy via
-  // src/lib/csp-config.ts so the same isolation set is emitted on every
-  // response (the Proxy previously omitted COEP).
+  // Shared with the runtime Proxy so every page receives the same policy.
   ...CROSS_ORIGIN_ISOLATION_HEADERS,
 ];
 

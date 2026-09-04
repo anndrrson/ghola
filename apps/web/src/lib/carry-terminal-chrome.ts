@@ -36,3 +36,18 @@ export function carryTerminalChrome(carryWorkspaceOpen: boolean): CarryTerminalC
     showReferenceChart: true,
   });
 }
+
+export function carryMarketStatus(status: string, hasMarketData = false) {
+  if (status === "live") return "Live market data · execution locked";
+  if (status === "fallback_polling") return "Live market data · fallback · execution locked";
+  if (status === "reconnecting") {
+    return hasMarketData
+      ? "Cached market data · reconnecting · execution locked"
+      : "Market data reconnecting · execution locked";
+  }
+  if (status === "stale") return "Delayed market data · execution locked";
+  if (status === "error") return "Market data unavailable · execution locked";
+  return hasMarketData
+    ? "Cached market data · refreshing · execution locked"
+    : "Establishing market data · execution locked";
+}

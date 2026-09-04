@@ -65,7 +65,7 @@ export function buildContentSecurityPolicy(isDev: boolean): string {
   const directives = [
     "default-src 'self'",
     scriptSrc,
-    "style-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline' https://accounts.google.com",
     "img-src 'self' data: blob: https:",
     "font-src 'self' data:",
     "media-src 'self' blob:",

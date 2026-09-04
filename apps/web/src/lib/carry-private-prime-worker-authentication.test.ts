@@ -28,7 +28,11 @@ describe("private-prime worker authentication", () => {
     contextTampered.private_prime_authentication.context.work_order_commitment = "carry_readiness_other";
     expect(verify(contextTampered).ok).toBe(false);
     expect(verify(response(), { work_order_commitment: "carry_readiness_other" }).ok).toBe(false);
-    expect(verify(response(), {}, NOW + 5_001).ok).toBe(false);
+    expect(verify(response(), {}, NOW + 30_001)).toEqual({
+      ok: false,
+      error: "carry_private_prime_worker_authentication_invalid",
+      reason: "response_age",
+    });
     expect(verify({ private_prime_readiness: response().private_prime_readiness }).ok).toBe(false);
     expect(verifyCarryPrivatePrimeWorkerAuthentication({
       route_path: "/carry/readiness",
@@ -38,6 +42,18 @@ describe("private-prime worker authentication", () => {
       now_ms: NOW,
       env: { NODE_ENV: "production", GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64: "wrong-pin" },
     }).ok).toBe(false);
+  });
+
+  it("authenticates a fresh negative readiness response even when its evidence is expired or unavailable", () => {
+    const expired = response();
+    expired.private_prime_readiness.expires_at_ms = NOW - 1;
+    resign(expired);
+    expect(verify(expired)).toEqual({ ok: true });
+
+    const unavailable = response();
+    unavailable.private_prime_readiness.expires_at_ms = null as unknown as number;
+    resign(unavailable);
+    expect(verify(unavailable)).toEqual({ ok: true });
   });
 });
 
@@ -99,4 +115,15 @@ function response() {
       },
     },
   };
+}
+
+function resign(value: ReturnType<typeof response>) {
+  value.private_prime_authentication.context.expires_at_ms = value.private_prime_readiness.expires_at_ms;
+  const message = carryPrivatePrimeWorkerAuthenticationMessage(value.private_prime_authentication.context);
+  value.private_prime_authentication.mac_hex = createHmac("sha256", SECRET).update(message).digest("hex");
+  value.private_prime_authentication.signature_b64 = signEd25519(
+    null,
+    Buffer.from(message, "utf8"),
+    SIGNER.privateKey,
+  ).toString("base64");
 }
