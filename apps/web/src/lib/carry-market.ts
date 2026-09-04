@@ -705,7 +705,11 @@ export function carryRoutingAdvantageEvidence(
 
 export function carryWorkerCommittedCandidate(
   response: CarryShadowResponse | null,
-  candidates: PricedCarryCandidate[],
+  venues: CarryVenueShadow[],
+  asset: string,
+  notionalUsd: number,
+  horizonHours: number,
+  nowMs = Date.now(),
 ): PricedCarryCandidate | null {
   const summary = response?.routing_advantage;
   if (!summary
@@ -714,22 +718,63 @@ export function carryWorkerCommittedCandidate(
       || !Number.isSafeInteger(summary.horizon_ms)
       || summary.horizon_ms <= 0
       || !Array.isArray(summary.routes)) return null;
-  const scopedCandidates = rankCarryCandidatesByNet(
-    candidates.map((item) => item.candidate),
+  const route = summary.routes.find((item) => item.asset === asset)?.selected_route;
+  if (!route) return null;
+  const evidenceCandidate = directedCarryCandidate(
+    response.venues,
+    asset,
+    route.long_venue_id,
+    route.short_venue_id,
+  );
+  if (!evidenceCandidate) return null;
+  const [scopedCandidate] = rankCarryCandidatesByNet(
+    [evidenceCandidate],
     summary.notional_micro_usdc / 1_000_000,
     summary.horizon_ms / 3_600_000,
     Date.parse(response.observed_at),
   );
-  const committed = scopedCandidates.find((candidate) =>
-    carryRoutingAdvantageEvidence(
-      response,
-      candidate,
-      carryRoutingAdvantage(candidate, scopedCandidates),
-    ).status === "committed"
-  );
-  if (!committed) return null;
-  const routeId = carryRouteId(committed.candidate);
-  return candidates.find((candidate) => carryRouteId(candidate.candidate) === routeId) || null;
+  if (carryRoutingAdvantageEvidence(
+    response,
+    scopedCandidate,
+    carryRoutingAdvantage(scopedCandidate, [scopedCandidate]),
+  ).status !== "committed") return null;
+  const liveCandidate = directedCarryCandidate(
+    venues,
+    asset,
+    route.long_venue_id,
+    route.short_venue_id,
+  ) || evidenceCandidate;
+  if (carryCandidateAgeMs(liveCandidate, nowMs) > CARRY_DEPTH_MAX_AGE_MS) return null;
+  return rankCarryCandidatesByNet([liveCandidate], notionalUsd, horizonHours, nowMs)[0] || null;
+}
+
+function directedCarryCandidate(
+  venues: CarryVenueShadow[],
+  asset: string,
+  longVenueId: string,
+  shortVenueId: string,
+): CarryCandidate | null {
+  const findSnapshot = (venueId: string) => {
+    const venue = venues.find((item) => item.venue_id === venueId && item.ok);
+    const snapshot = venue?.snapshots.find((item) => item.asset === asset);
+    return snapshot
+      && !snapshot.stale
+      && snapshot.status !== "quarantined"
+      && snapshot.funding_rate_e12_per_interval != null
+      && snapshot.funding_interval_ms
+      ? snapshot
+      : null;
+  };
+  const long = findSnapshot(longVenueId);
+  const short = findSnapshot(shortVenueId);
+  if (!long || !short || longVenueId === shortVenueId || !carryContractsAreComparable(long, short)) return null;
+  return {
+    asset,
+    long,
+    short,
+    grossAnnualBps: annualFundingBps(short) - annualFundingBps(long),
+    exact: long.status === "ready" && short.status === "ready",
+  };
 }
 
 function indicativeAdvantage(advantage: CarryRoutingAdvantage): CarryRoutingAdvantageEvidence {

@@ -177,9 +177,9 @@ describe("CarryChartStrip", () => {
 
   it("defaults to the worker-committed route when the live ranking points elsewhere", async () => {
     const body = shadowResponse([
-      snapshot("hyperliquid", 10_000_000),
-      snapshot("lighter", 40_000_000),
-      snapshot("aster", 150_000_000),
+      snapshot("hyperliquid", 40_000_000),
+      snapshot("lighter", 150_000_000),
+      snapshot("aster", 10_000_000),
     ]);
     body.shadow_qualification = marketQualification();
     body.funding_persistence = routingFundingPersistence();

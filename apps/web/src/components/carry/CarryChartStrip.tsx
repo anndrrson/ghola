@@ -166,17 +166,31 @@ export function CarryChartStrip({
     && preferredLongVenue !== preferredShortVenue
     ? `${asset}:${preferredLongVenue}:${preferredShortVenue}`
     : "";
-  const workerSelectedExecution = carryWorkerCommittedCandidate(data, assetExecutionCandidates);
-  const selectedExecution = assetExecutionCandidates.find(({ candidate }) => carryRouteKey(candidate) === executionRouteKey)
+  const workerSelectedExecution = carryWorkerCommittedCandidate(
+    data,
+    effectiveVenues,
+    asset,
+    quoteParameters.notionalUsd,
+    quoteParameters.horizonHours,
+    clock,
+  );
+  const selectableExecutionCandidates = workerSelectedExecution
+    ? [
+      workerSelectedExecution,
+      ...assetExecutionCandidates.filter(({ candidate }) =>
+        carryRouteKey(candidate) !== carryRouteKey(workerSelectedExecution.candidate)),
+    ]
+    : assetExecutionCandidates;
+  const selectedExecution = selectableExecutionCandidates.find(({ candidate }) => carryRouteKey(candidate) === executionRouteKey)
     || (preferredExecutionRouteKey
-      ? assetExecutionCandidates.find(({ candidate }) => carryRouteKey(candidate) === preferredExecutionRouteKey)
+      ? selectableExecutionCandidates.find(({ candidate }) => carryRouteKey(candidate) === preferredExecutionRouteKey)
       : workerSelectedExecution || assetExecutionCandidates[0])
     || null;
   const selected = preferredExecutionRouteKey
     ? selectedExecution
     : selectedExecution || selectedObserved;
   const routeMode = selectedExecution ? "execution" : selected ? "shadow" : "none";
-  const routingAdvantage = carryRoutingAdvantage(selectedExecution, assetExecutionCandidates);
+  const routingAdvantage = carryRoutingAdvantage(selectedExecution, selectableExecutionCandidates);
   const routingEvidence = carryRoutingAdvantageEvidence(data, selectedExecution, routingAdvantage);
   const selectedAgeMs = selected ? carryCandidateAgeMs(selected.candidate, clock) : Number.POSITIVE_INFINITY;
   const committedSelectedNet = routingEvidence.status === "committed" ? routingEvidence.selectedNet : null;
@@ -374,7 +388,7 @@ export function CarryChartStrip({
           )}
           {selectedExecution ? (
             <>
-              {assetExecutionCandidates.length > 1 ? (
+              {selectableExecutionCandidates.length > 1 ? (
                 <label className="mt-2 flex items-center justify-end gap-2 font-mono text-[9px] text-[#657286]">
                   EXEC ROUTE
                   <select
@@ -383,7 +397,7 @@ export function CarryChartStrip({
                     onChange={(event) => setExecutionRouteKey(event.target.value)}
                     className="max-w-[18rem] rounded border border-[#202a37] bg-[#070a0f] px-2 py-1 text-[10px] text-[#b8c3d1] outline-none focus:border-[#35618d]"
                   >
-                    {assetExecutionCandidates.map(({ candidate, daily_value_bps: dailyValueBps }) => (
+                    {selectableExecutionCandidates.map(({ candidate, daily_value_bps: dailyValueBps }) => (
                       <option key={carryRouteKey(candidate)} value={carryRouteKey(candidate)}>
                         L {venueName(candidate.long.venue_id)} / S {venueName(candidate.short.venue_id)} · {formatBps(dailyValueBps)}
                       </option>
@@ -401,12 +415,12 @@ export function CarryChartStrip({
                 onAutoRunNoSubmitConsumed={onAutoRunNoSubmitConsumed}
               />
             </>
-          ) : preferredExecutionRouteKey && assetExecutionCandidates.length > 0 ? (
+          ) : preferredExecutionRouteKey && selectableExecutionCandidates.length > 0 ? (
             <div className="mt-2 flex min-h-8 items-center justify-between gap-3 rounded border border-[#4b3840] bg-[#160d11] px-2.5 text-[10px] text-[#d6959f]">
               <span>SELECTED ROUTE STALE OR UNAVAILABLE · NO CHECK STARTED</span>
               <button
                 type="button"
-                onClick={() => setExecutionRouteKey(carryRouteKey(assetExecutionCandidates[0].candidate))}
+                onClick={() => setExecutionRouteKey(carryRouteKey(selectableExecutionCandidates[0].candidate))}
                 className="shrink-0 rounded border border-[#684b55] px-2 py-1 font-mono font-semibold text-[#efb0ba] hover:bg-white/5"
               >
                 USE CURRENT QUALIFIED ROUTE
