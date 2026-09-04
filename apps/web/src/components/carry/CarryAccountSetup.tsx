@@ -890,7 +890,7 @@ export function CarryAccountSetup({
                         checking={checkingLighterReadiness}
                       />
                     ) : (
-                      <p className="mt-4 text-xs leading-5 text-[#a7a08f]">Activate this exact wallet on Aster, then return here for one owner approval.</p>
+                      <p className="mt-4 text-xs leading-5 text-[#a7a08f]">Aster must recognize this exact owner first. Ghola will preserve the same sealed signer, then request one fresh owner approval—never create another signer or retry an ambiguous submission.</p>
                     )}
                     <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
                       <a href={activeActivationNeeded.venue === "aster" ? "https://www.asterdex.com/en" : "https://app.lighter.xyz/"} target="_blank" rel="noreferrer" className="inline-flex h-10 items-center justify-center rounded-md bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d]">
@@ -914,6 +914,7 @@ export function CarryAccountSetup({
                         </button>
                       )}
                     </div>
+                    <Link href={safeReturnTo} className="mt-4 inline-flex text-xs font-semibold text-[#8fcaff] hover:text-white">Continue modeling without funds</Link>
                     <p className="mt-4 text-xs leading-5 text-[#7e7869]">{activeActivationNeeded.venue === "lighter"
                       ? "No Lighter key or transaction was created. You can keep exploring routes without funding anything."
                       : "No order was submitted and no funds moved. You can keep exploring routes."}</p>
