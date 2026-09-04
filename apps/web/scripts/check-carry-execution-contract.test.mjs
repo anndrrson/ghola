@@ -473,6 +473,19 @@ test("rejects private-prime evidence detached from the attested worker signer", 
   );
 });
 
+test("rejects authenticated private-prime responses older than 30 seconds", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webPrivatePrimeAuthentication: sources.webPrivatePrimeAuthentication.replace(
+        "const MAX_AUTHENTICATED_RESPONSE_AGE_MS = 30_000;",
+        "const MAX_AUTHENTICATED_RESPONSE_AGE_MS = 300_000;",
+      ),
+    }),
+    /carry_private_prime_gateway_response_age_limit_missing/,
+  );
+});
+
 test("rejects private-prime evidence without its exact signed request context", () => {
   assert.throws(
     () => checkCarryExecutionContract({
@@ -690,9 +703,25 @@ test("rejects hiding worker-committed selected-route net from the primary rail",
   assert.throws(
     () => checkCarryExecutionContract({
       ...sources,
-      webCarryChart: sources.webCarryChart.replace('committedSelectedNet ? "NET24H✓" : "NET24H*"', '"NET24H*"'),
+      webCarryChart: sources.webCarryChart.replace(
+        'committedSelectedNet ? "NET/1D✓" : `NET/${formatHorizonDays(selected.quote.horizonHours)}*`',
+        '"NET*"',
+      ),
     }),
     /carry_terminal_selected_net_display_missing/,
+  );
+});
+
+test("rejects a selected-horizon net detached from route-ranking quote inputs", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryChart: sources.webCarryChart.replace(
+        "quoteParameters.notionalUsd,\n    quoteParameters.horizonHours,\n    clock,",
+        "quoteParameters.notionalUsd,\n    24,\n    clock,",
+      ),
+    }),
+    /carry_route_ranking_quote_inputs_missing/,
   );
 });
 
@@ -3341,6 +3370,19 @@ test("rejects terminal net value that omits conservative worker costs", () => {
   );
 });
 
+test("rejects a terminal that drops the sign from negative horizon net", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryBuilder: sources.webCarryBuilder.replace(
+        "formatSignedEconomicUsd(netUsd)",
+        "formatEconomicUsd(netUsd)",
+      ),
+    }),
+    /carry_terminal_signed_net_missing/,
+  );
+});
+
 test("rejects replacing the terminal rail with marketing status copy", () => {
   assert.throws(
     () => checkCarryExecutionContract({
@@ -3358,6 +3400,19 @@ test("rejects transport activity presented as verified market data", () => {
       webCarryChart: `${sources.webCarryChart}\nDATA {liveVenueCount}`,
     }),
     /carry_socket_status_mislabeled_as_live_data/,
+  );
+});
+
+test("rejects market evidence that reports absence while the live route request is loading", () => {
+  assert.throws(
+    () => checkCarryExecutionContract({
+      ...sources,
+      webCarryChart: sources.webCarryChart.replace(
+        '{initialLoading ? "LOADING" : marketEvidence.value}',
+        "{marketEvidence.value}",
+      ),
+    }),
+    /carry_market_qualification_display_missing/,
   );
 });
 

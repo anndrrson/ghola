@@ -1445,7 +1445,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("webPrivatePrimeAuthentication", "GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64", "carry_private_prime_gateway_signer_pin_missing");
   requireText("webPrivatePrimeAuthentication", "readiness.owner_commitment === ownerCommitment", "carry_private_prime_gateway_owner_binding_missing");
   requireText("webPrivatePrimeAuthentication", "context.work_order_commitment === workOrderCommitment", "carry_private_prime_gateway_signed_context_missing");
-  requireText("webPrivatePrimeAuthentication", "expiresAtMs > now_ms", "carry_private_prime_gateway_expiry_missing");
+  requireText("webPrivatePrimeAuthentication", "const MAX_AUTHENTICATED_RESPONSE_AGE_MS = 30_000;", "carry_private_prime_gateway_response_age_limit_missing");
+  requireText("webPrivatePrimeAuthentication", "checkedAtMs < now_ms - MAX_AUTHENTICATED_RESPONSE_AGE_MS", "carry_private_prime_gateway_response_age_gate_missing");
+  requireText("webPrivatePrimeAuthenticationTest", "NOW + 30_001", "carry_private_prime_gateway_response_age_test_missing");
+  requireText("webPrivatePrimeAuthenticationTest", 'reason: "response_age"', "carry_private_prime_gateway_response_age_test_missing");
   requireText("webPrivatePrimeAuthenticationTest", "replay under another work order", "carry_private_prime_gateway_authentication_test_missing");
   requireText("webPrivatePrimeAuthenticationTest", "contextTampered", "carry_private_prime_gateway_context_tamper_test_missing");
   requireText("webPrivatePrimeAuthenticationTest", 'GHOLA_FUNDING_WORKER_SIGNER_KEYS_B64: "wrong-pin"', "carry_private_prime_gateway_signer_pin_test_missing");
@@ -1515,7 +1518,14 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryChart", "CARRY_UI_PUBLISH_INTERVAL_MS", "carry_ui_publish_throttle_missing");
   requireText("webCarryChart", "CARRY_ROUTE_DISPLAY_MAX_AGE_MS", "carry_ui_stale_route_gate_missing");
   requireText("webCarryChart", "const freshCandidates", "carry_ui_execution_stale_route_gate_missing");
-  requireText("webCarryChart", "expectedNetDailyUsd", "carry_net_value_display_missing");
+  requireText("webCarryChart", "formatHorizonBps(selected.quote)", "carry_net_value_display_missing");
+  requireText(
+    "webCarryChart",
+    "quoteParameters.notionalUsd,\n    quoteParameters.horizonHours,\n    clock,",
+    "carry_route_ranking_quote_inputs_missing",
+  );
+  requireText("webCarryChart", "quoteNotional={quoteNotional}", "carry_builder_quote_notional_binding_missing");
+  requireText("webCarryChart", "quoteHorizonDays={quoteHorizonDays}", "carry_builder_quote_horizon_binding_missing");
   requireText("webCarryChart", "isCarryExecutionVenue(candidate.long.venue_id)", "carry_executable_route_fallback_missing");
   requireText("webCarryChart", "rankCarryCandidatesByNet", "carry_net_route_ranking_missing");
   requireText("webCarryChart", 'aria-label="Carry execution route"', "carry_execution_route_selector_missing");
@@ -1532,7 +1542,7 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryChart", "XVENUE", "carry_terminal_rail_missing");
   requireText("webCarryChart", "formatBps", "carry_basis_point_display_missing");
   requireText("webCarryChart", "grossDailyBps", "carry_gross_value_display_missing");
-  requireText("webCarryChart", "NET24H", "carry_net_value_display_missing");
+  requireText("webCarryChart", "NET/${formatHorizonDays(quote.horizonHours)}*", "carry_net_value_display_missing");
   requireText("webCarryChart", "routeHasPositiveNet", "carry_positive_net_qualification_missing");
   requireText("webCarryChart", "carryFundingEvidenceForCandidate", "carry_public_funding_evidence_missing");
   requireText("webCarryChart", "data-edge-evidence={edgeEvidence.status}", "carry_funding_evidence_state_missing");
@@ -1547,7 +1557,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("webAccountSetup", "return executionVenueLabel(venueId);", "carry_setup_venue_label_registry_missing");
   requireText("webCarryMarket", "CARRY_SHADOW_QUALIFICATION_COMMITMENT", "carry_market_qualification_commitment_gate_missing");
   requireText("webCarryChart", "data-market-evidence={marketEvidence.status}", "carry_market_qualification_state_missing");
-  requireText("webCarryChart", "{marketEvidence.value}", "carry_market_qualification_display_missing");
+  requireText("webCarryChart", "const initialLoading = loading && data === null && !error;", "carry_market_qualification_loading_state_missing");
+  requireText("webCarryChart", '{initialLoading ? "LOADING" : marketEvidence.value}', "carry_market_qualification_display_missing");
+  requireText("webCarryChart", "Checking live market qualification…", "carry_market_qualification_loading_display_missing");
+  requireText("webCarryChartTest", "shows an honest loading state before live routes arrive", "carry_market_qualification_loading_test_missing");
   requireText("webCarryMarket", "durability check required", "carry_point_in_time_edge_warning_missing");
   requireText("webCarryChart", 'data-modeled-net-positive={selectedHasPositiveNet ? "true" : "false"}', "carry_point_in_time_net_state_missing");
   forbidText("webCarryChart", 'data-route-qualified={selectedHasPositiveNet ? "true" : "false"}', "carry_single_tick_route_qualification_forbidden");
@@ -1588,8 +1601,9 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryMarket", "selectedNet: committedSelectedNet", "carry_routing_selected_value_result_missing");
   requireText("webCarryMarketTest", "shows worker-committed net value without inventing route savings", "carry_routing_selected_value_web_test_missing");
   requireText("webCarryChart", 'data-net-evidence={committedSelectedNet ? "committed" : "indicative"}', "carry_terminal_selected_net_state_missing");
-  requireText("webCarryChart", 'committedSelectedNet ? "NET24H✓" : "NET24H*"', "carry_terminal_selected_net_display_missing");
-  requireText("webCarryChartTest", "NET24H✓+3.50BP/D", "carry_terminal_selected_net_test_missing");
+  requireText("webCarryChart", 'committedSelectedNet ? "NET/1D✓" : `NET/${formatHorizonDays(selected.quote.horizonHours)}*`', "carry_terminal_selected_net_display_missing");
+  requireText("webCarryChartTest", "NET/1D✓+3.50BP/D", "carry_terminal_selected_net_test_missing");
+  requireText("webCarryChartTest", "uses one quote horizon for route ranking and displayed net sign", "carry_terminal_selected_horizon_test_missing");
   requireText("webCarryChartTest", "shows modeled routing edge without presenting it as realized P&L", "carry_routing_advantage_disclosure_test_missing");
   requireText("webCarryChartTest", "upgrades modeled edge only when worker evidence matches the selected route", "carry_routing_advantage_worker_ui_test_missing");
   requireText("webCarryChart", "AGE {formatAge", "carry_feed_age_display_missing");
@@ -1653,6 +1667,10 @@ export function checkCarryExecutionContract(sources) {
   requireText("webCarryBuilderTest", "shows compact live margin-runway evidence inside the terminal", "carry_terminal_runway_display_test_missing");
   requireText("webCarryBuilderTest", 'toContain("400MS")', "carry_terminal_source_sync_test_missing");
   requireText("webCarryBuilderTest", 'toContain("3BP")', "carry_terminal_index_basis_test_missing");
+  requireText("webCarryBuilder", "formatSignedEconomicUsd(netUsd)", "carry_terminal_signed_net_missing");
+  requireText("webCarryBuilder", "formatVerifiedSignedEconomicUsd(netUsd)", "carry_terminal_verified_signed_net_missing");
+  requireText("webCarryBuilder", 'netUsd < 0 ? "bad" as const', "carry_terminal_negative_net_tone_missing");
+  requireText("webCarryBuilderTest", "keeps a negative horizon net visibly negative", "carry_terminal_negative_net_test_missing");
   const quoteEvaluationCount = String(sources.webCarryChart || "")
     .match(/quoteCarryCandidate\s*\(/g)?.length || 0;
   if (quoteEvaluationCount > 0) failures.push("carry_redundant_quote_rendering");
