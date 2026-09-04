@@ -6,11 +6,15 @@ import { CarryAccountSetup } from "./CarryAccountSetup";
 const state = vi.hoisted(() => ({
   search: "",
   recovery: null as null | Record<string, unknown>,
+  perpsAuthenticated: false,
+  hasPasskey: false,
 }));
 const api = vi.hoisted(() => ({
   getHyperliquidExecutionVaultStatus: vi.fn(),
   getPrivateAgentPassport: vi.fn(),
   fetchPrivateAgentRuntimeStatus: vi.fn(),
+  addPasskey: vi.fn(),
+  ensureWalletPair: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -54,14 +58,14 @@ vi.mock("@/lib/turnkey-provider", () => ({
 }));
 vi.mock("@/lib/perps-turnkey-provider", () => ({
   usePerpsTurnkey: () => ({
-    authenticated: false,
+    authenticated: state.perpsAuthenticated,
     configured: true,
-    hasPasskey: true,
+    hasPasskey: state.hasPasskey,
     loading: false,
-    ensureWalletPair: vi.fn(),
+    ensureWalletPair: api.ensureWalletPair,
     login: vi.fn(),
     logout: vi.fn(),
-    createPasskey: vi.fn(),
+    addPasskey: api.addPasskey,
     replaceWalletPair: vi.fn(),
     signAsterAgentApproval: vi.fn(),
     signLighterApiKeyAssociation: vi.fn(),
@@ -112,6 +116,12 @@ describe("CarryAccountSetup", () => {
   beforeEach(() => {
     state.search = "long_venue=hyperliquid&short_venue=lighter";
     state.recovery = null;
+    state.perpsAuthenticated = false;
+    state.hasPasskey = false;
+    api.addPasskey.mockReset().mockResolvedValue(undefined);
+    api.ensureWalletPair.mockReset().mockResolvedValue({
+      owner: { address: `0x${"33".repeat(20)}` },
+    });
     api.getPrivateAgentPassport.mockReset().mockResolvedValue({
       account_commitment: "carry:account:test:0001",
       venues: [],
@@ -140,7 +150,7 @@ describe("CarryAccountSetup", () => {
   it("opens the existing Hyperliquid manager inline and preserves the selected pair", async () => {
     await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=lighter");
 
-    expect(container.textContent).toContain("0/2");
+    expect(container.textContent).toContain("0 of 2 venues connected");
     expect(container.textContent).toContain("Hyperliquid");
     expect(container.textContent).toContain("Lighter");
     expect(container.textContent).not.toContain("Aster");
@@ -188,6 +198,138 @@ describe("CarryAccountSetup", () => {
 
     expect(container.querySelector('a[href="https://www.asterdex.com/en"]')).toBeTruthy();
     expect(container.querySelector('a[href="https://app.lighter.xyz/"]')).toBeNull();
+  });
+
+  it("confirms Touch ID only after enrollment completes", async () => {
+    state.perpsAuthenticated = true;
+    state.search = "long_venue=lighter&short_venue=hyperliquid";
+    let completeEnrollment!: () => void;
+    api.addPasskey.mockImplementation(() => new Promise<void>((resolve) => {
+      completeEnrollment = resolve;
+    }));
+
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=lighter&short_venue=hyperliquid");
+
+    const addButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "Add Touch ID");
+    expect(addButton).toBeTruthy();
+    act(() => addButton?.click());
+    expect(container.textContent).toContain("Waiting for Touch ID…");
+    expect(container.textContent).not.toContain("Touch ID was added successfully");
+    const venueButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "Create & associate key");
+    expect(venueButton?.disabled).toBe(true);
+
+    await act(async () => {
+      completeEnrollment();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Added on this device");
+    expect(container.textContent).toContain("Touch ID was added successfully on this device.");
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent === "Add Touch ID")).toBe(false);
+  });
+
+  it("shows a retry when Touch ID is cancelled", async () => {
+    state.perpsAuthenticated = true;
+    const cancellation = new Error("The operation either timed out or was not allowed.");
+    cancellation.name = "NotAllowedError";
+    api.addPasskey.mockRejectedValue({
+      name: "TurnkeyError",
+      code: "ADD_PASSKEY_ERROR",
+      cause: { name: "TurnkeyError", cause: cancellation },
+    });
+
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=lighter");
+    const addButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "Add Touch ID");
+    await act(async () => {
+      addButton?.click();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Touch ID wasn’t added");
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent === "Retry Touch ID")).toBe(true);
+  });
+
+  it("distinguishes a Touch ID setup failure from cancellation", async () => {
+    state.perpsAuthenticated = true;
+    const serviceFailure = new Error("internal service detail");
+    serviceFailure.name = "TurnkeyRequestError";
+    api.addPasskey.mockRejectedValue(serviceFailure);
+
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=lighter&short_venue=hyperliquid");
+    const addButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "Add Touch ID");
+    await act(async () => {
+      addButton?.click();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Check this device’s Touch ID and passkey settings");
+    expect(container.textContent).not.toContain("internal service detail");
+  });
+
+  it("keeps Touch ID disabled without changing its label during a venue mutation", async () => {
+    state.perpsAuthenticated = true;
+    state.search = "long_venue=lighter&short_venue=hyperliquid";
+    let finishWalletLookup!: (value: { owner: { address: string } }) => void;
+    api.ensureWalletPair.mockImplementation(() => new Promise((resolve) => {
+      finishWalletLookup = resolve;
+    }));
+
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=lighter&short_venue=hyperliquid");
+    const venueButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "Create & associate key");
+    act(() => venueButton?.click());
+
+    const touchIdButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "Add Touch ID");
+    expect(touchIdButton?.disabled).toBe(true);
+    expect(container.textContent).not.toContain("Waiting for Touch ID…");
+
+    await act(async () => {
+      finishWalletLookup({ owner: { address: `0x${"33".repeat(20)}` } });
+      await Promise.resolve();
+    });
+  });
+
+  it("describes an existing passkey as account-level evidence", async () => {
+    state.perpsAuthenticated = true;
+    state.hasPasskey = true;
+
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=lighter");
+
+    expect(container.textContent).toContain("Enabled for account");
+    expect(container.textContent).toContain("A Ghola passkey is enabled for this account.");
+    expect(container.textContent).not.toContain("successfully on this device");
+  });
+
+  it("presents Lighter activation as an actionable prerequisite and confirms copying the full address", async () => {
+    state.perpsAuthenticated = true;
+    state.search = "long_venue=lighter&short_venue=hyperliquid";
+    const ownerAddress = `0x${"44".repeat(20)}`;
+    state.recovery = {
+      account_commitment: "carry:account:test:0001",
+      lighter_activation: {
+        owner_address: ownerAddress,
+        reason: "venue_account_not_found",
+      },
+    };
+    api.getHyperliquidExecutionVaultStatus.mockResolvedValue({ ready: true });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=lighter&short_venue=hyperliquid");
+
+    expect(container.textContent).toContain("Lighter · action required");
+    expect(container.textContent).toContain("Activate this wallet");
+    expect(container.textContent).toContain(ownerAddress);
+    expect(container.querySelector('a[href="https://app.lighter.xyz/"]')).toBeTruthy();
+    const copyButton = container.querySelector<HTMLButtonElement>('[aria-label="Copy owner address"]');
+    await act(async () => copyButton?.click());
+    expect(writeText).toHaveBeenCalledWith(ownerAddress);
+    expect(container.querySelector('[aria-label="Owner address copied"]')?.textContent).toContain("Copied");
   });
 
   async function renderSetup(returnTo: string) {

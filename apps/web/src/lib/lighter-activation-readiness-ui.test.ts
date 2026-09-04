@@ -14,7 +14,7 @@ describe("Lighter activation readiness UI", () => {
     expect(source).toContain('label="Base network fee"');
     expect(source).toContain('label="Lighter owner account"');
     expect(source).toContain('label="Ethereum association fee"');
-    expect(source).toContain("!lighterReadiness?.ready");
+    expect(source).toContain("lighterReadiness?.ready &&");
   });
 
   it("states that the check is read-only", () => {
