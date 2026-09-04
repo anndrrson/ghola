@@ -612,9 +612,13 @@ export function carryRoutingAdvantageEvidence(
     && Number.isSafeInteger(selectedValue.modeled_net_micro_usdc_per_day)
     && selectedValue.modeled_net_micro_usdc_per_day === route?.selected_modeled_net_micro_usdc_per_day
     && Number.isSafeInteger(selectedValue.modeled_net_e6_bps_per_day)
-    && selectedValue.sample_count === route?.sample_count
+    && Number.isSafeInteger(selectedValue.sample_count)
+    && Number.isSafeInteger(route?.sample_count)
+    && selectedValue.sample_count >= route!.sample_count
     && selectedValue.minimum_samples === route?.minimum_samples
-    && selectedValue.observed_span_ms === route?.observed_span_ms
+    && Number.isSafeInteger(selectedValue.observed_span_ms)
+    && Number.isSafeInteger(route?.observed_span_ms)
+    && selectedValue.observed_span_ms >= route!.observed_span_ms
     && selectedValue.minimum_span_ms === route?.minimum_span_ms
     && selectedValue.sample_count >= selectedValue.minimum_samples
     && selectedValue.observed_span_ms >= selectedValue.minimum_span_ms

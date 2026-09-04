@@ -936,7 +936,6 @@ function exactExitOrderInstruction(leg, exactBaseSize) {
     quote_size: String(Number(baseSize) * snapshot.mark_price_e8 / 100_000_000),
     size_mode: "base",
     order_type: "limit",
-    live_order_mode: "full_ticket",
     max_slippage_bps: "50",
     tif: "Ioc",
     reduce_only: true,

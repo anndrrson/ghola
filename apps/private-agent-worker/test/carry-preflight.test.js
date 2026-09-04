@@ -226,9 +226,10 @@ test("verifies the exact reduce-only exit sides and filled base quantities", asy
     side: instruction.order.side,
     base_size: instruction.order.base_size,
     reduce_only: instruction.order.reduce_only,
+    live_order_mode: instruction.order.live_order_mode,
   })), [
-    { venue_id: "hyperliquid", side: "sell", base_size: "0.001", reduce_only: true },
-    { venue_id: "aster", side: "buy", base_size: "0.002", reduce_only: true },
+    { venue_id: "hyperliquid", side: "sell", base_size: "0.001", reduce_only: true, live_order_mode: undefined },
+    { venue_id: "aster", side: "buy", base_size: "0.002", reduce_only: true, live_order_mode: undefined },
   ]);
 });
 

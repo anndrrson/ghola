@@ -2087,7 +2087,7 @@ function buildExitLegs(record, proof, entrySaga, bases, nowMs) {
         order: {
           market: String(shape.market), side, base_size: base,
           quote_size: String(record.position.target_notional_micro_usdc / 1_000_000), limit_price: String(shape.limit_price),
-          order_type: "limit", size_mode: "base", live_order_mode: "full_ticket", reduce_only: true,
+          order_type: "limit", size_mode: "base", reduce_only: true,
           tif: "Ioc", leverage: 1, margin_mode: "cross",
         },
       },
@@ -2207,7 +2207,6 @@ function buildLegs(record, proof, nowMs) {
           limit_price: String(shape.limit_price),
           order_type: "limit",
           size_mode: "base",
-          live_order_mode: "full_ticket",
           reduce_only: false,
           tif: "Ioc",
           leverage: 1,

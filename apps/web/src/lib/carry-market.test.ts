@@ -143,6 +143,31 @@ describe("Carry market model", () => {
     expect(evidence.detail).toContain("not realized P&L");
   });
 
+  it("accepts selected-route history longer than the comparison route", () => {
+    const venues = [
+      venue("hyperliquid", snapshot("hyperliquid", "BTC", 40_000_000, "ready")),
+      venue("lighter", snapshot("lighter", "BTC", 10_000_000, "ready")),
+      venue("aster", snapshot("aster", "BTC", 150_000_000, "ready")),
+    ];
+    const ranked = rankCarryCandidatesByNet(buildPairCandidates(venues));
+    const summary = routingAdvantageSummary();
+    summary.routes[0].selected_value!.sample_count = 12;
+    summary.routes[0].selected_value!.observed_span_ms = 2 * 60 * 60_000;
+    const evidence = carryRoutingAdvantageEvidence({
+      version: 1,
+      mode: "shadow_read_only",
+      executable: false,
+      observed_at: new Date(1_800_000_000_000).toISOString(),
+      venues,
+      shadow_qualification: qualificationSummary(),
+      funding_persistence: fundingPersistenceSummary(),
+      routing_advantage: summary,
+    }, ranked[0], carryRoutingAdvantage(ranked[0], ranked));
+    expect(evidence.status).toBe("committed");
+    expect(evidence.label).toBe("EDGE✓");
+    expect(evidence.selectedNet?.sampleCount).toBe(12);
+  });
+
   it("shows worker-committed net value without inventing route savings", () => {
     const venues = [
       venue("hyperliquid", snapshot("hyperliquid", "BTC", 40_000_000, "ready")),

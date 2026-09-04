@@ -20,6 +20,7 @@ import { applyDurableMultiLegEvent, recoverDueMultiLegSagas } from "../src/execu
 import { createWorkerState } from "../src/state/private-state.js";
 import { authenticateCarryCreationOpportunity } from "../src/execution/carry-opportunity-authentication.js";
 import { liquidationDistanceSourceForVenue } from "../src/venues/liquidation-distance.js";
+import { normalizeInstruction } from "../src/execution/policy.js";
 import {
   carryOpportunityInputEvidence,
   signedCarryPositionInput,
@@ -128,6 +129,7 @@ test("executes and reconciles a qualified protected perp pair", async (t) => {
   assert.equal(result.saga.status, "reconciled");
   assert.equal(calls.length, 2);
   assert.equal(calls.every((call) => call.instruction.order.reduce_only === false), true);
+  assert.equal(calls.every((call) => call.instruction.order.live_order_mode === undefined), true);
   assert.equal(calls.every((call) => call.execution.carry_position_id === fixture.position_id), true);
 });
 
@@ -205,6 +207,10 @@ test("executes every qualified Hyperliquid, Lighter, and Aster pair through one 
     assert.equal(result.ok, true, `${pair.long}/${pair.short}: ${result.error || "unknown"}`);
     assert.equal(result.saga.status, "reconciled");
     assert.deepEqual(calls.map((call) => call.venue_id), [pair.long, pair.short]);
+    assert.equal(calls.every((call) => normalizeInstruction(call.instruction, {
+      venue_id: call.venue_id,
+      operation_class: "limit_order",
+    }).order.live_order_mode === null), true);
     assert.equal(calls.every((call) => call.execution.owner_commitment === OWNER), true);
     assert.equal(calls.every((call) => call.execution.encrypted_execution_vault?.ciphertext === `sealed:${call.venue_id}`), true);
   }
@@ -947,6 +953,7 @@ test("closes both reconciled legs reduce-only and proves flat with zero orders",
   assert.equal(result.record.position.status, "reconciled");
   assert.equal(calls.length, 2);
   assert.equal(calls.every((call) => call.instruction.order.reduce_only === true), true);
+  assert.equal(calls.every((call) => call.instruction.order.live_order_mode === undefined), true);
   assert.deepEqual(calls.map((call) => call.instruction.order.side).sort(), ["buy", "sell"]);
   assert.equal(result.record.final_reconciliation_evidence.account_state_checked, true);
   assert.equal(result.record.final_reconciliation_evidence.open_order_count, 0);
@@ -1297,6 +1304,10 @@ test("completes a supervised restart-to-flat lifecycle for every qualified venue
     assert.equal(exit.ok, true, `${label}: exit tick`);
     assert.deepEqual(calls.map((call) => call.venue_id), [pair.long, pair.short]);
     assert.equal(calls.every((call) => call.instruction.order.reduce_only === true), true);
+    assert.equal(calls.every((call) => normalizeInstruction(call.instruction, {
+      venue_id: call.venue_id,
+      operation_class: "limit_order",
+    }).order.live_order_mode === null), true);
     const result = exit.results[0];
     assert.equal(result.record.position.status, "reconciled", `${label}: reconciled`);
     assert.equal(result.record.final_reconciliation_evidence.gross_exposure_micro_usdc, 0);
