@@ -9,6 +9,7 @@ import {
   carryMarketQualificationEvidence,
   carryRoutingAdvantage,
   carryRoutingAdvantageEvidence,
+  carryWorkerCommittedCandidate,
   quoteCarryCandidate,
   rankCarryCandidatesByNet,
   type CarryShadowResponse,
@@ -166,6 +167,38 @@ describe("Carry market model", () => {
     expect(evidence.status).toBe("committed");
     expect(evidence.label).toBe("EDGE✓");
     expect(evidence.selectedNet?.sampleCount).toBe(12);
+  });
+
+  it("treats valid worker evidence for another UI route or quote scope as indicative", () => {
+    const venues = [
+      venue("hyperliquid", snapshot("hyperliquid", "BTC", 40_000_000, "ready")),
+      venue("lighter", snapshot("lighter", "BTC", 10_000_000, "ready")),
+      venue("aster", snapshot("aster", "BTC", 150_000_000, "ready")),
+    ];
+    const ranked = rankCarryCandidatesByNet(buildPairCandidates(venues), 11, 30 * 24);
+    const response: CarryShadowResponse = {
+      version: 1,
+      mode: "shadow_read_only",
+      executable: false,
+      observed_at: new Date(1_800_000_000_000).toISOString(),
+      venues,
+      shadow_qualification: qualificationSummary(),
+      funding_persistence: fundingPersistenceSummary(),
+      routing_advantage: routingAdvantageSummary(),
+    };
+    const otherRoute = ranked.find(({ candidate }) =>
+      candidate.long.venue_id === "hyperliquid" && candidate.short.venue_id === "aster"
+    ) || null;
+    const evidence = carryRoutingAdvantageEvidence(
+      response,
+      otherRoute,
+      carryRoutingAdvantage(otherRoute, ranked),
+    );
+    expect(evidence).toMatchObject({ status: "indicative", label: "EDGE*", selectedNet: null });
+    expect(carryWorkerCommittedCandidate(response, ranked)?.candidate).toMatchObject({
+      long: { venue_id: "lighter" },
+      short: { venue_id: "aster" },
+    });
   });
 
   it("shows worker-committed net value without inventing route savings", () => {

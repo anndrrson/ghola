@@ -586,8 +586,13 @@ export function carryRoutingAdvantageEvidence(
   const route = summary.routes.find((item) => item.asset === selected.candidate.asset);
   const selectedRoute = route?.selected_route;
   const baselineRoute = route?.baseline_route;
-  const selectedMatches = selectedRoute?.long_venue_id === selected.candidate.long.venue_id
-    && selectedRoute?.short_venue_id === selected.candidate.short.venue_id
+  const selectedRouteValid = Boolean(selectedRoute
+    && CARRY_EXECUTION_VENUES.includes(selectedRoute.long_venue_id as typeof CARRY_EXECUTION_VENUES[number])
+    && CARRY_EXECUTION_VENUES.includes(selectedRoute.short_venue_id as typeof CARRY_EXECUTION_VENUES[number])
+    && selectedRoute.long_venue_id !== selectedRoute.short_venue_id);
+  const selectedMatches = selectedRouteValid
+    && selectedRoute!.long_venue_id === selected.candidate.long.venue_id
+    && selectedRoute!.short_venue_id === selected.candidate.short.venue_id
     && Math.round(selected.quote.notionalUsd * 1_000_000) === summary.notional_micro_usdc
     && Math.round(selected.quote.horizonHours * 3_600_000) === summary.horizon_ms;
   const baselineDistinct = Boolean(baselineRoute
@@ -603,7 +608,7 @@ export function carryRoutingAdvantageEvidence(
     .map((item) => item.evidence_commitment)
     .filter((value): value is string => typeof value === "string"));
   const selectedValue = route?.selected_value;
-  const selectedValueValid = selectedMatches
+  const selectedValueValid = selectedRouteValid
     && selectedValue?.ready === true
     && Array.isArray(selectedValue.reasons) && selectedValue.reasons.length === 0
     && selectedValue.benchmark_kind === "no_trade"
@@ -636,7 +641,6 @@ export function carryRoutingAdvantageEvidence(
     && route?.ready === true
     && Array.isArray(route.reasons) && route.reasons.length === 0
     && ["advantaged", "equal", "disadvantaged"].includes(route.status)
-    && selectedMatches
     && baselineDistinct
     && Number.isSafeInteger(route.sample_count) && route.sample_count >= route.minimum_samples
     && Number.isSafeInteger(route.observed_span_ms) && route.observed_span_ms >= route.minimum_span_ms
@@ -645,6 +649,7 @@ export function carryRoutingAdvantageEvidence(
     && selectedValueValid
     && commitments.length > 0
     && commitments.every((value) => CARRY_FUNDING_COMMITMENT.test(value) && knownFundingCommitments.has(value));
+  if (routeValid && !selectedMatches) return indicativeAdvantage(pointInTime);
   if (routeValid) {
     const dailyNetAdvantageUsd = route.daily_net_advantage_micro_usdc! / 1_000_000;
     const dailyNetAdvantageBps = route.daily_net_advantage_e6_bps! / 1_000_000;
@@ -672,11 +677,11 @@ export function carryRoutingAdvantageEvidence(
     && route?.ready === false
     && Array.isArray(route.reasons) && route.reasons.length === 1
     && route.reasons[0] === "comparison_route_unavailable"
-    && selectedMatches
     && baselineRoute === null
     && selectedValueValid
     && commitments.length === 1
     && commitments[0] === selectedValue.funding_evidence_commitment;
+  if (selectedOnlyValid && !selectedMatches) return indicativeAdvantage(pointInTime);
   if (!selectedOnlyValid) return selectedValueAdvertised ? rejectedAdvantage() : indicativeAdvantage(pointInTime);
   const dailyNetUsd = selectedValue.modeled_net_micro_usdc_per_day / 1_000_000;
   const dailyNetBps = selectedValue.modeled_net_e6_bps_per_day / 1_000_000;
@@ -696,6 +701,35 @@ export function carryRoutingAdvantageEvidence(
     selectedNet: committedSelectedNet,
     detail: `${dailyNetUsd >= 0 ? "+" : ""}$${dailyNetUsd.toFixed(2)}/day worker-committed modeled net versus no trade across ${selectedValue.sample_count} funding samples; no second funding-qualified route exists, the account fee tier is excluded, and this is not realized P&L.`,
   };
+}
+
+export function carryWorkerCommittedCandidate(
+  response: CarryShadowResponse | null,
+  candidates: PricedCarryCandidate[],
+): PricedCarryCandidate | null {
+  const summary = response?.routing_advantage;
+  if (!summary
+      || !Number.isSafeInteger(summary.notional_micro_usdc)
+      || summary.notional_micro_usdc <= 0
+      || !Number.isSafeInteger(summary.horizon_ms)
+      || summary.horizon_ms <= 0
+      || !Array.isArray(summary.routes)) return null;
+  const scopedCandidates = rankCarryCandidatesByNet(
+    candidates.map((item) => item.candidate),
+    summary.notional_micro_usdc / 1_000_000,
+    summary.horizon_ms / 3_600_000,
+    Date.parse(response.observed_at),
+  );
+  const committed = scopedCandidates.find((candidate) =>
+    carryRoutingAdvantageEvidence(
+      response,
+      candidate,
+      carryRoutingAdvantage(candidate, scopedCandidates),
+    ).status === "committed"
+  );
+  if (!committed) return null;
+  const routeId = carryRouteId(committed.candidate);
+  return candidates.find((candidate) => carryRouteId(candidate.candidate) === routeId) || null;
 }
 
 function indicativeAdvantage(advantage: CarryRoutingAdvantage): CarryRoutingAdvantageEvidence {

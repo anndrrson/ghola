@@ -14,6 +14,7 @@ import {
   carryMarketQualificationEvidence,
   carryRoutingAdvantage,
   carryRoutingAdvantageEvidence,
+  carryWorkerCommittedCandidate,
   rankCarryCandidatesByNet,
   type CarryCandidate,
   type CarryLiveMarketPatch,
@@ -165,10 +166,11 @@ export function CarryChartStrip({
     && preferredLongVenue !== preferredShortVenue
     ? `${asset}:${preferredLongVenue}:${preferredShortVenue}`
     : "";
+  const workerSelectedExecution = carryWorkerCommittedCandidate(data, assetExecutionCandidates);
   const selectedExecution = assetExecutionCandidates.find(({ candidate }) => carryRouteKey(candidate) === executionRouteKey)
     || (preferredExecutionRouteKey
       ? assetExecutionCandidates.find(({ candidate }) => carryRouteKey(candidate) === preferredExecutionRouteKey)
-      : assetExecutionCandidates[0])
+      : workerSelectedExecution || assetExecutionCandidates[0])
     || null;
   const selected = preferredExecutionRouteKey
     ? selectedExecution

@@ -175,6 +175,28 @@ describe("CarryChartStrip", () => {
     expect(edge?.getAttribute("title")).toContain("not realized P&L");
   });
 
+  it("defaults to the worker-committed route when the live ranking points elsewhere", async () => {
+    const body = shadowResponse([
+      snapshot("hyperliquid", 10_000_000),
+      snapshot("lighter", 40_000_000),
+      snapshot("aster", 150_000_000),
+    ]);
+    body.shadow_qualification = marketQualification();
+    body.funding_persistence = routingFundingPersistence();
+    body.routing_advantage = routingAdvantageSummary(Date.parse(body.observed_at));
+    await renderShadow(body, true);
+
+    const rail = container.querySelector('[aria-label="Cross-venue route intelligence"]');
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Carry execution route"]')?.value)
+      .toBe("BTC:lighter:aster");
+    expect(rail?.firstElementChild?.textContent).toContain("L LIGHTER/S ASTER");
+    expect(rail?.getAttribute("data-edge-evidence")).toBe("durable");
+    expect(rail?.getAttribute("data-routing-evidence")).toBe("indicative");
+    expect(rail?.textContent).toContain("EDGE*");
+    expect(rail?.textContent).not.toContain("EVID FAIL");
+    expect(rail?.textContent).not.toContain("EDGE!");
+  });
+
   it("keeps the primary rail aligned with the executable builder route", async () => {
     await renderShadow(shadowResponse([
       snapshot("hyperliquid", 10_000_000),
