@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
   recovery: null as null | Record<string, unknown>,
   perpsAuthenticated: false,
   hasPasskey: false,
+  organizationId: "organization-one" as string | null,
 }));
 const api = vi.hoisted(() => ({
   getHyperliquidExecutionVaultStatus: vi.fn(),
@@ -15,6 +16,7 @@ const api = vi.hoisted(() => ({
   fetchPrivateAgentRuntimeStatus: vi.fn(),
   addPasskey: vi.fn(),
   ensureWalletPair: vi.fn(),
+  fetchLighterActivationReadiness: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -61,6 +63,7 @@ vi.mock("@/lib/perps-turnkey-provider", () => ({
     authenticated: state.perpsAuthenticated,
     configured: true,
     hasPasskey: state.hasPasskey,
+    organizationId: state.organizationId,
     loading: false,
     ensureWalletPair: api.ensureWalletPair,
     login: vi.fn(),
@@ -101,7 +104,7 @@ vi.mock("@/lib/carry-onboarding-recovery", () => ({
 }));
 vi.mock("@/lib/lighter-activation-readiness", () => ({
   describeLighterActivationNextStep: () => "Activation required.",
-  fetchLighterActivationReadiness: vi.fn().mockResolvedValue(null),
+  fetchLighterActivationReadiness: api.fetchLighterActivationReadiness,
 }));
 vi.mock("@/lib/carry-setup-auth-recovery", () => ({
   shouldResumeUnsignedTurnkeySetup: () => false,
@@ -118,10 +121,12 @@ describe("CarryAccountSetup", () => {
     state.recovery = null;
     state.perpsAuthenticated = false;
     state.hasPasskey = false;
+    state.organizationId = "organization-one";
     api.addPasskey.mockReset().mockResolvedValue(undefined);
     api.ensureWalletPair.mockReset().mockResolvedValue({
       owner: { address: `0x${"33".repeat(20)}` },
     });
+    api.fetchLighterActivationReadiness.mockReset().mockResolvedValue(null);
     api.getPrivateAgentPassport.mockReset().mockResolvedValue({
       account_commitment: "carry:account:test:0001",
       venues: [],
@@ -150,7 +155,7 @@ describe("CarryAccountSetup", () => {
   it("opens the existing Hyperliquid manager inline and preserves the selected pair", async () => {
     await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=lighter");
 
-    expect(container.textContent).toContain("0 of 2 venues connected");
+    expect(container.textContent).toContain("0 of 2 connected");
     expect(container.textContent).toContain("Hyperliquid");
     expect(container.textContent).toContain("Lighter");
     expect(container.textContent).not.toContain("Aster");
@@ -159,6 +164,8 @@ describe("CarryAccountSetup", () => {
     expect(pairRail?.querySelectorAll("[data-carry-venue]")).toHaveLength(2);
     expect(pairRail?.querySelector('[data-carry-venue="hyperliquid"]')?.getAttribute("data-carry-role")).toBe("long");
     expect(pairRail?.querySelector('[data-carry-venue="lighter"]')?.getAttribute("data-carry-role")).toBe("short");
+    expect(pairRail?.textContent).toContain("LONG");
+    expect(pairRail?.textContent).toContain("SHORT");
 
     const continueButton = container.querySelector<HTMLButtonElement>('[aria-controls="carry-hyperliquid-setup"]');
     expect(continueButton?.getAttribute("aria-expanded")).toBe("false");
@@ -305,6 +312,142 @@ describe("CarryAccountSetup", () => {
     expect(container.textContent).not.toContain("successfully on this device");
   });
 
+  it("resets device-local Touch ID confirmation when the wallet account changes", async () => {
+    state.perpsAuthenticated = true;
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=lighter");
+
+    const addButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "Add Touch ID");
+    await act(async () => addButton?.click());
+    expect(container.textContent).toContain("Added on this device");
+
+    state.organizationId = "organization-two";
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=lighter");
+
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Not added");
+    expect(container.textContent).not.toContain("Added on this device");
+  });
+
+  it("ignores a Touch ID enrollment that finishes after the wallet account changes", async () => {
+    state.perpsAuthenticated = true;
+    let completeEnrollment!: () => void;
+    api.addPasskey.mockImplementation(() => new Promise<void>((resolve) => {
+      completeEnrollment = resolve;
+    }));
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=lighter");
+
+    const addButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "Add Touch ID");
+    act(() => addButton?.click());
+    expect(container.textContent).toContain("Waiting for Touch ID…");
+
+    state.organizationId = "organization-two";
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=lighter");
+    await act(async () => {
+      completeEnrollment();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Not added");
+    expect(container.textContent).not.toContain("Added on this device");
+  });
+
+  it("clears a stale Touch ID error when account-level passkey evidence arrives", async () => {
+    state.perpsAuthenticated = true;
+    api.addPasskey.mockRejectedValue(new Error("service unavailable"));
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=lighter");
+
+    const addButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "Add Touch ID");
+    await act(async () => addButton?.click());
+    expect(container.textContent).toContain("Touch ID couldn’t be added");
+
+    state.hasPasskey = true;
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=lighter");
+
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Enabled for account");
+    expect(container.textContent).not.toContain("Touch ID couldn’t be added");
+    expect(container.textContent).not.toContain("Added on this device");
+  });
+
+  it("keeps current-device Touch ID failure feedback when the account already has a passkey", async () => {
+    state.perpsAuthenticated = true;
+    state.hasPasskey = true;
+    const cancellation = new Error("not allowed");
+    cancellation.name = "NotAllowedError";
+    api.addPasskey.mockRejectedValue(cancellation);
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=hyperliquid&short_venue=lighter");
+
+    const setupButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "Set up this device");
+    await act(async () => setupButton?.click());
+
+    expect(container.textContent).toContain("Touch ID wasn’t added");
+    expect(container.textContent).toContain("Retry Touch ID");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Enabled for account");
+  });
+
+  it("keeps the Lighter gas disclosure visible before authentication", async () => {
+    state.search = "long_venue=lighter&short_venue=hyperliquid";
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=lighter&short_venue=hyperliquid");
+
+    const disclosure = [...container.querySelectorAll("p")]
+      .find((node) => node.textContent === "Uses one wallet approval and Ethereum gas. No order or deposit.");
+    expect(disclosure).toBeTruthy();
+    expect(disclosure?.closest("details")).toBeNull();
+    expect(container.textContent).toContain("Authenticate by email");
+  });
+
+  it("keeps Aster approval scope visible beside its primary action", async () => {
+    state.perpsAuthenticated = true;
+    state.search = "long_venue=aster&short_venue=lighter";
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=aster&short_venue=lighter");
+
+    const disclosure = [...container.querySelectorAll("p")]
+      .find((node) => node.textContent === "One approval lasts 30 days. Withdrawals stay disabled.");
+    expect(disclosure).toBeTruthy();
+    expect(disclosure?.closest("details")).toBeNull();
+    expect(container.textContent).toContain("Connect Aster");
+  });
+
+  it("keeps Lighter gas use visible before finishing an active wallet", async () => {
+    state.perpsAuthenticated = true;
+    state.search = "long_venue=lighter&short_venue=hyperliquid";
+    const ownerAddress = `0x${"55".repeat(20)}`;
+    state.recovery = {
+      account_commitment: "carry:account:test:0001",
+      lighter_activation: {
+        owner_address: ownerAddress,
+        reason: "venue_account_not_found",
+      },
+    };
+    api.getHyperliquidExecutionVaultStatus.mockResolvedValue({ ready: true });
+    api.fetchLighterActivationReadiness.mockResolvedValue({
+      version: 2,
+      owner_address: ownerAddress,
+      lighter_account_index: 7,
+      base_usdc_microunits: "3000000",
+      base_eth_wei: "3000000000000",
+      ethereum_eth_wei: "66000000000000",
+      estimated_base_gas_wei: "3000000000000",
+      estimated_ethereum_association_gas_wei: "66000000000000",
+      base_deposit_ready: true,
+      ethereum_association_gas_ready: true,
+      lighter_owner_account_ready: true,
+      ready: true,
+      blockers: [],
+      checked_at: new Date().toISOString(),
+    });
+
+    await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=lighter&short_venue=hyperliquid");
+
+    expect(container.textContent).toContain("Finish connection");
+    const disclosure = [...container.querySelectorAll("p")]
+      .find((node) => node.textContent === "Finishing uses one wallet approval and Ethereum gas. No order or deposit.");
+    expect(disclosure).toBeTruthy();
+    expect(disclosure?.closest("details")).toBeNull();
+  });
+
   it("presents Lighter activation as an actionable prerequisite and confirms copying the full address", async () => {
     state.perpsAuthenticated = true;
     state.search = "long_venue=lighter&short_venue=hyperliquid";
@@ -322,8 +465,10 @@ describe("CarryAccountSetup", () => {
 
     await renderSetup("/trade?product=perps&venue=hyperliquid&market=BTC-PERP&carry=open&long_venue=lighter&short_venue=hyperliquid");
 
-    expect(container.textContent).toContain("Lighter · action required");
-    expect(container.textContent).toContain("Activate this wallet");
+    expect(container.textContent).toContain("Next step");
+    expect(container.textContent).toContain("Activate Lighter");
+    expect(container.querySelector("details")?.open).toBe(false);
+    expect(container.textContent).toContain("Funding and fee details");
     expect(container.textContent).toContain(ownerAddress);
     expect(container.querySelector('a[href="https://app.lighter.xyz/"]')).toBeTruthy();
     const copyButton = container.querySelector<HTMLButtonElement>('[aria-label="Copy owner address"]');

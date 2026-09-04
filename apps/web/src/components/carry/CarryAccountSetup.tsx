@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, Fingerprint, KeyRound, LoaderCircle, LockKeyhole, RefreshCw, X } from "lucide-react";
+import { Check, Copy, Fingerprint, LoaderCircle, X } from "lucide-react";
 import { executionVenueLabel } from "@ghola/execution-core";
 import { AuthModal, type AuthMode } from "@/components/AuthModal";
 import { TurnkeyPerpsManager } from "@/components/trade/TurnkeyPerpsManager";
@@ -130,6 +130,8 @@ export function CarryAccountSetup({
   const [lighterReadinessError, setLighterReadinessError] = useState<string | null>(null);
   const [checkingLighterReadiness, setCheckingLighterReadiness] = useState(false);
   const lighterReadinessRequestRef = useRef<Promise<void> | null>(null);
+  const touchIdOrganizationRef = useRef<string | null>(null);
+  const accountHasPasskeyRef = useRef(perpsTurnkey.hasPasskey);
   const [workerPlatform, setWorkerPlatform] = useState<CarryWorkerPlatformGate | null>(null);
   const safeReturnTo = returnTo === "/carry" || returnTo.startsWith("/trade?") ? returnTo : "/carry";
   const requestedLongVenue = searchParams.get("long_venue");
@@ -179,6 +181,24 @@ export function CarryAccountSetup({
   }, [auth.authenticated]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  useEffect(() => {
+    const organizationId = perpsTurnkey.organizationId || null;
+    if (touchIdOrganizationRef.current && touchIdOrganizationRef.current !== organizationId) {
+      setTouchIdEnrollment("idle");
+      setTouchIdError(null);
+    }
+    touchIdOrganizationRef.current = organizationId;
+  }, [perpsTurnkey.organizationId]);
+
+  useEffect(() => {
+    const passkeyEvidenceArrived = !accountHasPasskeyRef.current && perpsTurnkey.hasPasskey;
+    accountHasPasskeyRef.current = perpsTurnkey.hasPasskey;
+    if (passkeyEvidenceArrived && touchIdEnrollment === "error") {
+      setTouchIdEnrollment("idle");
+      setTouchIdError(null);
+    }
+  }, [perpsTurnkey.hasPasskey, touchIdEnrollment]);
 
   useEffect(() => {
     if (!recoveryUserScope) return;
@@ -718,12 +738,15 @@ export function CarryAccountSetup({
 
   async function enableGholaTouchId() {
     if (working || showHyperliquidSetup || touchIdEnrollment === "adding") return;
+    const enrollmentOrganizationId = perpsTurnkey.organizationId || null;
     setTouchIdEnrollment("adding");
     setTouchIdError(null);
     try {
       await perpsTurnkey.addPasskey();
+      if (touchIdOrganizationRef.current !== enrollmentOrganizationId) return;
       setTouchIdEnrollment("success");
     } catch (caught) {
+      if (touchIdOrganizationRef.current !== enrollmentOrganizationId) return;
       const failure = caught && typeof caught === "object"
         ? caught as { name?: unknown; code?: unknown }
         : {};
@@ -817,7 +840,7 @@ export function CarryAccountSetup({
           ? pendingAsterLinkRecovery.signature
             ? pendingAsterLinkRecovery.receipt ? "Finish Aster linking" : "Resume Aster verification"
             : "Resume Aster signing"
-        : "Continue"
+        : "Connect Aster"
       : pendingLighterAuthorization
         ? working ? "Opening secure sign-in…" : "Authenticate by email"
         : !perpsTurnkey.configured ? "Secure wallet unavailable"
@@ -840,21 +863,16 @@ export function CarryAccountSetup({
   return (
     <main className="min-h-screen bg-[#07090d] px-4 pb-16 pt-20 text-[#eef1f8] sm:px-6 sm:pt-24">
       <AuthModal mode={authMode} open={authOpen} onClose={() => setAuthOpen(false)} onModeChange={setAuthMode} redirectTo={setupReturnTo} />
-      <section className="mx-auto max-w-5xl">
-        <header className="flex flex-col gap-4 border-b border-[#1d2634] pb-6 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.16em] text-[#62aef5]">Carry / setup</p>
-            <h1 className="mt-2 text-3xl font-semibold tracking-[-0.035em] sm:text-[34px]">Finish your Carry setup</h1>
-            <p className="mt-2 text-sm text-[#8d98aa]">
-              {auth.authenticated
-                ? `${connectionProgress.connectedCount} of ${connectionProgress.requiredCount} venues connected.`
-                : "Sign in, connect your venues, then verify the route."}
-            </p>
-          </div>
-          <Link href={safeReturnTo} className="text-sm font-semibold text-[#8fcaff] hover:text-[#c4e5ff]">Explore routes →</Link>
+      <section className="mx-auto max-w-2xl">
+        <header>
+          <Link href={safeReturnTo} className="text-sm font-semibold text-[#8fcaff] hover:text-[#c4e5ff]">← Back to routes</Link>
+          <h1 className="mt-5 text-3xl font-semibold tracking-[-0.035em] sm:text-[34px]">Set up Carry</h1>
+          <p className="mt-2 text-sm leading-6 text-[#8d98aa]">
+            {auth.authenticated
+              ? connectionProgress.ready ? "Your venues are connected. One quick check remains." : "Complete the next step below."
+              : "Sign in, then connect your venues one at a time."}
+          </p>
         </header>
-
-        <SetupProgress connectionsReady={connectionProgress.ready} />
 
         {!auth.authenticated && !auth.loading && (
           <button type="button" onClick={() => setAuthOpen(true)} className="mt-6 h-12 w-full rounded-lg bg-[#4aaef8] font-semibold text-[#06111d] sm:w-auto sm:px-8">
@@ -863,17 +881,27 @@ export function CarryAccountSetup({
         )}
 
         {auth.authenticated && (
-          <div className="mt-6 grid gap-4 lg:grid-cols-[minmax(0,1.65fr)_minmax(280px,0.85fr)] lg:items-start">
-            <div className="space-y-3">
+          <div className="mt-6">
+            <SetupSummary
+              venueIds={requiredVenueIds}
+              states={venueStates}
+              longVenueId={pairScoped ? returnPair?.longVenueId || null : null}
+              shortVenueId={pairScoped ? returnPair?.shortVenueId || null : null}
+              activeVenueId={nextSetupAction.kind === "connect_venue" ? nextSetupAction.venueId : null}
+              connectedCount={connectionProgress.connectedCount}
+              requiredCount={connectionProgress.requiredCount}
+            />
+
+            <div className="mt-4 space-y-3">
               <section className={`rounded-xl border p-5 sm:p-6 ${activeActivationNeeded ? "border-[#5c4928] bg-[#141107]" : "border-[#26364b] bg-[#0e1219]"}`}>
                 {activeActivationNeeded ? (
                   <>
-                    <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-[#e0b15c]">
-                      {venueLabel(activeActivationNeeded.venue)} · action required
-                    </p>
-                    <h2 className="mt-2 text-2xl font-semibold tracking-[-0.025em]">Activate this wallet</h2>
+                    <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-[#e0b15c]">Next step</p>
+                    <h2 className="mt-2 text-2xl font-semibold tracking-[-0.025em]">Activate {venueLabel(activeActivationNeeded.venue)}</h2>
                     <p className="mt-2 max-w-xl text-sm leading-6 text-[#a7a08f]">
-                      You’re signed in. This wallet needs a {venueLabel(activeActivationNeeded.venue)} account before Ghola can connect it.
+                      {activeActivationNeeded.venue === "lighter"
+                        ? lighterReadiness ? describeLighterActivationNextStep(lighterReadiness) : "Fund this wallet, then open Lighter once."
+                        : "Open Aster once with this wallet, then come back here."}
                     </p>
                     <div className="mt-5 flex items-center gap-2 rounded-lg border border-[#3b3424] bg-[#0b0c0e] px-3 py-2.5">
                       <p className="min-w-0 flex-1 break-all font-mono text-xs leading-5 text-[#d8c79f]">{activeActivationNeeded.ownerAddress}</p>
@@ -890,72 +918,85 @@ export function CarryAccountSetup({
                         checking={checkingLighterReadiness}
                       />
                     ) : (
-                      <p className="mt-4 text-xs leading-5 text-[#a7a08f]">Aster must recognize this exact owner first. Ghola will preserve the same sealed signer, then request one fresh owner approval—never create another signer or retry an ambiguous submission.</p>
+                      <details className="mt-4 text-xs text-[#8f876f]">
+                        <summary className="cursor-pointer font-semibold text-[#b9a97f]">Details</summary>
+                        <p className="mt-2 leading-5">Aster must recognize this exact owner first. Ghola will preserve the same sealed signer, then request one fresh owner approval—never create another signer or retry an ambiguous submission.</p>
+                      </details>
                     )}
-                    <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-                      <a href={activeActivationNeeded.venue === "aster" ? "https://www.asterdex.com/en" : "https://app.lighter.xyz/"} target="_blank" rel="noreferrer" className="inline-flex h-10 items-center justify-center rounded-md bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d]">
-                        Open {venueLabel(activeActivationNeeded.venue)} ↗
-                      </a>
-                      {activeActivationNeeded.venue === "lighter" ? (
-                        <>
-                          <button type="button" disabled={checkingLighterReadiness} onClick={() => void refreshLighterReadiness()} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-[#4a493f] px-4 text-sm font-semibold text-[#ddd4bf] hover:border-[#77705e] disabled:opacity-50">
-                            {checkingLighterReadiness ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                            Check status
-                          </button>
-                          {lighterReadiness?.ready && (
-                            <button type="button" disabled={working || touchIdBusy} onClick={() => void retryAfterVenueActivation()} className="inline-flex h-10 items-center justify-center rounded-md bg-[#56d6a0] px-4 text-sm font-semibold text-[#06130e] disabled:opacity-50">
-                              Finish connection
-                            </button>
-                          )}
-                        </>
-                      ) : (
-                        <button type="button" disabled={working || touchIdBusy} onClick={() => void retryAfterVenueActivation()} className="inline-flex h-10 items-center justify-center rounded-md border border-[#4a493f] px-4 text-sm font-semibold text-[#ddd4bf] hover:border-[#77705e] disabled:opacity-50">
-                          I activated it
+                    <p className="mt-4 text-xs leading-5 text-[#b9a97f]">
+                      {activeActivationNeeded.venue === "lighter"
+                        ? "Finishing uses one wallet approval and Ethereum gas. No order or deposit."
+                        : "One approval lasts 30 days. Withdrawals stay disabled."}
+                    </p>
+                    <div className="mt-5">
+                      {activeActivationNeeded.venue === "lighter" && lighterReadiness?.ready ? (
+                        <button type="button" disabled={working || touchIdBusy} onClick={() => void retryAfterVenueActivation()} className="inline-flex h-11 w-full items-center justify-center rounded-md bg-[#56d6a0] px-4 text-sm font-semibold text-[#06130e] disabled:opacity-50">
+                          Finish connection
                         </button>
+                      ) : (
+                        <a href={activeActivationNeeded.venue === "aster" ? "https://www.asterdex.com/en" : "https://app.lighter.xyz/"} target="_blank" rel="noreferrer" className="inline-flex h-11 w-full items-center justify-center rounded-md bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d]">
+                          Open {venueLabel(activeActivationNeeded.venue)} ↗
+                        </a>
                       )}
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+                        {activeActivationNeeded.venue === "lighter" ? (
+                          <button type="button" disabled={checkingLighterReadiness} onClick={() => void refreshLighterReadiness()} className="inline-flex items-center gap-1.5 font-semibold text-[#b9a97f] hover:text-[#f1dba5] disabled:opacity-50">
+                            {checkingLighterReadiness ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+                            {checkingLighterReadiness ? "Checking…" : "Check again"}
+                          </button>
+                        ) : (
+                          <button type="button" disabled={working || touchIdBusy} onClick={() => void retryAfterVenueActivation()} className="font-semibold text-[#b9a97f] hover:text-[#f1dba5] disabled:opacity-50">
+                            I’ve done this — continue
+                          </button>
+                        )}
+                        <Link href={safeReturnTo} aria-label="Continue modeling without funds" className="font-semibold text-[#8fcaff] hover:text-white">Do this later</Link>
+                      </div>
                     </div>
-                    <Link href={safeReturnTo} className="mt-4 inline-flex text-xs font-semibold text-[#8fcaff] hover:text-white">Continue modeling without funds</Link>
-                    <p className="mt-4 text-xs leading-5 text-[#7e7869]">{activeActivationNeeded.venue === "lighter"
-                      ? "No Lighter key or transaction was created. You can keep exploring routes without funding anything."
-                      : "No order was submitted and no funds moved. You can keep exploring routes."}</p>
                   </>
                 ) : (
                   <>
-                    <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8fcaff]">Current step</p>
-                    <div className="mt-2 flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8fcaff]">Next step</p>
+                    <div className="mt-2">
                       <div className="min-w-0">
                         <h2 className="text-2xl font-semibold tracking-[-0.025em]">{nextSetupAction.kind === "verify_routes"
                           ? "Verify your route"
                           : `Connect ${activeVenueName}`}</h2>
                         <p className="mt-2 max-w-xl text-sm leading-6 text-[#8f9aae]">{nextSetupAction.kind === "verify_routes"
                           ? routeVerificationEnabled
-                            ? pairScoped ? "Run one no-submit check across this pair." : "Run one no-submit check across every venue and pair."
+                            ? "Run a safe check before trading."
                             : workerPlatform?.message || "Checking the platform before route verification."
-                          : `${connectionProgress.missingVenueIds.length} connection${connectionProgress.missingVenueIds.length === 1 ? "" : "s"} left. Ghola will resume the next safe step.`}</p>
-                        {nextSetupAction.kind === "connect_venue" && nextSetupAction.venueId === "lighter" && perpsTurnkey.authenticated && !pendingLighterAssociation && (
-                          <p className="mt-3 max-w-xl rounded-md border border-[#433922] bg-[#171307] px-3 py-2 text-xs leading-5 text-[#d2b77d]">
-                            Ghola will create the Lighter key inside the attested worker. Your approval then broadcasts its Ethereum association and spends network gas. It does not place an order or deposit funds.
-                          </p>
+                          : `Connect ${activeVenueName} to continue.`}</p>
+                        {nextSetupAction.kind === "connect_venue" && nextSetupAction.venueId === "lighter" && !pendingLighterAssociation && (
+                          <>
+                            <p className="mt-3 text-xs leading-5 text-[#b9a97f]">Uses one wallet approval and Ethereum gas. No order or deposit.</p>
+                            <details className="mt-2 text-xs text-[#8f9aae]">
+                              <summary className="cursor-pointer font-semibold text-[#9cadc3]">Details</summary>
+                              <p className="mt-2 leading-5">Ghola will create the Lighter key inside the attested worker. Your approval then broadcasts its Ethereum association and spends network gas. It does not place an order or deposit funds.</p>
+                            </details>
+                          </>
+                        )}
+                        {nextSetupAction.kind === "connect_venue" && nextSetupAction.venueId === "aster" && (
+                          <p className="mt-3 text-xs leading-5 text-[#b9a97f]">One approval lasts 30 days. Withdrawals stay disabled.</p>
                         )}
                         {nextSetupAction.kind === "connect_venue" && nextSetupAction.venueId !== "hyperliquid" && !perpsTurnkey.authenticated && (
-                          <p className="mt-2 text-xs leading-5 text-[#a8d8ff]">Enter your email in the secure window. Use Ghola Touch ID only if you already added it here.</p>
+                          <p className="mt-2 text-xs leading-5 text-[#a8d8ff]">A secure sign-in window will open.</p>
                         )}
                       </div>
-                      <div className="shrink-0">
+                      <div className="mt-5">
                         {nextSetupAction.kind === "verify_routes" && routeVerificationEnabled && !touchIdBusy ? (
-                          <Link href={noSubmitReturnTo} className="inline-flex h-10 w-full items-center justify-center rounded-md bg-[#56d6a0] px-4 text-sm font-semibold text-[#06130e] sm:w-auto">
+                          <Link href={noSubmitReturnTo} className="inline-flex h-11 w-full items-center justify-center rounded-md bg-[#56d6a0] px-4 text-sm font-semibold text-[#06130e]">
                             {nextSetupLabel}
                           </Link>
                         ) : nextSetupAction.kind === "verify_routes" ? (
-                          <button type="button" disabled data-worker-platform-status={workerPlatform?.status || "checking"} className="inline-flex h-10 w-full items-center justify-center rounded-md bg-[#25344b] px-4 text-sm font-semibold text-[#8f9aae] opacity-70 sm:w-auto">
+                          <button type="button" disabled data-worker-platform-status={workerPlatform?.status || "checking"} className="inline-flex h-11 w-full items-center justify-center rounded-md bg-[#25344b] px-4 text-sm font-semibold text-[#8f9aae] opacity-70">
                             {touchIdBusy ? "Finish Touch ID first" : workerPlatform ? "Platform check required" : "Checking platform…"}
                           </button>
                         ) : nextSetupAction.venueId === "hyperliquid" ? (
-                          <button type="button" disabled={working || touchIdBusy} aria-expanded={showHyperliquidSetup} aria-controls="carry-hyperliquid-setup" onClick={continueGuidedSetup} className="inline-flex h-10 w-full items-center justify-center rounded-md bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] disabled:opacity-50 sm:w-auto">
+                          <button type="button" disabled={working || touchIdBusy} aria-expanded={showHyperliquidSetup} aria-controls="carry-hyperliquid-setup" onClick={continueGuidedSetup} className="inline-flex h-11 w-full items-center justify-center rounded-md bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] disabled:opacity-50">
                             Continue
                           </button>
                         ) : (
-                          <button type="button" disabled={nextSetupDisabled} onClick={continueGuidedSetup} className="h-10 w-full rounded-md bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] disabled:opacity-50 sm:w-auto">
+                          <button type="button" disabled={nextSetupDisabled} onClick={continueGuidedSetup} className="h-11 w-full rounded-md bg-[#4aaef8] px-4 text-sm font-semibold text-[#06111d] disabled:opacity-50">
                             {nextSetupLabel}
                           </button>
                         )}
@@ -986,15 +1027,12 @@ export function CarryAccountSetup({
               </section>
 
               {scopedActivationNeeded && !activeActivationNeeded && (
-                <section className="flex flex-col gap-3 rounded-lg border border-[#4b3f25] bg-[#121006] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <p className="text-sm font-semibold text-[#dcc48e]">{venueLabel(scopedActivationNeeded.venue)} activation is waiting</p>
-                    <p className="mt-1 text-xs leading-5 text-[#8f876f]">Finish the current venue first, or activate this wallet now and Ghola will remember it.</p>
-                  </div>
-                  <a href={scopedActivationNeeded.venue === "aster" ? "https://www.asterdex.com/en" : "https://app.lighter.xyz/"} target="_blank" rel="noreferrer" className="inline-flex h-9 shrink-0 items-center justify-center rounded-md border border-[#665630] px-3 text-xs font-semibold text-[#e3c987]">
+                <p className="px-1 text-xs leading-5 text-[#8f876f]">
+                  Also waiting: {venueLabel(scopedActivationNeeded.venue)} activation.{" "}
+                  <a href={scopedActivationNeeded.venue === "aster" ? "https://www.asterdex.com/en" : "https://app.lighter.xyz/"} target="_blank" rel="noreferrer" className="font-semibold text-[#d8be82] hover:text-[#f1dba5]">
                     Open {venueLabel(scopedActivationNeeded.venue)} ↗
                   </a>
-                </section>
+                </p>
               )}
 
               {workerPlatform && workerPlatform.status !== "ready" && (
@@ -1008,12 +1046,13 @@ export function CarryAccountSetup({
 
               {aster !== "connected" && nextSetupAction.kind === "connect_venue" && nextSetupAction.venueId === "aster" && (
               <div className="px-1">
-                <p className="mb-2 text-xs leading-5 text-[#718097]">Advanced · one owner approval enables 30 days of perpetual trading. Withdrawals stay disabled.</p>
-                <button type="button" onClick={() => setShowAsterManual((value) => !value)} className="text-xs font-semibold text-[#718097] hover:text-[#8fcaff]">
-                  {showAsterManual ? "Hide existing-wallet option" : "Use an existing Aster wallet instead"}
+                <button type="button" aria-expanded={showAsterManual} onClick={() => setShowAsterManual((value) => !value)} className="text-xs font-semibold text-[#718097] hover:text-[#8fcaff]">
+                  {showAsterManual ? "Hide advanced options" : "Advanced options"}
                 </button>
                 {showAsterManual && (
                   <div className="mt-3 rounded-xl border border-[#25344b] bg-[#0b111b] p-5">
+                    <p className="text-sm font-semibold">Use an existing Aster wallet instead</p>
+                    <p className="mb-3 text-xs leading-5 text-[#718097]">One owner approval enables 30 days of perpetual trading. Withdrawals stay disabled.</p>
                     <p className="text-xs leading-5 text-[#8f9aae]">Only enter a separate Aster trading wallet—never the collateral owner&apos;s private key.</p>
                     <label className="mt-3 block text-xs text-[#8f9aae]">Collateral account
                       <input value={draft.user_address} onChange={(event) => setDraft((value) => ({ ...value, user_address: event.target.value }))} placeholder="0x account address" className="mt-2 h-11 w-full rounded-md border border-[#263851] bg-[#070b12] px-3 font-mono text-sm outline-none focus:border-[#4a78a9]" />
@@ -1030,15 +1069,14 @@ export function CarryAccountSetup({
             )}
             {lighter !== "connected" && nextSetupAction.kind === "connect_venue" && nextSetupAction.venueId === "lighter" && (
               <div className="px-1">
-                <p className="mb-2 text-xs leading-5 text-[#718097]">Advanced · use an existing Lighter key only if you already have one.</p>
-                <button type="button" onClick={() => setShowLighterManual((value) => !value)} className="text-xs font-semibold text-[#718097] hover:text-[#8fcaff]">
-                  {showLighterManual ? "Hide existing-key option" : "Use an existing Lighter key instead"}
+                <button type="button" aria-expanded={showLighterManual} onClick={() => setShowLighterManual((value) => !value)} className="text-xs font-semibold text-[#718097] hover:text-[#8fcaff]">
+                  {showLighterManual ? "Hide advanced options" : "Advanced options"}
                 </button>
               </div>
             )}
             {showLighterManual && lighter !== "connected" && nextSetupAction.kind === "connect_venue" && nextSetupAction.venueId === "lighter" && (
               <div className="rounded-xl border border-[#25344b] bg-[#0b111b] p-5">
-                <p className="text-sm font-semibold">Use an existing Lighter key</p>
+                <p className="text-sm font-semibold">Use an existing Lighter key instead</p>
                 <p className="mt-1 text-xs leading-5 text-[#718097]">Lighter keys are not venue-native trade-only. Ghola blocks transfers and withdrawals inside its attested worker.</p>
                 <div className="mt-4 grid grid-cols-2 gap-3">
                   <label className="block text-xs text-[#8f9aae]">Account index
@@ -1056,15 +1094,7 @@ export function CarryAccountSetup({
                 </button>
               </div>
             )}
-            </div>
 
-            <aside className="space-y-3">
-              <ExecutionAccessRail
-                venueIds={requiredVenueIds}
-                states={venueStates}
-                longVenueId={pairScoped ? returnPair?.longVenueId || null : null}
-                shortVenueId={pairScoped ? returnPair?.shortVenueId || null : null}
-              />
               {perpsTurnkey.authenticated && (
                 <AccountSecurityPanel
                   accountHasPasskey={perpsTurnkey.hasPasskey}
@@ -1074,39 +1104,59 @@ export function CarryAccountSetup({
                   onAdd={() => void enableGholaTouchId()}
                 />
               )}
-            </aside>
+            </div>
           </div>
         )}
-
-        <div className="mt-6 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[11px] text-[#657188]">
-          <span>No deposit required</span><span aria-hidden="true">·</span>
-          <span>No order submitted</span><span aria-hidden="true">·</span>
-          <span className="inline-flex items-center gap-1.5"><LockKeyhole className="h-3.5 w-3.5" /> Secrets sealed</span>
-        </div>
+        <p className="mt-6 text-center text-[11px] text-[#657188]">Setup never places an order.</p>
       </section>
     </main>
   );
 }
 
-function SetupProgress({ connectionsReady }: { connectionsReady: boolean }) {
-  const steps = [
-    { index: 1, label: "Connect venues", state: connectionsReady ? "complete" : "active" },
-    { index: 2, label: "Verify route", state: connectionsReady ? "active" : "pending" },
-    { index: 3, label: "Ready", state: "pending" },
-  ] as const;
+function SetupSummary({
+  venueIds,
+  states,
+  longVenueId,
+  shortVenueId,
+  activeVenueId,
+  connectedCount,
+  requiredCount,
+}: {
+  venueIds: readonly CarryExecutionVenue[];
+  states: Readonly<Record<CarryExecutionVenue, VenueState>>;
+  longVenueId: CarryExecutionVenue | null;
+  shortVenueId: CarryExecutionVenue | null;
+  activeVenueId: CarryExecutionVenue | null;
+  connectedCount: number;
+  requiredCount: number;
+}) {
+  const pairScoped = longVenueId !== null && shortVenueId !== null;
   return (
-    <ol aria-label="Carry setup progress" className="mt-5 grid grid-cols-3 overflow-hidden rounded-lg border border-[#1d2634] bg-[#0c0f14]">
-      {steps.map((step) => (
-        <li key={step.index} data-state={step.state} className="flex min-w-0 items-center gap-2 border-r border-[#1d2634] px-3 py-2.5 last:border-r-0 sm:px-4">
-          <span className={`grid h-5 w-5 shrink-0 place-items-center rounded-full font-mono text-[10px] font-semibold ${step.state === "complete"
-            ? "bg-[#12362b] text-[#72dfb2]"
-            : step.state === "active" ? "bg-[#16314e] text-[#8fcaff]" : "bg-[#171b23] text-[#626d7e]"}`}>
-            {step.state === "complete" ? <Check className="h-3 w-3" /> : step.index}
-          </span>
-          <span className={`truncate text-[11px] font-semibold sm:text-xs ${step.state === "pending" ? "text-[#626d7e]" : "text-[#cbd5e3]"}`}>{step.label}</span>
-        </li>
-      ))}
-    </ol>
+    <section
+      aria-label={pairScoped ? "Selected Carry execution pair" : "Carry execution fleet"}
+      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#1d2634] bg-[#0c0f14] px-3 py-2.5 text-xs"
+    >
+      <p className="font-semibold text-[#9cadc3]">{connectedCount} of {requiredCount} connected</p>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        {venueIds.map((venueId) => {
+          const state = states[venueId];
+          const role = venueId === longVenueId ? "LONG" : venueId === shortVenueId ? "SHORT" : null;
+          return (
+            <span
+              key={venueId}
+              data-carry-venue={venueId}
+              data-carry-role={role?.toLowerCase() || "fleet"}
+              aria-label={`${role ? `${role} ` : ""}${venueLabel(venueId)}: ${state === "connected" ? "connected" : ONBOARDING_BY_VENUE[venueId].ux.badge}`}
+              className={`inline-flex items-center gap-1.5 ${state === "connected" ? "text-[#72dfb2]" : activeVenueId === venueId ? "text-[#8fcaff]" : "text-[#657188]"}`}
+            >
+              {state === "connected" ? <Check className="h-3.5 w-3.5" /> : null}
+              {role ? <span className="font-mono text-[9px] font-semibold tracking-[0.08em]">{role}</span> : null}
+              {venueLabel(venueId)}{activeVenueId === venueId && state !== "connected" ? " next" : ""}
+            </span>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -1129,40 +1179,33 @@ function AccountSecurityPanel({
     ? "Added on this device"
     : accountHasPasskey ? "Enabled for account" : "Not added";
   return (
-    <section aria-label="Account security" className="rounded-xl border border-[#202b3a] bg-[#0d1117] p-4">
-      <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.13em] text-[#718097]">Account security</p>
-      <div className="mt-3 flex items-center justify-between gap-3">
-        <span className="text-sm text-[#aab5c5]">Signed in</span>
-        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#72dfb2]"><Check className="h-3.5 w-3.5" /> Ready</span>
-      </div>
-      <div className="mt-3 border-t border-[#1d2634] pt-3">
-        <div className="flex items-start gap-3">
-          <span className={`mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-md ${ready ? "bg-[#12362b] text-[#72dfb2]" : "bg-[#151e2a] text-[#8fcaff]"}`}>
-            <Fingerprint className="h-4 w-4" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-sm font-semibold text-[#d8e1ed]">Touch ID</p>
-              <p role="status" aria-live="polite" className={`text-[11px] font-semibold ${ready ? "text-[#72dfb2]" : "text-[#8f9aae]"}`}>
-                {enrollment === "adding" ? "Waiting for Touch ID…" : status}
-              </p>
-            </div>
-            <p className="mt-1 text-xs leading-5 text-[#778396]">{addedHere
-              ? "Touch ID was added successfully on this device."
-              : accountHasPasskey
-                ? "A Ghola passkey is enabled for this account. Add this device if needed."
-                : "Optional — use Touch ID for faster sign-in on this device."}</p>
-            {enrollment === "error" && error ? <p role="alert" className="mt-2 text-xs leading-5 text-[#e6b86a]">{error}</p> : null}
-            {!addedHere && (
-              <button type="button" disabled={blocked || enrollment === "adding"} onClick={onAdd} className="mt-3 inline-flex h-9 items-center justify-center rounded-md border border-[#315277] px-3 text-xs font-semibold text-[#a8d8ff] hover:bg-[#132238] disabled:opacity-50">
-                {enrollment === "adding"
-                  ? "Adding…"
-                  : enrollment === "error" ? "Retry Touch ID" : accountHasPasskey ? "Add this device" : "Add Touch ID"}
-              </button>
-            )}
+    <section aria-label="Account security" className="flex flex-col gap-3 rounded-lg border border-[#1d2634] bg-[#0c0f14] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 items-start gap-3">
+        <span className={`mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-md ${ready ? "bg-[#12362b] text-[#72dfb2]" : "bg-[#151e2a] text-[#8fcaff]"}`}>
+          <Fingerprint className="h-4 w-4" />
+        </span>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-semibold text-[#d8e1ed]">Touch ID</p>
+            <p role="status" aria-live="polite" className={`text-[11px] font-semibold ${ready ? "text-[#72dfb2]" : "text-[#8f9aae]"}`}>
+              {enrollment === "adding" ? "Waiting for Touch ID…" : status}
+            </p>
           </div>
+          <p className="mt-0.5 text-xs leading-5 text-[#778396]">{addedHere
+            ? "Touch ID was added successfully on this device."
+            : accountHasPasskey
+              ? "A Ghola passkey is enabled for this account. Add this device if needed."
+              : "Optional for faster sign-in on this device."}</p>
+          {enrollment === "error" && error ? <p role="alert" className="mt-1 text-xs leading-5 text-[#e6b86a]">{error}</p> : null}
         </div>
       </div>
+      {!addedHere && (
+        <button type="button" disabled={blocked || enrollment === "adding"} onClick={onAdd} className="inline-flex h-9 shrink-0 items-center justify-center rounded-md border border-[#315277] px-3 text-xs font-semibold text-[#a8d8ff] hover:bg-[#132238] disabled:opacity-50">
+          {enrollment === "adding"
+            ? "Adding…"
+            : enrollment === "error" ? "Retry Touch ID" : accountHasPasskey ? "Set up this device" : "Add Touch ID"}
+        </button>
+      )}
     </section>
   );
 }
@@ -1201,12 +1244,11 @@ function LighterReadinessPanel({
     ? !readiness.blockers.includes("lighter_base_gas_required")
     : false;
   return (
-    <div className="mt-4 rounded-lg border border-[#3b3424] bg-[#0b0c0e] p-3">
-      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#cba45f]">What Lighter needs</p>
-      {readiness ? (
-        <>
-          <p className="mt-2 text-xs leading-5 text-[#d8eaff]">{describeLighterActivationNextStep(readiness)}</p>
-          <div className="mt-2 divide-y divide-[#1b283b]">
+    <details className="mt-4 rounded-lg border border-[#3b3424] bg-[#0b0c0e] px-3 py-2.5 text-xs">
+      <summary className="cursor-pointer font-semibold text-[#cba45f]">Funding and fee details</summary>
+      <div className="pt-2">
+        {readiness ? (
+          <div className="divide-y divide-[#1b283b]">
             {!readiness.lighter_owner_account_ready && <>
               <ReadinessRow label="Lighter collateral" value={`${formatDecimalUnits(readiness.base_usdc_microunits, 6, 2)} USDC on Base`} ready={baseCollateralReady} />
               <ReadinessRow label="Base network fee" value={baseGasReady ? "Funded" : `${formatDecimalUnits(readiness.estimated_base_gas_wei, 18, 6)} ETH required`} ready={baseGasReady} />
@@ -1214,12 +1256,12 @@ function LighterReadinessPanel({
             <ReadinessRow label="Lighter owner account" value={readiness.lighter_owner_account_ready ? `Verified · #${readiness.lighter_account_index}` : "Activation required"} ready={readiness.lighter_owner_account_ready} />
             <ReadinessRow label="Ethereum association fee" value={readiness.ethereum_association_gas_ready ? "Funded" : `${formatDecimalUnits(readiness.estimated_ethereum_association_gas_wei, 18, 6)} ETH required`} ready={readiness.ethereum_association_gas_ready} />
           </div>
-        </>
-      ) : (
-        <p className="mt-2 text-xs text-[#8f9aae]">{checking ? "Checking both networks…" : error || "Readiness has not been checked."}</p>
-      )}
-      <p className="mt-2 text-[11px] leading-4 text-[#657188]">Read-only balances, gas estimates, and owner-bound Lighter account lookup. No payment, transfer, key, or order is submitted by this check.</p>
-    </div>
+        ) : (
+          <p className="text-[#8f9aae]">{checking ? "Checking both networks…" : error || "Readiness has not been checked."}</p>
+        )}
+        <p className="mt-2 text-[11px] leading-4 text-[#657188]">Read-only balances, gas estimates, and owner-bound Lighter account lookup. No payment, transfer, key, or order is submitted by this check.</p>
+      </div>
+    </details>
   );
 }
 
@@ -1241,53 +1283,6 @@ function formatDecimalUnits(value: string, decimals: number, precision: number) 
   const whole = amount / divisor;
   const fraction = (amount % divisor).toString().padStart(decimals, "0").slice(0, precision);
   return `${whole}.${fraction.padEnd(precision, "0")}`;
-}
-
-function ExecutionAccessRail({
-  venueIds,
-  states,
-  longVenueId,
-  shortVenueId,
-}: {
-  venueIds: readonly CarryExecutionVenue[];
-  states: Readonly<Record<CarryExecutionVenue, VenueState>>;
-  longVenueId: CarryExecutionVenue | null;
-  shortVenueId: CarryExecutionVenue | null;
-}) {
-  const pairScoped = longVenueId !== null && shortVenueId !== null;
-  return (
-    <section
-      aria-label={pairScoped ? "Selected Carry execution pair" : "Carry execution fleet"}
-      className="rounded-xl border border-[#202b3a] bg-[#0d1117] p-4"
-    >
-      <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.13em] text-[#718097]">
-        {pairScoped ? "Selected route" : "Execution venues"}
-      </p>
-      <div className="mt-2 divide-y divide-[#1d2634]">
-        {venueIds.map((venueId) => {
-          const state = states[venueId];
-          const role = venueId === longVenueId ? "LONG" : venueId === shortVenueId ? "SHORT" : null;
-          return (
-            <div
-              key={venueId}
-              data-carry-venue={venueId}
-              data-carry-role={role?.toLowerCase() || "fleet"}
-              className="flex min-w-0 items-center justify-between gap-3 py-3"
-            >
-              <div className="min-w-0">
-                {role ? <p className="font-mono text-[9px] font-semibold tracking-[0.1em] text-[#657188]">{role}</p> : null}
-                <p className="mt-0.5 truncate text-sm font-semibold text-[#d8e1ed]">{venueLabel(venueId)}</p>
-              </div>
-              <span className={`inline-flex shrink-0 items-center gap-1.5 text-[11px] font-semibold ${state === "connected" ? "text-[#72dfb2]" : "text-[#9cadc3]"}`}>
-                {state === "connected" ? <Check className="h-3.5 w-3.5" /> : <KeyRound className="h-3.5 w-3.5" />}
-                {state === "connected" ? "Connected" : state === "needed" ? ONBOARDING_BY_VENUE[venueId].ux.badge : "Unavailable"}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
